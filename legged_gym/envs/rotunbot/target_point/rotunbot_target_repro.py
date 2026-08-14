@@ -609,7 +609,15 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         return torch.exp(-torch.sum(torch.square(self.base_ang_vel[:, 1:3]), dim=1))
 
     def _reward_near_goal_speed(self):
-        near_goal = (self.goal_dist <= self._current_success_distance()).float()
+        # Brake earlier than the formal 0.20 m radius when configured: under a
+        # stronger executor the policy overshoots the target and loops back,
+        # lengthening paths (seed-3 13 overshoots at gain 100/600).  Raising
+        # the penalty gate to 0.5 m gives the policy a braking gradient before
+        # the overshoot happens.
+        brake_distance = float(
+            getattr(self.cfg.rewards, "near_goal_brake_distance", 0.20)
+        )
+        near_goal = (self.goal_dist <= brake_distance).float()
         speed = torch.linalg.norm(self.base_lin_vel, dim=1)
         excess_speed = torch.relu(
             speed - self.cfg.evaluation.stop_velocity_threshold

@@ -147,6 +147,10 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         progress_target_speed = 0.6
         soft_dof_pos_limit = 1.0
         stop_reward_multiplier = 1.0
+        # Brake gate for _reward_near_goal_speed: 0.20 matches the formal
+        # success radius; 0.50 starts braking earlier to cut overshoot under
+        # the stronger (100/600) executor.
+        near_goal_brake_distance = 0.5
 
         # Route B: radial approach shaping against premature stopping.
         # Within radial_gate_distance the policy should approach at a speed
@@ -257,7 +261,7 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 6
         save_interval = 1
         experiment_name = "rotunbot_target_repro"
-        run_name = "time_penalty_stage1_from3813"
+        run_name = "brake05_stage1_from3813"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
