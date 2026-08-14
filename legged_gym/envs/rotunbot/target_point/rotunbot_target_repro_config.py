@@ -189,6 +189,9 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
             # time); re-enable only after the blend stages are screened.
             radial_approach = 0.0
 
+            # Detour penalty (scale of _reward_detour): direct SPL shaping.
+            detour = -0.02
+
             # Graduation-only terms are disabled in this paper-inspired run.
             ang_vel_xy = 0.0
             lin_vel_z = 0.0
@@ -261,11 +264,11 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 6
         save_interval = 1
         experiment_name = "rotunbot_target_repro"
-        run_name = "brake05_stage1_from3813"
+        run_name = "detour_stage1_from3809"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
         load_optimizer = False
-        load_run = "Aug14_22-11-22_nominal_strict020_hardside35_seed11_stage2"
-        checkpoint = 3813
+        load_run = "Aug14_18-56-25_push_recovery_lownoise_from3806"
+        checkpoint = 3809
         resume_path = None

@@ -603,6 +603,22 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         goal_change = self.goal_dist - self.last_goal_dist
         return (goal_change > 0).float() * self.cfg.rewards.close_para
 
+    def _reward_detour(self):
+        """Penalize movement that does not reduce the goal distance.
+
+        step_len is the ground displacement this control step; progress is
+        how much that displacement reduced the goal distance.  Movement
+        beyond the progress (turning arcs, overshoot loops) is a detour and
+        is penalized.  This directly targets SPL under the strong executor,
+        where the gain-35-trained policy's turning commands overshoot and
+        produce long zig-zag paths.
+        """
+        step_len = torch.linalg.norm(
+            self.root_states[:, :2] - self.last_root_states[:, :2], dim=1
+        )
+        progress = self.last_goal_dist - self.goal_dist
+        return torch.relu(step_len - progress)
+
     def _reward_balance(self):
         # Penalize pitch/yaw angular motion.  The previous implementation used
         # roll/pitch (x/y), which did not directly discourage in-place yaw spin.
