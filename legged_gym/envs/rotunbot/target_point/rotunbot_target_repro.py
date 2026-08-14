@@ -156,7 +156,6 @@ class RotunbotTargetRepro(RotunbotTargetLH):
                 dim=1,
             )
             self.last_goal_dist[env_ids] = self.goal_dist[env_ids]
-
             if self.latency_enabled:
                 latency_cfg = self.cfg.latency
                 self.observation_delay_steps[env_ids] = torch.randint(
@@ -324,6 +323,48 @@ class RotunbotTargetRepro(RotunbotTargetLH):
                 (len(invalid_ids), 1),
                 device=self.device,
             ).squeeze(1)
+
+        hard_probability = float(
+            getattr(self.cfg.commands, "hard_side_target_probability", 0.0)
+        )
+        if hard_probability <= 0.0:
+            return
+        hard_mask = torch.rand(len(env_ids), device=self.device) < hard_probability
+        if not torch.any(hard_mask):
+            return
+
+        hard_ids = env_ids[hard_mask]
+        count = len(hard_ids)
+        distance = torch_rand_float(
+            float(self.cfg.commands.hard_side_distance_min),
+            float(self.cfg.commands.hard_side_distance_max),
+            (count, 1),
+            device=self.device,
+        ).squeeze(1)
+        bearing_magnitude = torch_rand_float(
+            math.radians(float(self.cfg.commands.hard_side_bearing_min_deg)),
+            math.radians(float(self.cfg.commands.hard_side_bearing_max_deg)),
+            (count, 1),
+            device=self.device,
+        ).squeeze(1)
+        bearing_sign = torch.where(
+            torch.rand(count, device=self.device) < 0.5,
+            -torch.ones(count, device=self.device),
+            torch.ones(count, device=self.device),
+        )
+        quat = self.root_states[hard_ids, 3:7]
+        qx, qy, qz, qw = quat.unbind(dim=1)
+        yaw = torch.atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy.square() + qz.square()),
+        )
+        target_angle = yaw + bearing_sign * bearing_magnitude
+        self.commands[hard_ids, 0] = (
+            self.root_states[hard_ids, 0] + distance * torch.cos(target_angle)
+        )
+        self.commands[hard_ids, 1] = (
+            self.root_states[hard_ids, 1] + distance * torch.sin(target_angle)
+        )
 
     def _target_sampling_range(self):
         """Return the fixed maximum absolute XY target range for logging."""

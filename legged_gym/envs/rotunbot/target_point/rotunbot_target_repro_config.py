@@ -11,7 +11,10 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
     class env(RotunbotTargetLHCfg.env):
         # Keep the Graduation training batch/environment setting.  The number
         # of parallel environments does not change the per-episode test rule.
-        num_envs = 2048
+        # Isaac Gym Preview 4 does not expose the GPU aggregate-pair capacity
+        # requested by 2048 colocated environments.  At 1024 environments the
+        # required broadphase pairs fit, avoiding silently missed contacts.
+        num_envs = 1024
         num_actions = 2
         num_single_obs = 19
         frame_stack = 20
@@ -58,14 +61,23 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         stop_distance = 0.20
         stop_vel = 0.1
 
-        # Point-to-point curriculum: keep the paper's complete target map
-        # fixed and gradually tighten only the training success tolerance.
-        target_curriculum = True
+        # Nominal-metric stage uses the same strict 0.20 m success radius as
+        # evaluation.  The resumed checkpoint is stuck at a 0.40 m curriculum
+        # radius because noisy rollout success never reaches the 80% gate.
+        target_curriculum = False
         curriculum_success_distance_start = 1.0
         curriculum_success_distance_min = 0.20
         curriculum_success_distance_step = 0.20
         target_curriculum_window = 2048
         target_curriculum_success_rate = 0.80
+
+        # Preserve the full-map distribution while increasing exposure to the
+        # lateral 1--4 m region that dominates seed-11 F1/F4 failures.
+        hard_side_target_probability = 0.35
+        hard_side_distance_min = 1.0
+        hard_side_distance_max = 4.0
+        hard_side_bearing_min_deg = 60.0
+        hard_side_bearing_max_deg = 110.0
 
         class ranges(RotunbotTargetLHCfg.commands.ranges):
             pos_x = [-5.0, 5.0]
@@ -83,6 +95,16 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # Keep the Graduation training observation-noise setting. play.py
         # disables it during the clean paper-style evaluation.
         add_noise = True
+
+    class domain_rand(RotunbotTargetLHCfg.domain_rand):
+        # Nominal-metric stage: retain mild friction and latency variation so
+        # the accepted controller is not forgotten, but stop spending policy
+        # updates on active push recovery.
+        randomize_friction = True
+        randomize_base_mass = False
+        push_robots = False
+        push_interval_s = 3.0
+        max_push_vel_xy = 0.3
 
     class latency:
         # Stage 1 of paper-style latency adaptation.  At 50 Hz, two steps are
@@ -151,14 +173,17 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
     the existing 19-D DWL-CNN so its checkpoints remain loadable.
     """
 
-    seed = 3
+    seed = 11
     # Keep the existing DWL runner so the 19-D checkpoint remains loadable.
     runner_class_name = "DWLOnPolicyRunner"
 
     class policy:
-        init_noise_std = 0.5
-        min_noise_std = 0.2
-        max_noise_std = 1.5
+        init_noise_std = 0.3
+        min_noise_std = 0.15
+        # The resumed checkpoint carries std=1.5.  Under frequent pushes this
+        # made the three-update probe destructive; clamp exploration before
+        # retrying the same disturbance curriculum.
+        max_noise_std = 0.3
         actor_hidden_dims = [512, 256, 128]
         critic_hidden_dims = [512, 256, 128]
         activation = "elu"
@@ -176,13 +201,15 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         value_loss_coef = 1.0
         use_clipped_value_loss = True
         clip_param = 0.2
-        entropy_coef = 0.005
+        entropy_coef = 0.002
         num_learning_epochs = 5
         num_mini_batches = 16
         # Conservative fine-tuning from model_3800.  Earlier 1e-3 probes
         # moved the policy too far in only a few updates.
-        learning_rate = 2.0e-4
-        schedule = "adaptive"
+        # Strict-success precision fine-tuning uses a fresh optimizer, so the
+        # resumed checkpoint cannot silently restore its old, larger step.
+        learning_rate = 5.0e-5
+        schedule = "fixed"
         gamma = 0.99
         lam = 0.95
         desired_kl = 0.01
@@ -195,10 +222,11 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 3
         save_interval = 1
         experiment_name = "rotunbot_target_repro"
-        run_name = "next_stage_from3806"
+        run_name = "nominal_strict020_hardside35_seed11_stage2"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
-        load_run = "Aug14_13-11-54_progress_stage1_from3803"
-        checkpoint = 3806
+        load_optimizer = True
+        load_run = "Aug14_21-59-52_nominal_strict020_hardside35_seed11_from3809"
+        checkpoint = 3812
         resume_path = None

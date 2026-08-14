@@ -221,6 +221,7 @@ class DWLOnPolicyRunner:
         self.alg.actor_critic.load_state_dict(
             loaded_dict['model_state_dict'], strict=False
         )
+        load_optimizer = bool(load_optimizer and self.cfg.get("load_optimizer", True))
         if load_optimizer:
             try:
                 self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
@@ -229,6 +230,8 @@ class DWLOnPolicyRunner:
                 # start its optimizer state cleanly instead of mixing it with
                 # an incompatible legacy state.
                 print("Optimizer state is incompatible; starting a fresh optimizer state.")
+        else:
+            print("Skipping checkpoint optimizer state; using configured fresh optimizer.")
 
         # Older intermediate checkpoints were saved before the runner's
         # current iteration was updated.  Recover the intended iteration from
