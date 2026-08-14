@@ -49,6 +49,16 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         direct_position_scale = 0.5
         direct_position_limit = 0.45
         direct_drive_gain_scale = 1.0
+        # Torque-law gains of the DIRECT_VP_TORQUE executor (defaults match the
+        # historical hard-coded 35/300/150 values).  Kept at the historical
+        # constant 35: global gain 100 raised SR/CLS but cut SPL and caused
+        # seed-3 oscillation; scheduled and retrained variants regressed.
+        direct_velocity_gain = 35.0
+        direct_velocity_gain_near = 0.0
+        direct_gain_near_distance = 1.5
+        direct_gain_ramp_width = 0.8
+        direct_position_gain = 300.0
+        direct_position_damping = 150.0
         # Safe continuation from the old R-controller checkpoint.
         direct_use_rate_limit = True
         direct_velocity_rate_limit = 0.02
@@ -72,12 +82,20 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         target_curriculum_success_rate = 0.80
 
         # Preserve the full-map distribution while increasing exposure to the
-        # lateral 1--4 m region that dominates seed-11 F1/F4 failures.
+        # lateral 1--4 m region that dominates seed-11 F1/F4 failures (the
+        # configuration that produced the accepted model 3813).
         hard_side_target_probability = 0.35
         hard_side_distance_min = 1.0
         hard_side_distance_max = 4.0
         hard_side_bearing_min_deg = 60.0
         hard_side_bearing_max_deg = 110.0
+
+        # Route C (observation): blend observation channels [0:2] from the
+        # absolute target position toward the world-frame relative target
+        # (target - robot).  alpha=0 reproduces the original observation
+        # exactly (checkpoint-compatible); alpha=1 makes the actor see the
+        # relative target directly instead of having to subtract positions.
+        target_relative_blend = 0.3
 
         class ranges(RotunbotTargetLHCfg.commands.ranges):
             pos_x = [-5.0, 5.0]
@@ -121,12 +139,24 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         only_positive_rewards = False
         close_para = 1.0
         # A narrow distance-shaping scale is necessary at the initial
-        # [-1, 1] curriculum stage.  sigma=8 makes the distance reward almost
-        # constant, so a stationary policy can receive reward without moving.
-        tracking_sigma_main = 0.5
+        # [-1, 1] curriculum stage.  sigma=0.5 makes to_target vanish beyond
+        # ~0.7 m (exp(-(1.0/0.5)^2)=0.018), leaving a reward hole in 0.4--1.5 m
+        # where seed-7 F4 episodes stop; widen it so the approach gradient
+        # persists out to ~2 m.
+        tracking_sigma_main = 1.5
         progress_target_speed = 0.6
         soft_dof_pos_limit = 1.0
         stop_reward_multiplier = 1.0
+
+        # Route B: radial approach shaping against premature stopping.
+        # Within radial_gate_distance the policy should approach at a speed
+        # proportional to the remaining gap; outside the gate reward is zero.
+        radial_gate_distance = 1.5
+        radial_k = 0.8
+        radial_stop_distance = 0.2
+        radial_min_speed = 0.05
+        radial_max_speed = 0.8
+        radial_sigma = 0.15
 
         class scales(RotunbotTargetLHCfg.rewards.scales):
             # Paper-inspired point-to-point shaping.  The asymmetric
@@ -149,6 +179,11 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
             # Additional small braking term to reduce overspeed inside the
             # formal 0.20 m stopping region.
             near_goal_speed = -0.2
+
+            # Route B anti-premature-stop shaping (scale of _reward_radial_approach).
+            # Disabled during the observation-blend experiment (one factor at a
+            # time); re-enable only after the blend stages are screened.
+            radial_approach = 0.0
 
             # Graduation-only terms are disabled in this paper-inspired run.
             ang_vel_xy = 0.0
@@ -219,14 +254,14 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 3
+        max_iterations = 6
         save_interval = 1
         experiment_name = "rotunbot_target_repro"
-        run_name = "nominal_strict020_hardside35_seed11_stage2"
+        run_name = "sigma15_stage1_from3813"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
-        load_optimizer = True
-        load_run = "Aug14_21-59-52_nominal_strict020_hardside35_seed11_from3809"
-        checkpoint = 3812
+        load_optimizer = False
+        load_run = "Aug14_22-11-22_nominal_strict020_hardside35_seed11_stage2"
+        checkpoint = 3813
         resume_path = None

@@ -506,11 +506,28 @@ class RotunbotTargetLH(LeggedRobot):
         # law below for the requested velocity/position targets; this is an
         # equivalent commanded-effort estimate used only for reward/logging.
         # The actual target tensors above remain unchanged.
+        velocity_gain = float(getattr(control, "direct_velocity_gain", 35.0))
+        position_gain = float(getattr(control, "direct_position_gain", 300.0))
+        position_damping = float(getattr(control, "direct_position_damping", 150.0))
+        # Distance-scheduled velocity gain: raise the loop gain close to the
+        # target so low-speed approach is not under-driven (seed-7 F4 showed
+        # velocity commands of ~1.4 rad/s with only ~0.16 rad/s shell speed),
+        # while far away the original gain preserves learned path efficiency.
+        # The ramp is linear over direct_gain_ramp_width to avoid a torque
+        # step at the gate boundary.  Training and evaluation share this law.
+        near_boost = float(getattr(control, "direct_velocity_gain_near", 0.0))
+        if near_boost > 0.0 and hasattr(self, "goal_dist"):
+            gate = float(getattr(control, "direct_gain_near_distance", 1.5))
+            width = float(getattr(control, "direct_gain_ramp_width", 0.5))
+            ramp = torch.clamp(
+                (gate - self.goal_dist) / max(width, 1.0e-6), 0.0, 1.0
+            )
+            velocity_gain = velocity_gain + near_boost * ramp
         self.torques.zero_()
-        self.torques[:, 0] = 35.0 * (velocity_target - self.dof_vel[:, 0])
+        self.torques[:, 0] = velocity_gain * (velocity_target - self.dof_vel[:, 0])
         self.torques[:, 1] = (
-            300.0 * (position_target - self.dof_pos[:, 1])
-            - 150.0 * self.dof_vel[:, 1]
+            position_gain * (position_target - self.dof_pos[:, 1])
+            - position_damping * self.dof_vel[:, 1]
         )
         self.torques[:, 0] = torch.clip(
             self.torques[:, 0],

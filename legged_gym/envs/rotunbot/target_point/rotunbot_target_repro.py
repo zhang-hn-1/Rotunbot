@@ -11,6 +11,18 @@ from .rotunbot_target_lh import RotunbotTargetLH
 from .rotunbot_target_repro_config import RotunbotTargetReproCfg
 
 
+def _quat_rotate_inverse_local(q, v):
+    """Inverse quaternion rotation; local eager copy (RTX-40 shim style)."""
+    q_w = q[:, -1]
+    q_vec = q[:, :3]
+    a = v * (2.0 * q_w ** 2 - 1.0).unsqueeze(-1)
+    b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
+    c = q_vec * torch.bmm(
+        q_vec.view(q.shape[0], 1, 3), v.view(q.shape[0], 3, 1)
+    ).squeeze(-1) * 2.0
+    return a - b + c
+
+
 class RotunbotTargetRepro(RotunbotTargetLH):
     """Paper task protocol while retaining the existing 19-D policy input."""
 
@@ -120,6 +132,36 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         # first preserve the URDF limits and then apply the LH drive settings.
         LeggedRobot._process_dof_props(self, props, env_id)
         return super()._process_dof_props(props, env_id)
+
+    def compute_observations(self):
+        """Blend observation channels [0:2] toward the relative target.
+
+        The inherited 19-D observation carries the absolute target position in
+        channels [0:2] and the robot position in [2:4], forcing the network to
+        subtract them itself.  With ``cfg.commands.target_relative_blend == a``,
+        every stacked frame's target channels become
+        ``(1-a)*absolute_target + a*(target - robot)`` (world frame, same
+        scaling).  a=0 is byte-identical to the original observation, so the
+        parent checkpoint loads and behaves exactly as before; a is then raised
+        across stages so the policy adapts gradually.
+        """
+        super().compute_observations()
+
+        alpha = float(getattr(self.cfg.commands, "target_relative_blend", 0.0))
+        if alpha <= 0.0:
+            return
+
+        relative_target = (
+            self.commands[:, :2] - self.root_states[:, :2]
+        ) * self.obs_scales.command
+        single = int(self.cfg.env.num_single_obs)
+        frames = int(self.cfg.env.frame_stack)
+        for t in range(frames):
+            col = t * single
+            absolute = self.obs_buf[:, col:col + 2]
+            self.obs_buf[:, col:col + 2] = (
+                (1.0 - alpha) * absolute + alpha * relative_target
+            )
 
     def reset_idx(self, env_ids):
         terminal_success = None
@@ -573,6 +615,31 @@ class RotunbotTargetRepro(RotunbotTargetLH):
             speed - self.cfg.evaluation.stop_velocity_threshold
         )
         return near_goal * torch.square(excess_speed)
+
+    def _reward_radial_approach(self):
+        """Close-range radial speed shaping against premature stopping.
+
+        Within ``radial_gate_distance`` of the target, reward matching a
+        distance-proportional approach speed: fast enough to keep closing the
+        remaining gap, slow enough to stop inside the formal 0.20 m radius.
+        The reward is exactly zero outside the gate, so the far-range
+        navigation behavior learned by the parent checkpoint is untouched.
+        """
+        delta = self.commands[:, :2] - self.root_states[:, :2]
+        distance = torch.linalg.norm(delta, dim=1)
+        active = (distance <= float(self.cfg.rewards.radial_gate_distance)).float()
+        world_dir = delta / distance.clamp(min=1.0e-6).unsqueeze(1)
+        dir3 = torch.cat([world_dir, torch.zeros_like(world_dir[:, :1])], dim=1)
+        body_dir = _quat_rotate_inverse_local(self.base_quat, dir3)
+        v_radial = torch.sum(self.base_lin_vel[:, :2] * body_dir[:, :2], dim=1)
+        v_desired = torch.clamp(
+            float(self.cfg.rewards.radial_k)
+            * (distance - float(self.cfg.rewards.radial_stop_distance)),
+            float(self.cfg.rewards.radial_min_speed),
+            float(self.cfg.rewards.radial_max_speed),
+        )
+        sigma = max(float(self.cfg.rewards.radial_sigma), 1.0e-6)
+        return active * torch.exp(-torch.square((v_radial - v_desired) / sigma))
 
     def _reward_to_target(self):
         distance = torch.linalg.norm(
