@@ -53,11 +53,11 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # historical hard-coded 35/300/150 values).  Kept at the historical
         # constant 35: global gain 100 raised SR/CLS but cut SPL and caused
         # seed-3 oscillation; scheduled and retrained variants regressed.
-        direct_velocity_gain = 35.0
+        direct_velocity_gain = 100.0
         direct_velocity_gain_near = 0.0
         direct_gain_near_distance = 1.5
         direct_gain_ramp_width = 0.8
-        direct_position_gain = 300.0
+        direct_position_gain = 600.0
         direct_position_damping = 150.0
         # Safe continuation from the old R-controller checkpoint.
         direct_use_rate_limit = True
@@ -143,7 +143,7 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # ~0.7 m (exp(-(1.0/0.5)^2)=0.018), leaving a reward hole in 0.4--1.5 m
         # where seed-7 F4 episodes stop; widen it so the approach gradient
         # persists out to ~2 m.
-        tracking_sigma_main = 1.5
+        tracking_sigma_main = 0.5
         progress_target_speed = 0.6
         soft_dof_pos_limit = 1.0
         stop_reward_multiplier = 1.0
@@ -257,7 +257,7 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 6
         save_interval = 1
         experiment_name = "rotunbot_target_repro"
-        run_name = "sigma15_stage1_from3813"
+        run_name = "time_penalty_stage1_from3813"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
