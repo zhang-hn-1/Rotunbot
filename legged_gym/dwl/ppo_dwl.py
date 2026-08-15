@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -21,6 +22,11 @@ class PPODWL:
                  use_clipped_value_loss=True,
                  schedule="fixed",
                  desired_kl=0.01,
+                 teacher_path=None,
+                 distill_weight=0.0,
+                 distill_anneal_steps=0,
+                 distill_far_distance=None,
+                 distill_near_weight=0.2,
                  device='cpu',
                  ):
 
@@ -48,6 +54,32 @@ class PPODWL:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
         self.num_short_obs = self.actor_critic.num_short_obs
+
+        # Teacher-action distillation: a frozen copy of the parent policy
+        # whose mean actions anchor the student so PPO shaping (e.g. detour
+        # penalty for SPL) cannot drift the policy away from the accepted
+        # model's behavior (which every unconstrained retrain did).
+        self.teacher = None
+        self.distill_weight = float(distill_weight)
+        self.distill_anneal_steps = int(distill_anneal_steps)
+        self.distill_step = 0
+        self.distill_far_distance = (
+            float(distill_far_distance) if distill_far_distance is not None else None
+        )
+        self.distill_near_weight = float(distill_near_weight)
+        self.num_single_obs = self.actor_critic.num_proprio_obs
+        if teacher_path:
+            teacher_path = str(teacher_path).replace(
+                "{LEGGED_GYM_ROOT_DIR}", "/home/jason/SphericalRobot_LeggedGym-master-new-map"
+            )
+            teacher = copy.deepcopy(self.actor_critic)
+            state = torch.load(teacher_path, map_location=self.device)
+            teacher.load_state_dict(state["model_state_dict"], strict=False)
+            teacher.eval()
+            for p in teacher.parameters():
+                p.requires_grad_(False)
+            self.teacher = teacher
+            print(f"[distill] teacher loaded from {teacher_path}", flush=True)
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, None, self.device)
@@ -138,11 +170,40 @@ class PPODWL:
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
+                # Teacher-action distillation (anchor against drift).
+                if self.teacher is not None:
+                    weight = self.distill_weight
+                    if self.distill_anneal_steps > 0:
+                        # Anneal the anchor from full weight down to 40% so the
+                        # student can eventually refine beyond the teacher.
+                        progress = min(1.0, self.distill_step / float(self.distill_anneal_steps))
+                        weight = self.distill_weight * (1.0 - 0.6 * progress)
+                    with torch.no_grad():
+                        self.teacher.act(
+                            obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0]
+                        )
+                        teacher_mu = self.teacher.action_mean
+                    # State-dependent anchoring: strongly preserve teacher
+                    # actions far from the target, relax near the target so
+                    # the student can refine approach/braking behavior.
+                    if getattr(self, "distill_far_distance", None) is not None:
+                        frame = obs_batch.reshape(obs_batch.shape[0], -1, self.num_single_obs)[:, -1, :]
+                        dist = (frame[:, 0:2] - frame[:, 2:4]).norm(dim=1)
+                        far = (dist > self.distill_far_distance).float().unsqueeze(1)
+                        per_sample = far * 1.0 + (1.0 - far) * self.distill_near_weight
+                        distill_loss = torch.mean(
+                            torch.square(mu_batch - teacher_mu) * per_sample
+                        )
+                    else:
+                        distill_loss = torch.mean(torch.square(mu_batch - teacher_mu))
+                    loss = loss + weight * distill_loss
+
                 # Gradient step
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
                 self.optimizer.step()
+                self.distill_step += 1
 
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()

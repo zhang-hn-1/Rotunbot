@@ -256,13 +256,22 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         lam = 0.95
         desired_kl = 0.01
         max_grad_norm = 1.0
+        # Teacher-action distillation: anchor the student to model 3809's
+        # actions far from the target (preserving the accepted far-range
+        # behavior) and relax the anchor near the target so the student can
+        # refine approach/braking.  Time penalty -1.0 is the SPL signal.
+        teacher_path = "{LEGGED_GYM_ROOT_DIR}/logs/rotunbot_target_repro/Aug14_18-56-25_push_recovery_lownoise_from3806/model_3809.pt"
+        distill_weight = 1.0
+        distill_anneal_steps = 400
+        distill_far_distance = 1.5
+        distill_near_weight = 0.2
 
     class runner:
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 6
-        save_interval = 1
+        max_iterations = 30
+        save_interval = 5
         experiment_name = "rotunbot_target_repro"
         run_name = "ACCEPTED_3809_executor100_600"
         # Continue from the existing checkpoint without changing the policy
