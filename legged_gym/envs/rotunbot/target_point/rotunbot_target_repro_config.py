@@ -147,7 +147,7 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # ~0.7 m (exp(-(1.0/0.5)^2)=0.018), leaving a reward hole in 0.4--1.5 m
         # where seed-7 F4 episodes stop; widen it so the approach gradient
         # persists out to ~2 m.
-        tracking_sigma_main = 1.5
+        tracking_sigma_main = 0.5
         progress_target_speed = 0.6
         soft_dof_pos_limit = 1.0
         stop_reward_multiplier = 1.0
@@ -263,24 +263,23 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         lam = 0.95
         desired_kl = 0.01
         max_grad_norm = 1.0
-        # Teacher-action distillation: anchor the student to model 3809's
-        # actions far from the target (preserving the accepted far-range
-        # behavior) and relax the anchor near the target so the student can
-        # refine approach/braking.  Time penalty -1.0 is the SPL signal.
-        teacher_path = "{LEGGED_GYM_ROOT_DIR}/logs/rotunbot_target_repro/Aug14_18-56-25_push_recovery_lownoise_from3806/model_3809.pt"
-        distill_weight = 1.0
+        # Teacher-action distillation anchored to SOTA 3830: strong far-range
+        # anchor preserves SR, relaxed near-target anchor lets the student
+        # refine approach/braking; time penalty -1.0 is the SPL signal.
+        teacher_path = "{LEGGED_GYM_ROOT_DIR}/logs/rotunbot_target_repro/Aug15_23-21-49_uniform_time1_from3820/model_3830.pt"
+        distill_weight = 0.5
         distill_anneal_steps = 400
         distill_far_distance = 1.5
-        distill_near_weight = 0.2
+        distill_near_weight = 0.3
 
     class runner:
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 100
-        save_interval = 10
+        max_iterations = 500
+        save_interval = 50
         experiment_name = "rotunbot_target_repro"
-        run_name = "uniform_t1_sig15_from3809"
+        run_name = "uniform_t1_long500_from3809"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
