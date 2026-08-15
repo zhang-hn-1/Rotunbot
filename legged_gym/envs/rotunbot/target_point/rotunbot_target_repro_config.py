@@ -150,7 +150,7 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # Brake gate for _reward_near_goal_speed: 0.20 matches the formal
         # success radius; 0.50 starts braking earlier to cut overshoot under
         # the stronger (100/600) executor.
-        near_goal_brake_distance = 0.5
+        near_goal_brake_distance = 0.20
 
         # Route B: radial approach shaping against premature stopping.
         # Within radial_gate_distance the policy should approach at a speed
@@ -190,7 +190,7 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
             radial_approach = 0.0
 
             # Detour penalty (scale of _reward_detour): direct SPL shaping.
-            detour = -0.02
+            detour = 0.0
 
             # Graduation-only terms are disabled in this paper-inspired run.
             ang_vel_xy = 0.0
@@ -264,7 +264,7 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 6
         save_interval = 1
         experiment_name = "rotunbot_target_repro"
-        run_name = "detour_stage1_from3809"
+        run_name = "ACCEPTED_3809_executor100_600"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
