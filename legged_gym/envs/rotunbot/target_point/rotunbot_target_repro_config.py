@@ -182,7 +182,7 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
             balance = 0.4
             torques = -1.0e-5
             action_rate = -0.004
-            time = -0.5
+            time = -1.0
             overturn = -0.5
             lin_vel_x_limit = -1.0
             ang_vel_z_limit = -0.2
@@ -277,14 +277,14 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 50
-        save_interval = 10
+        max_iterations = 30
+        save_interval = 5
         experiment_name = "rotunbot_target_repro"
-        run_name = "uniform_gain100_600_from3809"
+        run_name = "uniform_time1_from3820"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
         load_optimizer = False
-        load_run = "Aug14_18-56-25_push_recovery_lownoise_from3806"
-        checkpoint = 3809
+        load_run = "Aug15_22-07-11_uniform_gain100_600_from3809"
+        checkpoint = 3820
         resume_path = None
