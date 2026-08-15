@@ -276,10 +276,10 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 500
+        max_iterations = 1000
         save_interval = 50
         experiment_name = "rotunbot_target_repro"
-        run_name = "uniform_t1_long500_from3809"
+        run_name = "uniform_t1_long1000_from3809"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
