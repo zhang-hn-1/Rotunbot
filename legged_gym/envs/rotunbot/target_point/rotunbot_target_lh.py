@@ -506,7 +506,18 @@ class RotunbotTargetLH(LeggedRobot):
         # law below for the requested velocity/position targets; this is an
         # equivalent commanded-effort estimate used only for reward/logging.
         # The actual target tensors above remain unchanged.
-        velocity_gain = float(getattr(control, "direct_velocity_gain", 35.0))
+        # Per-env randomized velocity gain (domain randomization): when
+        # direct_velocity_gain_randomize is enabled the env resets sample a
+        # gain per environment from direct_velocity_gain_range, so the policy
+        # learns to be robust across executor strengths.  Evaluation keeps
+        # randomize off and uses the fixed configured gain.
+        if (
+            getattr(control, "direct_velocity_gain_randomize", False)
+            and hasattr(self, "direct_gains")
+        ):
+            velocity_gain = self.direct_gains
+        else:
+            velocity_gain = float(getattr(control, "direct_velocity_gain", 35.0))
         position_gain = float(getattr(control, "direct_position_gain", 300.0))
         position_damping = float(getattr(control, "direct_position_damping", 150.0))
         # Distance-scheduled velocity gain: raise the loop gain close to the

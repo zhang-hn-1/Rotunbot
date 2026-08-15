@@ -149,3 +149,31 @@ destroyed seed-7 SR (90% -> <=85%).  Only the executor-only change improved
 SR/CLS.  SPL 0.5178 stands as the achievable limit under this protocol;
 further SPL work would require a different training paradigm (e.g. an
 observation redesign trained from scratch).
+
+## Addendum (2026-08-15, balance metric aligned to paper Table II)
+
+Audited the balance metric against the paper.  Table II prints
+`exp(w_bx^2 + w_by^2)` (roll/pitch body rates) with weight 0.4; the missing
+minus sign is a print typo (exp(+w^2) >= 1 cannot produce the reported
+Balance Metric 75.52), so the corrected signed form `exp(-(w_bx^2 + w_by^2))`
+is implemented.
+
+Changes applied to respect the paper definition:
+
+- `rotunbot_target_repro.py`: `_reward_balance` and the cached
+  `terminal_balance_reward` now use body-frame x/y (roll/pitch) angular
+  rates instead of y/z (pitch/yaw).  The training reward weight in
+  `rotunbot_target_repro_config.py` is 0.4 (was 0.1; the accepted baseline
+  model_3809 was trained with 0.1, and the metric itself is weight-free).
+- `evaluate_target_repro.py`: the per-step balance metric and the
+  `play.py` logger use the same x/y axes.
+- `evaluate_target_repro.py`: traces now also store body-frame `ang_vel`
+  (3-D), so the balance metric can be recomputed offline under either axis
+  convention after a GPU re-run.
+
+IMPORTANT: all balance numbers reported before this change (3809 nominal
+93.85, 3809 v100/p600 ~85.7, paper 75.52 ± 2.32) were computed with the old
+pitch/yaw (y/z) convention and are NOT directly comparable to the paper.
+The paper-axes numbers require re-running the fixed-manifest evaluation
+(GPU), which also changes training-signal behavior for any future retrain
+from model_3809.

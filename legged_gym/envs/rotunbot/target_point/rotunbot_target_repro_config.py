@@ -50,13 +50,17 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         direct_position_limit = 0.45
         direct_drive_gain_scale = 1.0
         # Torque-law gains of the DIRECT_VP_TORQUE executor (defaults match the
-        # historical hard-coded 35/300/150 values).  Kept at the historical
-        # constant 35: global gain 100 raised SR/CLS but cut SPL and caused
-        # seed-3 oscillation; scheduled and retrained variants regressed.
+        # historical hard-coded 35/300/150 values).  Accepted baseline uses
+        # velocity 100 / position 600 (SR 90%, CLS 0.19, SPL 0.5178).
         direct_velocity_gain = 100.0
         direct_velocity_gain_near = 0.0
         direct_gain_near_distance = 1.5
         direct_gain_ramp_width = 0.8
+        # Domain randomization: sample the velocity gain per episode from
+        # this range during training so the policy is robust across executor
+        # strengths; evaluation keeps it disabled and uses the fixed gain.
+        direct_velocity_gain_randomize = True
+        direct_velocity_gain_range = [35.0, 100.0]
         direct_position_gain = 600.0
         direct_position_damping = 150.0
         # Safe continuation from the old R-controller checkpoint.
@@ -84,7 +88,7 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # Preserve the full-map distribution while increasing exposure to the
         # lateral 1--4 m region that dominates seed-11 F1/F4 failures (the
         # configuration that produced the accepted model 3813).
-        hard_side_target_probability = 0.35
+        hard_side_target_probability = 0.0
         hard_side_distance_min = 1.0
         hard_side_distance_max = 4.0
         hard_side_bearing_min_deg = 60.0
@@ -172,7 +176,10 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
             approaching_target = 0.5
             to_target = 1.5
             stop = 20.0
-            balance = 0.1
+            # Paper Table II balance reward weight (0.4).  The accepted
+            # baseline model_3809 was trained with 0.1; the metric itself is
+            # weight-free, so this only affects future training runs.
+            balance = 0.4
             torques = -1.0e-5
             action_rate = -0.004
             time = -0.5
@@ -270,10 +277,10 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 30
-        save_interval = 5
+        max_iterations = 50
+        save_interval = 10
         experiment_name = "rotunbot_target_repro"
-        run_name = "ACCEPTED_3809_executor100_600"
+        run_name = "uniform_gain100_600_from3809"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True

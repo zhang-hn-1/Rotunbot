@@ -347,9 +347,9 @@ def evaluate_checkpoint(args, checkpoint):
         else:
             terminal_pos = env.root_states[0, :2].detach()
             goal_distance_sample = env.goal_dist[0].detach()
-            # Paper Table II balance reward (pitch/yaw angular rates).
+            # Paper Table II balance reward (roll/pitch angular rates, x/y).
             balance_reward_sample = torch.exp(
-                -torch.sum(torch.square(env.base_ang_vel[0, 1:3]))
+                -torch.sum(torch.square(env.base_ang_vel[0, :2]))
             )
         episode["path_length"] += float(
             torch.linalg.norm(terminal_pos - episode["previous_pos"]).item()

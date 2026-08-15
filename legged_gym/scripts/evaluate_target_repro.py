@@ -127,6 +127,12 @@ def _parse_user_args():
         ),
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--uniform-targets",
+        action="store_true",
+        help="generate-scenarios: disable hard-side sampling so the manifest "
+        "follows the paper's uniform random-target protocol.",
+    )
     known, _ = parser.parse_known_args()
     return known
 
@@ -163,6 +169,10 @@ def _configure(seed, control_type="DIRECT_VP_TORQUE", perturbation="nominal"):
     env_cfg.evaluation.target_error_threshold = DISTANCE_THRESHOLD
     env_cfg.evaluation.stop_velocity_threshold = SPEED_THRESHOLD
     env_cfg.control.control_type = control_type
+    # Evaluation always uses the fixed configured executor gains: the
+    # training-only per-episode gain randomization must not leak into the
+    # measured protocol.
+    env_cfg.control.direct_velocity_gain_randomize = False
     # All three executors receive the same action targets and slew limits.
     env_cfg.control.decimation = 1
     env_cfg.control.rate_limit_1 = 0.02
@@ -229,9 +239,18 @@ def _capture_scenario(env):
     }
 
 
-def generate_scenarios(seed, episodes, output_path):
-    """Generate the exact reset states used by every paired evaluation."""
-    _, env, _ = _make_env(seed)
+def generate_scenarios(seed, episodes, output_path, uniform_targets=False):
+    """Generate the exact reset states used by every paired evaluation.
+
+    With ``uniform_targets`` the hard-side sampling is disabled so the
+    manifest matches the paper's "random targets" protocol (uniform full-map
+    sampling) instead of the training mixture.
+    """
+    args, env_cfg, train_cfg = _configure(seed)
+    if uniform_targets:
+        env_cfg.commands.hard_side_target_probability = 0.0
+        env_cfg.commands.target_curriculum = False
+    env, _ = task_registry.make_env(name=TASK, args=args, env_cfg=env_cfg)
     try:
         # BaseTask.reset performs the same initial reset/zero-action transition
         # used by the policy runner.  Subsequent direct reset_idx calls consume
@@ -391,11 +410,13 @@ def _trace_state(env, action, done):
         speed = float(env.terminal_speed[0].item())
         dof_vel = env._strict_terminal_dof_vel.detach().cpu().numpy()
         roll = float(env._strict_terminal_roll.item())
+        ang_vel = env._strict_terminal_ang_vel.detach().cpu().numpy()
     else:
         position = env.root_states[0, :2].detach().cpu().numpy().copy()
         speed = float(torch.linalg.norm(env.base_lin_vel[0]).item())
         dof_vel = env.dof_vel[0].detach().cpu().numpy().copy()
         roll = float(env.base_euler_tensor[0, 0].item())
+        ang_vel = env.base_ang_vel[0].detach().cpu().numpy().copy()
     distance = float(env.terminal_goal_dist[0].item()) if done else float(env.goal_dist[0].item())
     return {
         "x": float(position[0]),
@@ -405,6 +426,9 @@ def _trace_state(env, action, done):
         "action": action.detach().cpu().numpy().astype(np.float32).copy(),
         "joint_velocity": np.asarray(dof_vel, dtype=np.float32).copy(),
         "roll": roll,
+        # Body-frame base angular velocity (x/y/z), stored so the balance
+        # metric can be recomputed offline under any axis convention.
+        "ang_vel": np.asarray(ang_vel, dtype=np.float32).copy(),
     }
 
 
@@ -446,6 +470,7 @@ def _write_trace(path, trace, row):
         action=np.asarray(trace["action"], dtype=np.float32),
         joint_velocity=np.asarray(trace["joint_velocity"], dtype=np.float32),
         roll=np.asarray(trace["roll"], dtype=np.float32),
+        ang_vel=np.asarray(trace["ang_vel"], dtype=np.float32),
         dt=np.asarray([0.02], dtype=np.float32),
         metadata=np.asarray([json.dumps(row, ensure_ascii=False)], dtype=object),
     )
@@ -505,6 +530,7 @@ def evaluate_worker(args, checkpoint, seed, episodes, scenario_file, phase, outp
                      "distance": [initial_distance], "speed": [0.0],
                      "action": [np.zeros(env.num_actions, dtype=np.float32)],
                      "joint_velocity": [scenario["dof_vel"]], "roll": [0.0],
+                     "ang_vel": [np.zeros(3, dtype=np.float32)],
                      "overshoot_count": 0, "reentry_count": 0}
             inside_previous = initial_distance <= DISTANCE_THRESHOLD
             ever_enter = inside_previous
@@ -539,12 +565,12 @@ def evaluate_worker(args, checkpoint, seed, episodes, scenario_file, phase, outp
                         trace["reentry_count"] += 1
                     inside_previous = current_inside
                     balance_reward = math.exp(
-                        -float(np.sum(np.square(env._strict_terminal_ang_vel.detach().cpu().numpy()[1:3])))
+                        -float(np.sum(np.square(env._strict_terminal_ang_vel.detach().cpu().numpy()[:2])))
                     ) if done else math.exp(
-                        -float(torch.sum(torch.square(env.base_ang_vel[0, 1:3])).item())
+                        -float(torch.sum(torch.square(env.base_ang_vel[0, :2])).item())
                     )
                     balance_sum += balance_reward
-                    for key in ("x", "y", "distance", "speed", "action", "joint_velocity", "roll"):
+                    for key in ("x", "y", "distance", "speed", "action", "joint_velocity", "roll", "ang_vel"):
                         trace[key].append(sample[key])
 
                     if done:
@@ -566,7 +592,7 @@ def evaluate_worker(args, checkpoint, seed, episodes, scenario_file, phase, outp
                 raise RuntimeError(f"episode {episode_id} exceeded evaluation guard")
 
             trace_arrays = {k: np.asarray(trace[k]) for k in
-                            ("x", "y", "distance", "speed", "action", "joint_velocity", "roll")}
+                            ("x", "y", "distance", "speed", "action", "joint_velocity", "roll", "ang_vel")}
             min_distance = float(np.min(trace_arrays["distance"]))
             final_distance = float(env.terminal_goal_dist[0].item())
             final_speed = float(env.terminal_speed[0].item())
@@ -1096,7 +1122,10 @@ def main():
     if args.mode == "generate-scenarios":
         if not args.scenario_file:
             raise ValueError("--scenario-file is required")
-        generate_scenarios(args.seed, args.episodes, args.scenario_file)
+        generate_scenarios(
+            args.seed, args.episodes, args.scenario_file,
+            uniform_targets=args.uniform_targets,
+        )
     elif args.mode == "worker":
         if args.checkpoint is None or not args.scenario_file:
             raise ValueError("worker requires --checkpoint and --scenario-file")

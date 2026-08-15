@@ -31,6 +31,16 @@ class RotunbotTargetRepro(RotunbotTargetLH):
     def _init_buffers(self):
         super()._init_buffers()
 
+        # Per-env executor velocity gain for domain randomization (reset
+        # samples it when direct_velocity_gain_randomize is enabled).
+        self.direct_gains = torch.full(
+            (self.num_envs,),
+            float(
+                getattr(self.cfg.control, "direct_velocity_gain", 35.0)
+            ),
+            device=self.device,
+        )
+
         latency_cfg = getattr(self.cfg, "latency", None)
         self.latency_enabled = bool(
             latency_cfg is not None and getattr(latency_cfg, "enabled", False)
@@ -169,6 +179,15 @@ class RotunbotTargetRepro(RotunbotTargetLH):
             terminal_success = self.success_buf[env_ids].detach().clone()
 
         super().reset_idx(env_ids)
+
+        # Domain-randomize the executor velocity gain per episode.
+        if len(env_ids) > 0 and getattr(
+            self.cfg.control, "direct_velocity_gain_randomize", False
+        ):
+            lo, hi = self.cfg.control.direct_velocity_gain_range
+            self.direct_gains[env_ids] = torch_rand_float(
+                float(lo), float(hi), (len(env_ids),), device=self.device
+            )
 
         if terminal_success is not None:
             self._update_target_curriculum(terminal_success)
@@ -560,11 +579,14 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         # finished environment with the next episode's initial state.
         self.terminal_goal_dist[:] = self.goal_dist
         self.terminal_speed[:] = torch.linalg.norm(self.base_lin_vel, dim=1)
-        # Paper Table II balance term, using the pitch/yaw angular rates
-        # (omega_by and omega_bz).  This is cached before reset for evaluation
-        # and uses the same definition as the training reward below.
+        # Paper Table II balance term on the roll/pitch angular rates
+        # (omega_bx and omega_by, body-frame x/y axes).  The paper print
+        # omits the minus sign (a typo: exp(+w^2) >= 1 cannot yield the
+        # reported Balance Metric 75.52); the corrected signed form is used.
+        # This is cached before reset for evaluation and uses the same
+        # definition as the training reward below.
         self.terminal_balance_reward[:] = torch.exp(
-            -torch.sum(torch.square(self.base_ang_vel[:, 1:3]), dim=1)
+            -torch.sum(torch.square(self.base_ang_vel[:, :2]), dim=1)
         )
         self.terminal_position[:] = self.root_states[:, :2]
         self.terminal_timeout[:] = self.time_out_buf
@@ -620,9 +642,11 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         return torch.relu(step_len - progress)
 
     def _reward_balance(self):
-        # Penalize pitch/yaw angular motion.  The previous implementation used
-        # roll/pitch (x/y), which did not directly discourage in-place yaw spin.
-        return torch.exp(-torch.sum(torch.square(self.base_ang_vel[:, 1:3]), dim=1))
+        # Paper Table II balance reward: exp(-(w_bx^2 + w_by^2)) on the
+        # body-frame roll/pitch angular rates (x/y axes), with the corrected
+        # negative exponent (the paper print drops the minus sign).  A stable
+        # roll has w_bx, w_by -> 0 so the reward -> 1; shaking lowers it.
+        return torch.exp(-torch.sum(torch.square(self.base_ang_vel[:, :2]), dim=1))
 
     def _reward_near_goal_speed(self):
         # Brake earlier than the formal 0.20 m radius when configured: under a
