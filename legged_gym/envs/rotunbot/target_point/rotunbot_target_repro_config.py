@@ -147,14 +147,14 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         # ~0.7 m (exp(-(1.0/0.5)^2)=0.018), leaving a reward hole in 0.4--1.5 m
         # where seed-7 F4 episodes stop; widen it so the approach gradient
         # persists out to ~2 m.
-        tracking_sigma_main = 0.5
+        tracking_sigma_main = 1.5
         progress_target_speed = 0.6
         soft_dof_pos_limit = 1.0
         stop_reward_multiplier = 1.0
         # Brake gate for _reward_near_goal_speed: 0.20 matches the formal
         # success radius; 0.50 starts braking earlier to cut overshoot under
         # the stronger (100/600) executor.
-        near_goal_brake_distance = 0.50
+        near_goal_brake_distance = 0.20
 
         # Route B: radial approach shaping against premature stopping.
         # Within radial_gate_distance the policy should approach at a speed
@@ -277,14 +277,14 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         policy_class_name = "ActorCriticDWL"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 30
-        save_interval = 5
+        max_iterations = 100
+        save_interval = 10
         experiment_name = "rotunbot_target_repro"
-        run_name = "uniform_brake05_from3830"
+        run_name = "uniform_t1_sig15_from3809"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
         load_optimizer = False
-        load_run = "Aug15_23-21-49_uniform_time1_from3820"
-        checkpoint = 3830
+        load_run = "Aug14_18-56-25_push_recovery_lownoise_from3806"
+        checkpoint = 3809
         resume_path = None
