@@ -125,3 +125,27 @@ The active direction is nominal SR/SPL/CLS improvement.  Priority order:
    a rollback baseline.
 5. Run real-robot calibration/System-ID and 40-trial physical tests. Simulation
    metrics alone cannot establish paper-level real-world performance.
+
+## Final update (2026-08-15): accepted baseline = model 3809 + executor gains (100,600)
+
+User approved this as the formal baseline (SPL gate re-baselined to the new
+executor protocol).
+
+| Metric | Paper | Accepted baseline | Note |
+|---|---:|---:|---|
+| SR | 88.87% | **90.0% (108/120)** | exceeds paper |
+| SPL | 0.6375 | 0.5178 | recorded limit under this protocol |
+| CLS | 0.2092 m | **0.1909 m** | exceeds paper |
+
+- Executor: DIRECT_VP_TORQUE gains velocity=100, position=600 (config
+  parameters, defaults 35/300/150 unchanged for other tasks).
+- Policy: model 3809 (unchanged), 19-D observation, 2-D action.
+- Per-seed: 87.5 / 90.0 / 92.5 (seeds 3/7/11).
+
+21 retrain directions were exhausted (reward, observation blending, hard
+sampling, executor gains, step counts, exploration, time/detour/brake
+shaping, full and state-dependent teacher distillation); every retrain
+destroyed seed-7 SR (90% -> <=85%).  Only the executor-only change improved
+SR/CLS.  SPL 0.5178 stands as the achievable limit under this protocol;
+further SPL work would require a different training paradigm (e.g. an
+observation redesign trained from scratch).
