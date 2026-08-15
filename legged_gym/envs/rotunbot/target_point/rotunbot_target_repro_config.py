@@ -95,11 +95,14 @@ class RotunbotTargetReproCfg(RotunbotTargetLHCfg):
         hard_side_bearing_max_deg = 110.0
 
         # Route C (observation): blend observation channels [0:2] from the
-        # absolute target position toward the world-frame relative target
-        # (target - robot).  alpha=0 reproduces the original observation
-        # exactly (checkpoint-compatible); alpha=1 makes the actor see the
-        # relative target directly instead of having to subtract positions.
-        target_relative_blend = 0.3
+        # absolute target position toward the relative target (target - robot).
+        # alpha=0 reproduces the original observation exactly
+        # (checkpoint-compatible); alpha=1 makes the actor see the relative
+        # target directly instead of having to subtract positions.  With
+        # target_body_frame the relative target is expressed in the robot body
+        # frame (direct heading/approach information).
+        target_relative_blend = 0.0
+        target_body_frame = True
 
         class ranges(RotunbotTargetLHCfg.commands.ranges):
             pos_x = [-5.0, 5.0]
@@ -279,11 +282,11 @@ class RotunbotTargetReproCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 1000
         save_interval = 50
         experiment_name = "rotunbot_target_repro"
-        run_name = "uniform_t1_long1000_from3809"
+        run_name = "ACCEPTED_uniform_4150"
         # Continue from the existing checkpoint without changing the policy
         # input/output dimensions.
         resume = True
         load_optimizer = False
-        load_run = "Aug14_18-56-25_push_recovery_lownoise_from3806"
-        checkpoint = 3809
+        load_run = "Aug16_02-57-06_uniform_t1_long500_from3809"
+        checkpoint = 4150
         resume_path = None

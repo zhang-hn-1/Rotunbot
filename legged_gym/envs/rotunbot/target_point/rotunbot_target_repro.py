@@ -150,10 +150,13 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         channels [0:2] and the robot position in [2:4], forcing the network to
         subtract them itself.  With ``cfg.commands.target_relative_blend == a``,
         every stacked frame's target channels become
-        ``(1-a)*absolute_target + a*(target - robot)`` (world frame, same
-        scaling).  a=0 is byte-identical to the original observation, so the
-        parent checkpoint loads and behaves exactly as before; a is then raised
-        across stages so the policy adapts gradually.
+        ``(1-a)*absolute_target + a*relative_target``, where relative_target is
+        the target offset in world frame, or in the robot body frame when
+        ``cfg.commands.target_body_frame`` is enabled (the robot then directly
+        observes where the target lies relative to its own heading).  a=0 is
+        byte-identical to the original observation, so the parent checkpoint
+        loads and behaves exactly as before; a is then raised across stages so
+        the policy adapts gradually.
         """
         super().compute_observations()
 
@@ -164,6 +167,18 @@ class RotunbotTargetRepro(RotunbotTargetLH):
         relative_target = (
             self.commands[:, :2] - self.root_states[:, :2]
         ) * self.obs_scales.command
+        if getattr(self.cfg.commands, "target_body_frame", False):
+            dir3 = torch.cat(
+                [
+                    self.commands[:, :2] - self.root_states[:, :2],
+                    torch.zeros_like(relative_target[:, :1]),
+                ],
+                dim=1,
+            )
+            relative_target = (
+                _quat_rotate_inverse_local(self.base_quat, dir3)[:, :2]
+                * self.obs_scales.command
+            )
         single = int(self.cfg.env.num_single_obs)
         frames = int(self.cfg.env.frame_stack)
         for t in range(frames):
