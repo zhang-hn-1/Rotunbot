@@ -33,9 +33,13 @@ class RotunbotMazeSRU(RotunbotMaze):
 
     def _init_buffers(self):
         super()._init_buffers()
-        # Critic uses the same (stacked) observations; no privileged channel.
-        self.num_privileged_obs = None
-        self.privileged_obs_buf = None
+        # Critic sees the same (stacked) observations as the actor.
+        self.num_privileged_obs = int(self.cfg.env.num_observations)
+        self.privileged_obs_buf = torch.zeros(
+            self.num_envs, self.num_privileged_obs,
+            device=self.device, dtype=torch.float,
+        )
+        self.num_single_obs = int(self.cfg.env.num_single_obs)
         self.num_short_obs = int(
             self.cfg.env.num_single_obs * self.cfg.env.short_frame_stack
         )
@@ -126,6 +130,7 @@ class RotunbotMazeSRU(RotunbotMaze):
         self.obs_buf = torch.stack(list(self.obs_history), dim=1).reshape(
             self.num_envs, -1
         )
+        self.privileged_obs_buf[:] = self.obs_buf
 
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)

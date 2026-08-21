@@ -21,7 +21,7 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         frame_stack = 20
         short_frame_stack = 5
         num_observations = int(frame_stack * num_single_obs)  # 700
-        num_privileged_obs = None
+        num_privileged_obs = int(frame_stack * num_single_obs)  # 700 (critic = same stacked obs)
         # Longer horizon for long maze paths; tune if episodes time out.
         episode_length_s = 60
 
