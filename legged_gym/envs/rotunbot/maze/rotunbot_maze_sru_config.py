@@ -140,10 +140,10 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         max_iterations = 400
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150_stage5_frontgate"
+        run_name = "sru_maze_mod4150_stage6_clip"
         # Continue stage-1 model_300 with the relaxed env (no collision
         # termination, 120 s episodes).
         resume = True
         load_optimizer = False
-        load_run = "Aug22_01-42-06_sru_maze_mod4150_stage4_gate"
-        checkpoint = 1600
+        load_run = "Aug22_02-11-00_sru_maze_mod4150_stage5_frontgate"
+        checkpoint = 2000

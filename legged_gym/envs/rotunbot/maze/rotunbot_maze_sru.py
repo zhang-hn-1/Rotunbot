@@ -138,6 +138,15 @@ class RotunbotMazeSRU(RotunbotMaze):
             for frame in self.obs_history:
                 frame[env_ids] = 0.0
 
+    def step(self, actions):
+        # Clip to the frozen base policy's output range ([-3, 3] on the flat
+        # task).  The observation carries the previous RAW action in channels
+        # 17:18; without this clip an out-of-distribution output snowballs
+        # through the feedback (observed up to +/-70) and the base policy
+        # extrapolates badly in the maze.
+        actions = torch.clip(actions, -3.0, 3.0)
+        return super().step(actions)
+
     # -- reward: silent version of the obstacle to_target (no per-step print) --
 
     def _reward_to_target(self):
