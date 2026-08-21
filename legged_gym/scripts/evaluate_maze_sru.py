@@ -70,6 +70,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=40)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    args.run_dir = str(Path(args.run_dir).resolve())
 
     sys.argv = [
         sys.argv[0], "--headless", "--sim_device=cuda:0", "--rl_device=cuda:0",

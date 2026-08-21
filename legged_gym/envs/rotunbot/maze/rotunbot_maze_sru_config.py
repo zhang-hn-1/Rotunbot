@@ -23,7 +23,7 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         num_observations = int(frame_stack * num_single_obs)  # 700
         num_privileged_obs = int(frame_stack * num_single_obs)  # 700 (critic = same stacked obs)
         # Longer horizon for long maze paths; tune if episodes time out.
-        episode_length_s = 60
+        episode_length_s = 120
 
     class normalization(RotunbotMazeCfg.normalization):
         # LH / paper-reproduction obs scales so the first 19 channels are
@@ -39,8 +39,10 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
             height_measurements = 5.0
 
     class maze(RotunbotMazeCfg.maze):
-        # Collision ends the episode so the policy learns to avoid walls.
-        terminate_on_collision = True
+        # Collisions are penalized by the reward but do NOT end the episode,
+        # so the policy can learn to recover from wall bumps (stage 1 used
+        # terminate_on_collision=True and stuck at 0% success).
+        terminate_on_collision = False
 
 
 class _MazeSRUCommonPolicy:
@@ -118,9 +120,13 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         policy_class_name = "ActorCriticSRUModulate"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 300
+        max_iterations = 400
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150"
-        resume = False
+        run_name = "sru_maze_mod4150_stage2"
+        # Continue stage-1 model_300 with the relaxed env (no collision
+        # termination, 120 s episodes).
+        resume = True
         load_optimizer = False
+        load_run = "Aug21_23-44-54_sru_maze_mod4150"
+        checkpoint = 300
