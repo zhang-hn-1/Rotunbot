@@ -136,6 +136,12 @@ def _parse_user_args():
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
+        "--task",
+        default=TASK,
+        help="Task registry name; enables evaluating SRU policies "
+        "(rotunbot_target_sru / rotunbot_target_sru_mod).",
+    )
+    parser.add_argument(
         "--uniform-targets",
         action="store_true",
         help="generate-scenarios: disable hard-side sampling so the manifest "
