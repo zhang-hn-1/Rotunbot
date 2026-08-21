@@ -274,6 +274,7 @@ class ActorCriticSRUModulate(nn.Module):
         base_trainable: bool = False,
         base_proprio_obs: Optional[int] = None,
         mod_gate_distance: Optional[float] = None,
+        mod_max_delta: float = 1.0,
         in_channels: int = 20,
         sru_hidden_size: int = 128,
         sru_memory_size: int = 32,
@@ -303,6 +304,7 @@ class ActorCriticSRUModulate(nn.Module):
         self.mod_gate_distance = (
             float(mod_gate_distance) if mod_gate_distance is not None else None
         )
+        self.mod_max_delta = float(mod_max_delta)
         if not (0 < self.base_proprio_obs <= self.num_proprio_obs):
             raise ValueError("base_proprio_obs must be within [1, num_proprio_obs]")
 
@@ -471,13 +473,16 @@ class ActorCriticSRUModulate(nn.Module):
         return base_mean
 
     def _mod_gate(self, observations: Tensor) -> Tensor:
-        """Wall-proximity gate for the residual.
+        """Front-ray gate for the residual (bug-algorithm prior).
 
         When ``mod_gate_distance`` is set, the last frame's wall-ray channels
-        (rays appended after the base channels) gate the modulation: far from
-        any wall the SRU residual is zeroed so the frozen base policy's
-        goal-approach/braking behavior acts alone; near walls the residual is
-        fully active for avoidance.  Returns ``[batch, 1]`` in [0, 1].
+        (rays appended after the base channels) gate the modulation using the
+        FRONT rays (heading sector).  In a maze corridor the side walls are
+        always within ~1 m, so gating on the minimum ray keeps the residual
+        active everywhere and the base still drives into walls.  Gating on the
+        front rays instead lets the frozen base drive straight toward the
+        target while the corridor ahead is clear, and hands control to the
+        SRU residual only when a wall blocks the path.  Returns ``[batch, 1]``.
         """
         if self.mod_gate_distance is None:
             return torch.ones(
@@ -485,9 +490,10 @@ class ActorCriticSRUModulate(nn.Module):
             )
         history = self._history(observations)
         rays = history[:, -1, self.base_proprio_obs : self.num_proprio_obs]
-        min_ray = rays.min(dim=-1).values
+        # Rays 0..2 cover +/-22.5 deg around the body heading.
+        front = rays[:, :3].min(dim=-1).values
         gate = torch.clamp(
-            (self.mod_gate_distance - min_ray) / self.mod_gate_distance,
+            (self.mod_gate_distance - front) / self.mod_gate_distance,
             0.0,
             1.0,
         )
@@ -496,6 +502,7 @@ class ActorCriticSRUModulate(nn.Module):
     def update_distribution(self, observations: Tensor) -> None:
         base_mean = self._base_mean(observations)
         delta = self.modulator(self._modulation_features(observations))
+        delta = torch.tanh(delta) * self.mod_max_delta
         delta = delta * self._mod_gate(observations)
         mean = base_mean + delta
         _clamp_std(self.std, self.min_noise_std, self.max_noise_std)
@@ -510,6 +517,7 @@ class ActorCriticSRUModulate(nn.Module):
     def act_inference(self, observations: Tensor) -> Tensor:
         base_mean = self._base_mean(observations)
         delta = self.modulator(self._modulation_features(observations))
+        delta = torch.tanh(delta) * self.mod_max_delta
         delta = delta * self._mod_gate(observations)
         return base_mean + delta
 

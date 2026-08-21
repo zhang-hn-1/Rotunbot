@@ -120,7 +120,8 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         )
         base_trainable = False
         base_proprio_obs = 19  # base consumes channels 0:19 of each frame
-        mod_gate_distance = 1.5  # SRU residual active only within 1.5 m of walls
+        mod_gate_distance = 0.8  # front-ray gate: SRU active only when a wall blocks ahead
+        mod_max_delta = 1.0      # residual bounded, base stays dominant
         mod_hidden_dims = [256, 128]
 
     class algorithm(RotunbotMazeCfgPPO.algorithm):
@@ -139,10 +140,10 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         max_iterations = 400
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150_stage4_gate"
+        run_name = "sru_maze_mod4150_stage5_frontgate"
         # Continue stage-1 model_300 with the relaxed env (no collision
         # termination, 120 s episodes).
         resume = True
         load_optimizer = False
-        load_run = "Aug22_01-08-41_sru_maze_mod4150_stage3"
-        checkpoint = 1200
+        load_run = "Aug22_01-42-06_sru_maze_mod4150_stage4_gate"
+        checkpoint = 1600
