@@ -10,6 +10,10 @@ import torch
 
 from legged_gym.dwl.ppo_dwl import PPODWL
 from legged_gym.dwl.actor_critic_dwl import ActorCriticDWL
+from legged_gym.dwl.actor_critic_sru_lh import (
+    ActorCriticSRULH,
+    ActorCriticSRUModulate,
+)
 from rsl_rl.env import VecEnv
 
 

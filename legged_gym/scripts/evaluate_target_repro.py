@@ -89,6 +89,14 @@ EPISODES_FINAL = 40
 EPISODE_LENGTH_SECONDS = 60.0
 MANDATORY_CHECKPOINTS = (2050, 2150, 3100)
 
+# Overridden by --task so SRU policies (rotunbot_target_sru / _sru_mod) can be
+# evaluated with the same protocol as the DWL-CNN baseline.
+_EVAL_TASK = None
+
+
+def _task():
+    return _EVAL_TASK if _EVAL_TASK else TASK
+
 DETAIL_FIELDS = [
     "phase", "seed", "checkpoint", "episode_id", "start_x", "start_y",
     "target_x", "target_y", "initial_yaw", "success", "termination_reason",
@@ -151,7 +159,7 @@ def _gym_args():
 
 def _configure(seed, control_type="DIRECT_VP_TORQUE", perturbation="nominal"):
     args = _gym_args()
-    env_cfg, train_cfg = task_registry.get_cfgs(name=TASK)
+    env_cfg, train_cfg = task_registry.get_cfgs(name=_task())
     train_cfg.seed = int(seed)
     env_cfg.seed = int(seed)
 
@@ -217,7 +225,7 @@ def _close_env(env):
 
 def _make_env(seed, control_type="DIRECT_VP_TORQUE", perturbation="nominal"):
     args, env_cfg, train_cfg = _configure(seed, control_type, perturbation)
-    env, _ = task_registry.make_env(name=TASK, args=args, env_cfg=env_cfg)
+    env, _ = task_registry.make_env(name=_task(), args=args, env_cfg=env_cfg)
     return args, env, train_cfg
 
 
@@ -250,7 +258,7 @@ def generate_scenarios(seed, episodes, output_path, uniform_targets=False):
     if uniform_targets:
         env_cfg.commands.hard_side_target_probability = 0.0
         env_cfg.commands.target_curriculum = False
-    env, _ = task_registry.make_env(name=TASK, args=args, env_cfg=env_cfg)
+    env, _ = task_registry.make_env(name=_task(), args=args, env_cfg=env_cfg)
     try:
         # BaseTask.reset performs the same initial reset/zero-action transition
         # used by the policy runner.  Subsequent direct reset_idx calls consume
@@ -376,7 +384,7 @@ def _install_terminal_probe(env):
 def _load_policy(seed, checkpoint, run_dir, control_type, perturbation):
     args, env, train_cfg = _make_env(seed, control_type, perturbation)
     _install_terminal_probe(env)
-    args.task = TASK
+    args.task = _task()
     args.load_run = str(run_dir)
     args.checkpoint = int(checkpoint)
     train_cfg.runner.resume = True
@@ -1000,7 +1008,7 @@ def _write_report(output_dir, screening_rows, final_rows, top5, ranked):
         "",
         "## Scope and protocol",
         "",
-        f"- Task: `{TASK}`; checkpoint directory: `{Path(output_dir).parent}`",
+        f"- Task: `{_task()}`; checkpoint directory: `{Path(output_dir).parent}`",
         f"- Formal success: distance <= {DISTANCE_THRESHOLD:.2f} m AND speed <= {SPEED_THRESHOLD:.2f} m/s.",
         "- Evaluation only: no training and no reward/PPO/policy/history/curriculum/URDF/controller/target-sampler changes.",
         "- Observation noise, friction randomization, push disturbance, initial velocity randomization, and target curriculum were disabled for evaluation.",
@@ -1114,6 +1122,8 @@ def analyze_final(output_dir):
 
 def main():
     args = _parse_user_args()
+    global _EVAL_TASK
+    _EVAL_TASK = args.task
     args.run_dir = str(Path(args.run_dir).resolve())
     args.output_dir = str(Path(args.output_dir).resolve())
     if args.scenario_file:
