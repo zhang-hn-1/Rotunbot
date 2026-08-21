@@ -25,6 +25,11 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         # Longer horizon for long maze paths; tune if episodes time out.
         episode_length_s = 120
 
+    class commands(RotunbotMazeCfg.commands):
+        # Success radius aligned with the flat-plane protocol (0.20 m); the
+        # inherited 0.06 m is unreachable for the base policy's braking.
+        stop_distance = 0.20
+
     class normalization(RotunbotMazeCfg.normalization):
         # LH / paper-reproduction obs scales so the first 19 channels are
         # byte-compatible with the accepted flat-plane policy (4150).
@@ -37,6 +42,16 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
             dof_vel = 1.0
             pos = 0.2
             height_measurements = 5.0
+
+    class control(RotunbotMazeCfg.control):
+        # Align the first-axis loop gain with the base policy's executor
+        # (DIRECT_VP_TORQUE velocity gain 100) instead of the weak 35.
+        first_velocity_kp = 100.0
+
+    class rewards(RotunbotMazeCfg.rewards):
+        class scales(RotunbotMazeCfg.rewards.scales):
+            # Time penalty: wandering without reaching the target must cost.
+            time = -1.0
 
     class maze(RotunbotMazeCfg.maze):
         # Collisions are penalized by the reward but do NOT end the episode,
@@ -120,13 +135,13 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         policy_class_name = "ActorCriticSRUModulate"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 400
+        max_iterations = 500
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150_stage2"
+        run_name = "sru_maze_mod4150_stage3"
         # Continue stage-1 model_300 with the relaxed env (no collision
         # termination, 120 s episodes).
         resume = True
         load_optimizer = False
-        load_run = "Aug21_23-44-54_sru_maze_mod4150"
-        checkpoint = 300
+        load_run = "Aug22_00-36-31_sru_maze_mod4150_stage2"
+        checkpoint = 700

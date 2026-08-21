@@ -145,3 +145,8 @@ class RotunbotMazeSRU(RotunbotMaze):
             torch.square(self.commands[:, :2] - self.root_states[:, :2]), dim=1
         )
         return torch.exp(-pos_error / self.cfg.rewards.tracking_sigma_main)
+
+    def _reward_time(self):
+        # Constant per-step penalty so wandering without reaching the target
+        # costs (the obstacle env has no _reward_time).
+        return 1.0

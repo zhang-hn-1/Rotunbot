@@ -123,17 +123,17 @@ def main():
                     torch.norm(env.commands[0, :2] - env.root_states[0, :2]).item()
                 )
                 speed = float(torch.norm(env.base_lin_vel[0]).item())
-                if goal_dist <= 0.06 and speed <= 0.1:
+                if env.maze_collision_buf[0].item():
+                    collision = True  # record only; episode continues (matches training)
+                stop_radius = float(env.cfg.commands.stop_distance)
+                if goal_dist <= stop_radius and speed <= 0.1:
                     success = True
                     time_to_goal = steps * 0.02
-                    break
-                if env.maze_collision_buf[0].item():
-                    collision = True
                     break
                 if dones[0].item():
                     timeout = True
                     break
-                if steps > 3000:  # 60 s hard cap
+                if steps > 6000:  # 120 s hard cap (matches training horizon)
                     timeout = True
                     break
             results.append({
