@@ -226,3 +226,19 @@ class RotunbotMazeSRU(RotunbotMaze):
         # Constant per-step penalty so wandering without reaching the target
         # costs (the obstacle env has no _reward_time).
         return 1.0
+
+    def _reward_near_goal_speed(self):
+        # Brake shaping: inside the brake gate, penalize excess speed so the
+        # policy stops within the 0.20 m success radius (evaluation showed the
+        # robot passes through the target but never brakes).
+        brake_distance = float(
+            getattr(self.cfg.rewards, "near_goal_brake_distance", 0.50)
+        )
+        near_goal = (self.goal_dist <= brake_distance).float()
+        speed = torch.linalg.norm(self.base_lin_vel, dim=1)
+        stop_velocity = float(
+            getattr(getattr(self.cfg, "evaluation", None), "stop_velocity_threshold", 0.1)
+            if hasattr(self.cfg, "evaluation") else 0.1
+        )
+        excess_speed = torch.relu(speed - stop_velocity)
+        return near_goal * torch.square(excess_speed)

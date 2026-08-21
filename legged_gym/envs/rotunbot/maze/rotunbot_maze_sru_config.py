@@ -57,9 +57,13 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         first_velocity_kp = 100.0
 
     class rewards(RotunbotMazeCfg.rewards):
+        near_goal_brake_distance = 0.5
+
         class scales(RotunbotMazeCfg.rewards.scales):
             # Time penalty: wandering without reaching the target must cost.
             time = -1.0
+            # Brake shaping: excess speed inside the brake gate.
+            near_goal_speed = -0.2
 
     class maze(RotunbotMazeCfg.maze):
         # Collisions are penalized by the reward but do NOT end the episode,
@@ -145,13 +149,13 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         policy_class_name = "ActorCriticSRUModulate"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 400
+        max_iterations = 1500
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150_stage7_curriculum"
+        run_name = "sru_maze_mod4150_stage9_brake"
         # Continue stage-1 model_300 with the relaxed env (no collision
         # termination, 120 s episodes).
         resume = True
         load_optimizer = False
-        load_run = "Aug22_02-40-00_sru_maze_mod4150_stage6_clip"
-        checkpoint = 2400
+        load_run = "Aug22_03-43-01_sru_maze_mod4150_stage8_long"
+        checkpoint = 4300
