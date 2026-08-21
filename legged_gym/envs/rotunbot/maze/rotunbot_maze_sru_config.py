@@ -32,10 +32,10 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         # Goal-distance curriculum: start with targets near the spawn and
         # widen as the success rate rises (full maze at radius >= ~20 m).
         target_curriculum = True
-        target_curriculum_window = 4096
-        target_curriculum_success_rate = 0.70
+        target_curriculum_window = 2048
+        target_curriculum_success_rate = 0.45
         curriculum_goal_radius_start = 4.0
-        curriculum_goal_radius_step = 2.0
+        curriculum_goal_radius_step = 3.0
         curriculum_goal_radius_max = 20.0
 
     class normalization(RotunbotMazeCfg.normalization):
@@ -106,10 +106,10 @@ class RotunbotMazeSRUCfgPPO(RotunbotMazeCfgPPO):
         policy_class_name = "ActorCriticSRULH"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 300
-        save_interval = 25
+        max_iterations = 2000
+        save_interval = 50
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_direct"
+        run_name = "sru_maze_direct_nobase"
         resume = False
         load_optimizer = False
 
