@@ -82,6 +82,8 @@ def main():
     env_cfg.env.num_envs = 1
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
+    # Evaluation always uses the full maze (no goal-distance curriculum).
+    env_cfg.commands.target_curriculum = False
     env, _ = task_registry.make_env(name=TASK, args=gym_args, env_cfg=env_cfg)
 
     gym_args.task = TASK

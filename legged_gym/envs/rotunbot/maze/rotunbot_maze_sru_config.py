@@ -29,6 +29,14 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         # Success radius aligned with the flat-plane protocol (0.20 m); the
         # inherited 0.06 m is unreachable for the base policy's braking.
         stop_distance = 0.20
+        # Goal-distance curriculum: start with targets near the spawn and
+        # widen as the success rate rises (full maze at radius >= ~20 m).
+        target_curriculum = True
+        target_curriculum_window = 4096
+        target_curriculum_success_rate = 0.70
+        curriculum_goal_radius_start = 4.0
+        curriculum_goal_radius_step = 2.0
+        curriculum_goal_radius_max = 20.0
 
     class normalization(RotunbotMazeCfg.normalization):
         # LH / paper-reproduction obs scales so the first 19 channels are
@@ -140,10 +148,10 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         max_iterations = 400
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150_stage6_clip"
+        run_name = "sru_maze_mod4150_stage7_curriculum"
         # Continue stage-1 model_300 with the relaxed env (no collision
         # termination, 120 s episodes).
         resume = True
         load_optimizer = False
-        load_run = "Aug22_02-11-00_sru_maze_mod4150_stage5_frontgate"
-        checkpoint = 2000
+        load_run = "Aug22_02-40-00_sru_maze_mod4150_stage6_clip"
+        checkpoint = 2400

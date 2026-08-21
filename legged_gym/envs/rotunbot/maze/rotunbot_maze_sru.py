@@ -20,6 +20,7 @@ frame including wall rays.
 import collections
 import math
 
+import numpy as np
 import torch
 
 from .rotunbot_maze import RotunbotMaze
@@ -59,6 +60,7 @@ class RotunbotMazeSRU(RotunbotMaze):
             ],
             maxlen=self.cfg.env.frame_stack,
         )
+        self._init_goal_curriculum()
 
     # -- wall-ray sensing -----------------------------------------------------
 
@@ -133,10 +135,21 @@ class RotunbotMazeSRU(RotunbotMaze):
         self.privileged_obs_buf[:] = self.obs_buf
 
     def reset_idx(self, env_ids):
+        terminal_success = None
+        if len(env_ids) > 0 and hasattr(self, "success_buf"):
+            terminal_success = self.success_buf[env_ids].detach().clone()
         super().reset_idx(env_ids)
         if len(env_ids) > 0:
             for frame in self.obs_history:
                 frame[env_ids] = 0.0
+        if terminal_success is not None:
+            self._update_goal_curriculum(terminal_success)
+
+    def check_termination(self):
+        super().check_termination()
+        # The obstacle env computes arrived/stop but never publishes
+        # success_buf; the curriculum and evaluation need it.
+        self.success_buf = self.arrived_target_buf & self.stop_buf
 
     def step(self, actions):
         # Clip to the frozen base policy's output range ([-3, 3] on the flat
@@ -146,6 +159,60 @@ class RotunbotMazeSRU(RotunbotMaze):
         # extrapolates badly in the maze.
         actions = torch.clip(actions, -3.0, 3.0)
         return super().step(actions)
+
+    # -- target-distance curriculum (near -> far) -----------------------------
+
+    def _init_goal_curriculum(self):
+        self.curriculum_radius = float(
+            getattr(self.cfg.commands, "curriculum_goal_radius_start", 4.0)
+        )
+        self._goal_curriculum_successes = 0
+        self._goal_curriculum_attempts = 0
+
+    def _update_goal_curriculum(self, terminal_success):
+        if not bool(getattr(self.cfg.commands, "target_curriculum", False)):
+            return
+        window = int(getattr(self.cfg.commands, "target_curriculum_window", 2048))
+        threshold = float(
+            getattr(self.cfg.commands, "target_curriculum_success_rate", 0.70)
+        )
+        step_radius = float(getattr(self.cfg.commands, "curriculum_goal_radius_step", 2.0))
+        max_radius = float(getattr(self.cfg.commands, "curriculum_goal_radius_max", 20.0))
+        self._goal_curriculum_attempts += int(terminal_success.numel())
+        self._goal_curriculum_successes += int(terminal_success.sum().item())
+        if self._goal_curriculum_attempts < window:
+            return
+        rate = self._goal_curriculum_successes / max(self._goal_curriculum_attempts, 1)
+        if rate >= threshold and self.curriculum_radius < max_radius:
+            self.curriculum_radius = min(max_radius, self.curriculum_radius + step_radius)
+            print(
+                f"[maze curriculum] success {rate:.2%} >= {threshold:.0%}; "
+                f"goal radius -> {self.curriculum_radius:.1f} m",
+                flush=True,
+            )
+        self._goal_curriculum_successes = 0
+        self._goal_curriculum_attempts = 0
+
+    def _resample_commands(self, env_ids):
+        """Sample goals within the current curriculum radius (near -> far)."""
+        super()._resample_commands(env_ids)
+        if not bool(getattr(self.cfg.commands, "target_curriculum", False)):
+            return
+        if len(env_ids) == 0:
+            return
+        # Keep targets whose distance from the center spawn is within radius.
+        goal_positions = self._maze_goal_positions  # numpy [N, 2]
+        radii = np.linalg.norm(goal_positions, axis=1)
+        allowed = np.flatnonzero(radii <= self.curriculum_radius)
+        if allowed.size == 0:
+            allowed = np.flatnonzero(radii <= self.curriculum_radius + 4.0)
+        count = len(env_ids)
+        indices = self._goal_rng.integers(0, allowed.size, size=count)
+        chosen = goal_positions[allowed[indices]]
+        self.commands[env_ids, :2] = (
+            torch.as_tensor(chosen, dtype=self.commands.dtype, device=self.device)
+            + self.env_origins[env_ids, :2]
+        )
 
     # -- reward: silent version of the obstacle to_target (no per-step print) --
 
