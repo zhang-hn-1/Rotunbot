@@ -113,6 +113,7 @@ def main():
             collision = False
             timeout = False
             time_to_goal = None
+            min_dist = 1e9
             steps = 0
             while True:
                 action = policy(obs)
@@ -125,6 +126,7 @@ def main():
                     torch.norm(env.commands[0, :2] - env.root_states[0, :2]).item()
                 )
                 speed = float(torch.norm(env.base_lin_vel[0]).item())
+                min_dist = min(min_dist, goal_dist)
                 if env.maze_collision_buf[0].item():
                     collision = True  # record only; episode continues (matches training)
                 stop_radius = float(env.cfg.commands.stop_distance)
@@ -147,6 +149,7 @@ def main():
                 "time_s": round(steps * 0.02, 2),
                 "path_length": round(path_len, 3),
                 "straight_line": round(straight, 3),
+                "min_dist": round(min_dist, 3),
                 "time_to_goal_s": round(time_to_goal, 2) if time_to_goal else None,
             })
             print(
@@ -159,6 +162,7 @@ def main():
     sr = sum(r["success"] for r in results) / n
     mean_path = np.mean([r["path_length"] for r in results if r["success"]]) if sr else 0.0
     mean_time = np.mean([r["time_to_goal_s"] for r in results if r["time_to_goal_s"] is not None]) if sr else 0.0
+    mean_min_dist = np.mean([r["min_dist"] for r in results])
     collisions = sum(r["collision"] for r in results)
     summary = {
         "episodes": n,
@@ -168,6 +172,7 @@ def main():
         "timeouts": int(sum(r["timeout"] for r in results)),
         "mean_path_length_success_m": round(float(mean_path), 3),
         "mean_time_to_goal_s": round(float(mean_time), 2),
+        "mean_min_dist_m": round(float(mean_min_dist), 3),
     }
     print(json.dumps(summary, indent=2))
     out = Path(args.run_dir) / "maze_eval_summary.json"
