@@ -120,6 +120,7 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         )
         base_trainable = False
         base_proprio_obs = 19  # base consumes channels 0:19 of each frame
+        mod_gate_distance = 1.5  # SRU residual active only within 1.5 m of walls
         mod_hidden_dims = [256, 128]
 
     class algorithm(RotunbotMazeCfgPPO.algorithm):
@@ -135,13 +136,13 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         policy_class_name = "ActorCriticSRUModulate"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 500
+        max_iterations = 400
         save_interval = 25
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_mod4150_stage3"
+        run_name = "sru_maze_mod4150_stage4_gate"
         # Continue stage-1 model_300 with the relaxed env (no collision
         # termination, 120 s episodes).
         resume = True
         load_optimizer = False
-        load_run = "Aug22_00-36-31_sru_maze_mod4150_stage2"
-        checkpoint = 700
+        load_run = "Aug22_01-08-41_sru_maze_mod4150_stage3"
+        checkpoint = 1200

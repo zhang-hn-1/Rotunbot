@@ -273,6 +273,7 @@ class ActorCriticSRUModulate(nn.Module):
         base_path: Optional[str] = None,
         base_trainable: bool = False,
         base_proprio_obs: Optional[int] = None,
+        mod_gate_distance: Optional[float] = None,
         in_channels: int = 20,
         sru_hidden_size: int = 128,
         sru_memory_size: int = 32,
@@ -298,6 +299,9 @@ class ActorCriticSRUModulate(nn.Module):
         self.base_proprio_obs = (
             int(base_proprio_obs) if base_proprio_obs is not None
             else self.num_proprio_obs
+        )
+        self.mod_gate_distance = (
+            float(mod_gate_distance) if mod_gate_distance is not None else None
         )
         if not (0 < self.base_proprio_obs <= self.num_proprio_obs):
             raise ValueError("base_proprio_obs must be within [1, num_proprio_obs]")
@@ -466,9 +470,33 @@ class ActorCriticSRUModulate(nn.Module):
             base_mean = self.base.act_inference(base_obs)
         return base_mean
 
+    def _mod_gate(self, observations: Tensor) -> Tensor:
+        """Wall-proximity gate for the residual.
+
+        When ``mod_gate_distance`` is set, the last frame's wall-ray channels
+        (rays appended after the base channels) gate the modulation: far from
+        any wall the SRU residual is zeroed so the frozen base policy's
+        goal-approach/braking behavior acts alone; near walls the residual is
+        fully active for avoidance.  Returns ``[batch, 1]`` in [0, 1].
+        """
+        if self.mod_gate_distance is None:
+            return torch.ones(
+                observations.shape[0], 1, device=observations.device
+            )
+        history = self._history(observations)
+        rays = history[:, -1, self.base_proprio_obs : self.num_proprio_obs]
+        min_ray = rays.min(dim=-1).values
+        gate = torch.clamp(
+            (self.mod_gate_distance - min_ray) / self.mod_gate_distance,
+            0.0,
+            1.0,
+        )
+        return gate.unsqueeze(-1)
+
     def update_distribution(self, observations: Tensor) -> None:
         base_mean = self._base_mean(observations)
         delta = self.modulator(self._modulation_features(observations))
+        delta = delta * self._mod_gate(observations)
         mean = base_mean + delta
         _clamp_std(self.std, self.min_noise_std, self.max_noise_std)
         self.distribution = Normal(mean, mean * 0.0 + self.std)
@@ -482,6 +510,7 @@ class ActorCriticSRUModulate(nn.Module):
     def act_inference(self, observations: Tensor) -> Tensor:
         base_mean = self._base_mean(observations)
         delta = self.modulator(self._modulation_features(observations))
+        delta = delta * self._mod_gate(observations)
         return base_mean + delta
 
     def evaluate(self, critic_observations: Tensor, **kwargs) -> Tensor:
