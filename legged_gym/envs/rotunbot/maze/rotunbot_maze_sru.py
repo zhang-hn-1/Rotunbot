@@ -1,16 +1,20 @@
-"""Rotunbot maze with frame-stacked observations + wall-ray sensing (SRU).
+"""Rotunbot maze with frame-stacked repro-style obs + wall-ray sensing (SRU).
 
-The legacy maze/obstacle environment exposes a single 19-D frame with Euler
-angles and no wall information, so a policy cannot navigate the maze.  This
-subclass appends 16 body-frame wall-ray distances (grid ray-march, 8 m max)
-to each frame, then stacks ``frame_stack`` frames exactly like the
-paper-reproduction env.  The flattened observation becomes
-``frame_stack * (19 + 16)`` and the SRU memory encoder scans it.
+The legacy maze/obstacle environment exposes a single 19-D Euler-based frame
+with no wall information.  This subclass builds the **paper-reproduction
+frame layout** (quaternion, LH obs scales -- exactly what the accepted
+uniform-4150 DWL policy was trained on), appends 16 body-frame wall-ray
+distances (grid ray-march, 8 m max), then stacks ``frame_stack`` frames.
 
-Frame layout (35-D, Euler-based):
-  0:2 command_xy, 2:5 position_xyz, 5:8 euler_xyz, 8:11 linear velocity,
-  11:14 angular velocity, 14 dof_pos, 15:17 dof_vel, 17:19 previous actions,
+Frame layout (35-D per frame):
+  0:2 command_xy, 2:4 position_xy, 4:8 quaternion, 8:11 linear velocity,
+  11:14 angular velocity, 14 dof_pos, 15:17 dof_vel, 17:19 prev actions,
   19:35 wall-ray distances (16 rays, 22.5 deg spacing, body frame, 0-8 m).
+
+The first 19 channels are byte-compatible with the flat-plane policy's
+observation, so 方案 B (ActorCriticSRUModulate) can use uniform 4150 as its
+frozen base on a 19-D slice while the SRU modulator consumes the full 35-D
+frame including wall rays.
 """
 
 import collections
@@ -100,10 +104,24 @@ class RotunbotMazeSRU(RotunbotMaze):
     # -- observation ----------------------------------------------------------
 
     def compute_observations(self):
-        # Parent sets the 19-D single frame (with noise when configured).
-        super().compute_observations()
+        """Build repro-style 19-D frame + 16 wall rays, then stack history."""
+        # No noise here: the frame below is built from raw state like the
+        # paper-reproduction env; the maze adds rays deterministically.
+        frame = torch.cat(
+            (
+                self.commands[:, :2] * self.obs_scales.command,
+                self.root_states[:, :2] * self.obs_scales.pos,
+                self.base_quat * self.obs_scales.quat,
+                self.base_lin_vel * self.obs_scales.lin_vel,
+                self.base_ang_vel * self.obs_scales.ang_vel,
+                self.dof_pos[:, 1].unsqueeze(1) * self.obs_scales.dof_pos,
+                self.dof_vel * self.obs_scales.dof_vel,
+                self.actions,
+            ),
+            dim=-1,
+        )
         rays = self._wall_ray_distances()
-        frame = torch.cat((self.obs_buf, rays), dim=-1)
+        frame = torch.cat((frame, rays), dim=-1)
         self.obs_history.append(frame.clone())
         self.obs_buf = torch.stack(list(self.obs_history), dim=1).reshape(
             self.num_envs, -1

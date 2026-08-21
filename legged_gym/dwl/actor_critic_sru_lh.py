@@ -272,6 +272,7 @@ class ActorCriticSRUModulate(nn.Module):
         num_actions: int,
         base_path: Optional[str] = None,
         base_trainable: bool = False,
+        base_proprio_obs: Optional[int] = None,
         in_channels: int = 20,
         sru_hidden_size: int = 128,
         sru_memory_size: int = 32,
@@ -294,6 +295,12 @@ class ActorCriticSRUModulate(nn.Module):
         self.num_actions = int(num_actions)
         self.in_channels = int(in_channels)
         self.expected_actor_obs = self.in_channels * self.num_proprio_obs
+        self.base_proprio_obs = (
+            int(base_proprio_obs) if base_proprio_obs is not None
+            else self.num_proprio_obs
+        )
+        if not (0 < self.base_proprio_obs <= self.num_proprio_obs):
+            raise ValueError("base_proprio_obs must be within [1, num_proprio_obs]")
 
         # ---- frozen base DWL policy (same architecture as uniform 4150) ----
         from legged_gym.dwl.actor_critic_dwl import ActorCriticDWL
@@ -311,8 +318,12 @@ class ActorCriticSRUModulate(nn.Module):
             min_noise_std=min_noise_std,
             max_noise_std=max_noise_std,
         )
+        # The base has its own observation layout: when base_proprio_obs is
+        # set (e.g. 19-D slice inside a 35-D maze frame) the base short
+        # history scales with the student's frames-per-short ratio.
+        base_short_obs = (num_short_obs * self.base_proprio_obs) // num_proprio_obs
         self.base = ActorCriticDWL(
-            num_short_obs, num_proprio_obs, num_critic_obs, num_actions,
+            base_short_obs, self.base_proprio_obs, num_critic_obs, num_actions,
             **base_policy_cfg,
         )
         if base_path:
@@ -321,17 +332,19 @@ class ActorCriticSRUModulate(nn.Module):
                 os.environ.get("LEGGED_GYM_ROOT_DIR", "/home/jason/SphericalRobot_LeggedGym-master-new-map"),
             )
             state = torch.load(base_path, map_location="cpu")
-            missing, unexpected = self.base.load_state_dict(
-                state["model_state_dict"], strict=False
-            )
-            if missing:
+            base_state = state["model_state_dict"]
+            filtered = {
+                k: v
+                for k, v in base_state.items()
+                if k in self.base.state_dict()
+                and self.base.state_dict()[k].shape == v.shape
+            }
+            skipped = len(base_state) - len(filtered)
+            self.base.load_state_dict(filtered, strict=False)
+            if skipped:
                 print(
-                    f"[SRUModulate] base missing keys: {missing[:8]} ... ({len(missing)})",
-                    flush=True,
-                )
-            if unexpected:
-                print(
-                    f"[SRUModulate] base unexpected keys: {unexpected[:8]} ... ({len(unexpected)})",
+                    f"[SRUModulate] base: {skipped} tensors skipped for shape "
+                    f"mismatch (base critic layout differs from checkpoint)",
                     flush=True,
                 )
         self.base.eval()
@@ -440,7 +453,17 @@ class ActorCriticSRUModulate(nn.Module):
 
     def _base_mean(self, observations: Tensor) -> Tensor:
         with torch.no_grad():
-            base_mean = self.base.act_inference(observations)
+            if self.base_proprio_obs == self.num_proprio_obs:
+                base_obs = observations
+            else:
+                # Base consumes only the first base_proprio_obs channels of
+                # every frame (e.g. the 19-D repro layout inside a 35-D maze
+                # frame with wall rays appended).
+                history = self._history(observations)
+                base_obs = history[..., : self.base_proprio_obs].reshape(
+                    history.shape[0], -1
+                )
+            base_mean = self.base.act_inference(base_obs)
         return base_mean
 
     def update_distribution(self, observations: Tensor) -> None:
