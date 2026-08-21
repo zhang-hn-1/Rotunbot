@@ -62,6 +62,7 @@ from .rotunbot.target_point.rotunbot_target_sru_config import (
     RotunbotTargetSRUCfg,
     RotunbotTargetSRUCfgPPO,
     RotunbotTargetSRUModCfgPPO,
+    RotunbotTargetSRUDistillCfgPPO,
 )
 from .rotunbot.maze.rotunbot_maze import RotunbotMaze
 from .rotunbot.maze.rotunbot_maze_config import RotunbotMazeCfg, RotunbotMazeCfgPPO
@@ -88,5 +89,6 @@ task_registry.register( "rotunbot_target_lh", RotunbotTargetLH, RotunbotTargetLH
 task_registry.register( "rotunbot_target_repro", RotunbotTargetRepro, RotunbotTargetReproCfg(), RotunbotTargetReproCfgPPO() )
 task_registry.register( "rotunbot_target_sru", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUCfgPPO() )
 task_registry.register( "rotunbot_target_sru_mod", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUModCfgPPO() )
+task_registry.register( "rotunbot_target_sru_distill", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUDistillCfgPPO() )
 task_registry.register( "rotunbot_maze", RotunbotMaze, RotunbotMazeCfg(), RotunbotMazeCfgPPO() )
 task_registry.register( "rotunbot_maze_sru", RotunbotMazeSRU, RotunbotMazeSRUCfg(), RotunbotMazeSRUCfgPPO() )

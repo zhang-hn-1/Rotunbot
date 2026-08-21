@@ -109,3 +109,39 @@ class RotunbotTargetSRUModCfgPPO(RotunbotTargetReproCfgPPO):
         load_optimizer = False
         load_run = None
         checkpoint = -1
+
+
+class RotunbotTargetSRUDistillCfgPPO(RotunbotTargetReproCfgPPO):
+    """方案 A with teacher-action distillation anchored to uniform 4150.
+
+    The SRU policy starts from random weights, but PPO also minimizes
+    ||SRU_mean_actions - teacher_mean_actions|| so the student learns the
+    accepted 4150 behavior instead of exploring from zero (which failed at
+    50 iterations).  The anchor anneals from full weight toward 40% so the
+    student can later refine beyond the teacher.
+    """
+
+    seed = 11
+    runner_class_name = "DWLOnPolicyRunner"
+
+    class policy(_SRUCommonPolicy):
+        pass
+
+    class algorithm(RotunbotTargetReproCfgPPO.algorithm):
+        teacher_path = SRU_BASE_CHECKPOINT
+        distill_weight = 1.0
+        distill_anneal_steps = 400
+        distill_far_distance = 1.5
+        distill_near_weight = 0.3
+
+    class runner(RotunbotTargetReproCfgPPO.runner):
+        policy_class_name = "ActorCriticSRULH"
+        algorithm_class_name = "PPODWL"
+        max_iterations = 200
+        save_interval = 20
+        experiment_name = "rotunbot_target_sru"
+        run_name = "sru_direct_distill4150"
+        resume = False
+        load_optimizer = False
+        load_run = None
+        checkpoint = -1

@@ -13,10 +13,10 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
     class env(RotunbotMazeCfg.env):
         num_envs = 128
         num_actions = 2
-        num_single_obs = 19
+        num_single_obs = 35  # 19 base + 16 wall-ray distances
         frame_stack = 20
         short_frame_stack = 5
-        num_observations = int(frame_stack * num_single_obs)  # 380
+        num_observations = int(frame_stack * num_single_obs)  # 700
         num_privileged_obs = None
         # Longer horizon for long maze paths; tune if episodes time out.
         episode_length_s = 60

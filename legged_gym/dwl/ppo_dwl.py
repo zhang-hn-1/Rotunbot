@@ -72,14 +72,51 @@ class PPODWL:
             teacher_path = str(teacher_path).replace(
                 "{LEGGED_GYM_ROOT_DIR}", "/home/jason/SphericalRobot_LeggedGym-master-new-map"
             )
-            teacher = copy.deepcopy(self.actor_critic)
+            # The teacher is always the accepted DWL-CNN policy (e.g. uniform
+            # 4150), regardless of the student architecture.  This keeps the
+            # action anchor meaningful for cross-architecture distillation
+            # (SRU student, DWL teacher): building the teacher as a copy of
+            # an SRU student would anchor to random weights.
+            from legged_gym.dwl.actor_critic_dwl import ActorCriticDWL
+
+            teacher = ActorCriticDWL(
+                self.actor_critic.num_short_obs,
+                self.actor_critic.num_proprio_obs,
+                self.actor_critic.num_critic_obs,
+                self.actor_critic.num_actions,
+                in_channels=getattr(self.actor_critic, "in_channels", 20),
+                kernel_size=[3, 2],
+                filter_size=[16, 8],
+                stride_size=[1, 1],
+                lh_output_dim=16,
+                actor_hidden_dims=[512, 256, 128],
+                critic_hidden_dims=[512, 256, 128],
+                activation="elu",
+                init_noise_std=0.3,
+                min_noise_std=0.15,
+                max_noise_std=0.3,
+            )
             state = torch.load(teacher_path, map_location=self.device)
-            teacher.load_state_dict(state["model_state_dict"], strict=False)
+            teacher_state = state["model_state_dict"]
+            # Only load keys with matching shapes; report skipped tensors.
+            filtered = {
+                k: v
+                for k, v in teacher_state.items()
+                if k in teacher.state_dict()
+                and teacher.state_dict()[k].shape == v.shape
+            }
+            skipped = len(teacher_state) - len(filtered)
+            teacher.load_state_dict(filtered, strict=False)
+            teacher.to(self.device)
             teacher.eval()
             for p in teacher.parameters():
                 p.requires_grad_(False)
             self.teacher = teacher
-            print(f"[distill] teacher loaded from {teacher_path}", flush=True)
+            print(
+                f"[distill] teacher (DWL-CNN) loaded from {teacher_path} "
+                f"({skipped} tensors skipped for shape mismatch)",
+                flush=True,
+            )
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, None, self.device)
