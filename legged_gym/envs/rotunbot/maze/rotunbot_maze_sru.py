@@ -232,6 +232,14 @@ class RotunbotMazeSRU(RotunbotMaze):
         # costs (the obstacle env has no _reward_time).
         return 1.0
 
+    def _reward_stop(self):
+        # Reward the STRICT success condition (arrived AND stopped).  The
+        # inherited obstacle version rewards proximity only (50 * (goal_dist
+        # < stop_distance)), so the policy learned to hover near targets and
+        # collect reward without ever stopping (window success rate 3% while
+        # rew_stop reached 0.39).
+        return 50.0 * self.success_buf.float()
+
     def _reward_near_goal_speed(self):
         # Brake shaping: inside the brake gate, penalize excess speed so the
         # policy stops within the 0.20 m success radius (evaluation showed the

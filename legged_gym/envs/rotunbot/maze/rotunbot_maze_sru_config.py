@@ -182,8 +182,12 @@ class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct on the small maze."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_small_direct"
+        run_name = "sru_maze_small_direct_stopfix"
         max_iterations = 1500
         save_interval = 50
+        resume = True
+        load_optimizer = False
+        load_run = "Aug22_08-37-40_sru_maze_small_direct"
+        checkpoint = 2400
 
 
