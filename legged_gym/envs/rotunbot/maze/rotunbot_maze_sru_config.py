@@ -33,7 +33,7 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         # widen as the success rate rises (full maze at radius >= ~20 m).
         target_curriculum = True
         target_curriculum_window = 1024
-        target_curriculum_success_rate = 0.15
+        target_curriculum_success_rate = 0.10
         curriculum_goal_radius_start = 4.0
         curriculum_goal_radius_step = 3.0
         curriculum_goal_radius_max = 20.0
@@ -59,7 +59,7 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         first_velocity_kp = 100.0
 
     class rewards(RotunbotMazeCfg.rewards):
-        near_goal_brake_distance = 1.0
+        near_goal_brake_distance = 0.5
 
         class scales(RotunbotMazeCfg.rewards.scales):
             # Time penalty: wandering without reaching the target must cost.
@@ -184,12 +184,12 @@ class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct on the small maze."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_small_brake2"
+        run_name = "sru_maze_small_gate10b"
         max_iterations = 2000
         save_interval = 50
         resume = True
         load_optimizer = False
-        load_run = "Aug22_10-27-52_sru_maze_small_tighten"
-        checkpoint = 4301
+        load_run = "Aug22_15-38-33_sru_maze_small_gate10"
+        checkpoint = 10301
 
 
