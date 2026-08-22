@@ -69,6 +69,11 @@ def main():
     parser.add_argument("--checkpoint", type=int, default=-1)
     parser.add_argument("--episodes", type=int, default=40)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--max-goal-distance", type=float, default=None,
+        help="Only evaluate goals within this distance of the maze center "
+        "(matches the training curriculum; None = full maze).",
+    )
     args = parser.parse_args()
     args.run_dir = str(Path(args.run_dir).resolve())
 
@@ -82,9 +87,13 @@ def main():
     env_cfg.env.num_envs = 1
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
-    # Evaluation always uses the full maze (no goal-distance curriculum).
+    # Evaluation always uses the strict formal stop radius; goal sampling is
+    # optionally restricted to match the training curriculum.
     env_cfg.commands.target_curriculum = False
+    env_cfg.commands.curriculum_stop_distance_start = env_cfg.commands.stop_distance
     env, _ = task_registry.make_env(name=TASK, args=gym_args, env_cfg=env_cfg)
+    if args.max_goal_distance is not None:
+        env.max_goal_distance = float(args.max_goal_distance)
 
     gym_args.task = TASK
     gym_args.load_run = str(args.run_dir)

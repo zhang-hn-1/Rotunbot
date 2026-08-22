@@ -144,9 +144,17 @@ class RotunbotMazeSRU(RotunbotMaze):
                 frame[env_ids] = 0.0
         if terminal_success is not None:
             self._update_goal_curriculum(terminal_success)
+            self._update_stop_curriculum(terminal_success)
 
     def check_termination(self):
+        # Use the curriculum stop radius for arrival/success so success is
+        # reachable early in training, then tightens toward the formal
+        # 0.20 m.  The obstacle env reads self.stop_distance; swap it around
+        # the parent call.
+        saved = self.stop_distance
+        self.stop_distance = self.training_stop_distance
         super().check_termination()
+        self.stop_distance = saved
         # The obstacle env computes arrived/stop but never publishes
         # success_buf; the curriculum and evaluation need it.
         self.success_buf = self.arrived_target_buf & self.stop_buf
@@ -168,6 +176,13 @@ class RotunbotMazeSRU(RotunbotMaze):
         )
         self._goal_curriculum_successes = 0
         self._goal_curriculum_attempts = 0
+        # Stop-distance curriculum: train with a loose success radius first
+        # (stopping a rolling sphere within 0.20 m is hard), then tighten.
+        self.training_stop_distance = float(
+            getattr(self.cfg.commands, "curriculum_stop_distance_start", 0.60)
+        )
+        self._stop_curriculum_successes = 0
+        self._stop_curriculum_attempts = 0
 
     def _update_goal_curriculum(self, terminal_success):
         if not bool(getattr(self.cfg.commands, "target_curriculum", False)):
@@ -201,9 +216,23 @@ class RotunbotMazeSRU(RotunbotMaze):
     def _resample_commands(self, env_ids):
         """Sample goals within the current curriculum radius (near -> far)."""
         super()._resample_commands(env_ids)
-        if not bool(getattr(self.cfg.commands, "target_curriculum", False)):
-            return
         if len(env_ids) == 0:
+            return
+        # Evaluation override: restrict goals to a fixed radius.
+        if getattr(self, "max_goal_distance", None) is not None:
+            radii = np.linalg.norm(self._maze_goal_positions, axis=1)
+            allowed = np.flatnonzero(radii <= float(self.max_goal_distance))
+            if allowed.size == 0:
+                allowed = np.arange(len(self._maze_goal_positions))
+            count = len(env_ids)
+            indices = self._goal_rng.integers(0, allowed.size, size=count)
+            chosen = self._maze_goal_positions[allowed[indices]]
+            self.commands[env_ids, :2] = (
+                torch.as_tensor(chosen, dtype=self.commands.dtype, device=self.device)
+                + self.env_origins[env_ids, :2]
+            )
+            return
+        if not bool(getattr(self.cfg.commands, "target_curriculum", False)):
             return
         # Keep targets whose distance from the center spawn is within radius.
         goal_positions = self._maze_goal_positions  # numpy [N, 2]
@@ -233,12 +262,41 @@ class RotunbotMazeSRU(RotunbotMaze):
         return 1.0
 
     def _reward_stop(self):
-        # Reward the STRICT success condition (arrived AND stopped).  The
-        # inherited obstacle version rewards proximity only (50 * (goal_dist
-        # < stop_distance)), so the policy learned to hover near targets and
-        # collect reward without ever stopping (window success rate 3% while
-        # rew_stop reached 0.39).
+        # Reward the success condition (arrived at the training radius AND
+        # stopped).  The inherited obstacle version rewarded proximity only,
+        # so the policy learned to hover near targets without stopping.
         return 50.0 * self.success_buf.float()
+
+    def _update_stop_curriculum(self, terminal_success):
+        """Tighten the training success radius after a window of episodes."""
+        if not bool(getattr(self.cfg.commands, "target_curriculum", False)):
+            return
+        window = int(getattr(self.cfg.commands, "target_curriculum_window", 2048))
+        threshold = float(
+            getattr(self.cfg.commands, "target_curriculum_success_rate", 0.45)
+        )
+        min_radius = float(self.cfg.commands.stop_distance)  # formal 0.20
+        step = float(getattr(self.cfg.commands, "curriculum_stop_distance_step", 0.10))
+        self._stop_curriculum_attempts += int(terminal_success.numel())
+        self._stop_curriculum_successes += int(terminal_success.sum().item())
+        if self._stop_curriculum_attempts < window:
+            return
+        rate = self._stop_curriculum_successes / max(self._stop_curriculum_attempts, 1)
+        print(
+            f"[stop curriculum] window success rate={rate:.2%} "
+            f"stop_radius={self.training_stop_distance:.2f}",
+            flush=True,
+        )
+        if rate >= threshold and self.training_stop_distance > min_radius:
+            self.training_stop_distance = max(
+                min_radius, self.training_stop_distance - step
+            )
+            print(
+                f"[stop curriculum] -> stop_radius {self.training_stop_distance:.2f} m",
+                flush=True,
+            )
+        self._stop_curriculum_successes = 0
+        self._stop_curriculum_attempts = 0
 
     def _reward_near_goal_speed(self):
         # Brake shaping: inside the brake gate, penalize excess speed so the

@@ -32,11 +32,13 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         # Goal-distance curriculum: start with targets near the spawn and
         # widen as the success rate rises (full maze at radius >= ~20 m).
         target_curriculum = True
-        target_curriculum_window = 512
-        target_curriculum_success_rate = 0.45
+        target_curriculum_window = 1024
+        target_curriculum_success_rate = 0.25
         curriculum_goal_radius_start = 4.0
         curriculum_goal_radius_step = 3.0
         curriculum_goal_radius_max = 20.0
+        curriculum_stop_distance_start = 0.60
+        curriculum_stop_distance_step = 0.05
 
     class normalization(RotunbotMazeCfg.normalization):
         # LH / paper-reproduction obs scales so the first 19 channels are
@@ -182,12 +184,12 @@ class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct on the small maze."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_small_direct_stopfix"
+        run_name = "sru_maze_small_tighten"
         max_iterations = 1500
         save_interval = 50
         resume = True
         load_optimizer = False
-        load_run = "Aug22_08-37-40_sru_maze_small_direct"
-        checkpoint = 2400
+        load_run = "Aug22_09-20-06_sru_maze_small_stopcurriculum"
+        checkpoint = 2800
 
 
