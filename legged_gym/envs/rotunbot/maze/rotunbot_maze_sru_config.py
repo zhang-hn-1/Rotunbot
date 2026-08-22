@@ -60,6 +60,12 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
 
     class rewards(RotunbotMazeCfg.rewards):
         near_goal_brake_distance = 0.5
+        # Sharp to_target gradient near the goal.  The obstacle default
+        # tracking_sigma_main=8 gives exp(-err^2/8) ~ 0.97 inside 1 m -- no
+        # gradient for the final approach, so the robot stalls ~1 m from the
+        # target (diagnosed min_dist 1.07 m).  sigma 1.5 distinguishes
+        # 1.0 / 0.5 / 0.2 m and teaches the last-meter approach.
+        tracking_sigma_main = 1.5
 
         class scales(RotunbotMazeCfg.rewards.scales):
             # Time penalty: wandering without reaching the target must cost.
@@ -184,12 +190,12 @@ class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct on the small maze."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_small_gate10b"
+        run_name = "sru_maze_small_sigma15"
         max_iterations = 2000
         save_interval = 50
         resume = True
         load_optimizer = False
-        load_run = "Aug22_15-38-33_sru_maze_small_gate10"
-        checkpoint = 10301
+        load_run = "Aug22_19-22-23_sru_maze_small_gate10c"
+        checkpoint = 14301
 
 
