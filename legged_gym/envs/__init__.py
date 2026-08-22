@@ -71,6 +71,8 @@ from .rotunbot.maze.rotunbot_maze_sru_config import (
     RotunbotMazeSRUCfg,
     RotunbotMazeSRUCfgPPO,
     RotunbotMazeSRUModCfgPPO,
+    RotunbotMazeSRUSmallCfg,
+    RotunbotMazeSRUSmallCfgPPO,
 )
 
 import os
@@ -96,4 +98,5 @@ task_registry.register( "rotunbot_target_sru_mod", RotunbotTargetRepro, Rotunbot
 task_registry.register( "rotunbot_target_sru_distill", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUDistillCfgPPO() )
 task_registry.register( "rotunbot_maze", RotunbotMaze, RotunbotMazeCfg(), RotunbotMazeCfgPPO() )
 task_registry.register( "rotunbot_maze_sru", RotunbotMazeSRU, RotunbotMazeSRUCfg(), RotunbotMazeSRUCfgPPO() )
+task_registry.register( "rotunbot_maze_sru_small", RotunbotMazeSRU, RotunbotMazeSRUSmallCfg(), RotunbotMazeSRUSmallCfgPPO() )
 task_registry.register( "rotunbot_maze_sru_mod", RotunbotMazeSRU, RotunbotMazeSRUCfg(), RotunbotMazeSRUModCfgPPO() )

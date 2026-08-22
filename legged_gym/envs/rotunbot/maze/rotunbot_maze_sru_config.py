@@ -32,7 +32,7 @@ class RotunbotMazeSRUCfg(RotunbotMazeCfg):
         # Goal-distance curriculum: start with targets near the spawn and
         # widen as the success rate rises (full maze at radius >= ~20 m).
         target_curriculum = True
-        target_curriculum_window = 2048
+        target_curriculum_window = 512
         target_curriculum_success_rate = 0.45
         curriculum_goal_radius_start = 4.0
         curriculum_goal_radius_step = 3.0
@@ -106,11 +106,13 @@ class RotunbotMazeSRUCfgPPO(RotunbotMazeCfgPPO):
         policy_class_name = "ActorCriticSRULH"
         algorithm_class_name = "PPODWL"
         num_steps_per_env = 96
-        max_iterations = 2000
+        max_iterations = 150
         save_interval = 50
         experiment_name = "rotunbot_maze_sru"
-        run_name = "sru_maze_direct_nobase"
-        resume = False
+        run_name = "sru_maze_direct_diag"
+        resume = True
+        load_run = "Aug22_06-26-32_sru_maze_direct_nobase"
+        checkpoint = 2000
         load_optimizer = False
 
 
@@ -159,3 +161,29 @@ class RotunbotMazeSRUModCfgPPO(RotunbotMazeCfgPPO):
         load_optimizer = False
         load_run = "Aug22_03-43-01_sru_maze_mod4150_stage8_long"
         checkpoint = 4300
+
+
+class RotunbotMazeSRUSmallCfg(RotunbotMazeSRUCfg):
+    """9x9 maze (shorter paths, fewer dead ends) for tractable reactive
+    point-to-point navigation; the 15x15 layout stays as the scale-up target.
+    """
+
+    class env(RotunbotMazeSRUCfg.env):
+        num_envs = 128
+
+    class maze(RotunbotMazeSRUCfg.maze):
+        grid_size = (9, 9)
+        cell_size = 2.0
+        center_clearance_radius = 2
+        min_goal_distance = 2.0
+
+
+class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
+    """SRU direct on the small maze."""
+
+    class runner(RotunbotMazeSRUCfgPPO.runner):
+        run_name = "sru_maze_small_direct"
+        max_iterations = 1500
+        save_interval = 50
+
+

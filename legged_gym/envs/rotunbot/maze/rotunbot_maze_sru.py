@@ -183,6 +183,11 @@ class RotunbotMazeSRU(RotunbotMaze):
         if self._goal_curriculum_attempts < window:
             return
         rate = self._goal_curriculum_successes / max(self._goal_curriculum_attempts, 1)
+        print(
+            f"[maze curriculum] window success rate={rate:.2%} "
+            f"(threshold {threshold:.0%}) radius={self.curriculum_radius:.1f}",
+            flush=True,
+        )
         if rate >= threshold and self.curriculum_radius < max_radius:
             self.curriculum_radius = min(max_radius, self.curriculum_radius + step_radius)
             print(
