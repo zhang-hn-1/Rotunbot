@@ -190,12 +190,12 @@ class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct on the small maze."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_small_sigma15"
+        run_name = "sru_maze_small_sigma15h"
         max_iterations = 2000
         save_interval = 50
         resume = True
         load_optimizer = False
-        load_run = "Aug22_19-22-23_sru_maze_small_gate10c"
-        checkpoint = 14301
+        load_run = "Aug23_07-40-56_sru_maze_small_sigma15g"
+        checkpoint = 28301
 
 
