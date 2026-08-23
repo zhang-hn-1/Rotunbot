@@ -24,11 +24,18 @@ import numpy as np
 import torch
 
 from .rotunbot_maze import RotunbotMaze
+from .rotunbot_maze_camera import DepthCameraMixin
 from .rotunbot_maze_sru_config import RotunbotMazeSRUCfg
 
 
-class RotunbotMazeSRU(RotunbotMaze):
-    """Maze task whose actor observation is a frame-stacked history + rays."""
+class RotunbotMazeSRU(DepthCameraMixin, RotunbotMaze):
+    """Maze task whose actor observation is a frame-stacked history.
+
+    Sensing is config-driven: with ``cfg.camera.enable`` the robot uses a
+    forward depth camera (real Isaac Gym sensor when a graphics device is
+    available, deterministic headless ray/AABB fallback otherwise);
+    otherwise it uses the legacy 16 body-frame wall rays.
+    """
 
     cfg: RotunbotMazeSRUCfg
 
@@ -48,6 +55,19 @@ class RotunbotMazeSRU(RotunbotMaze):
         self.maze_grid = torch.as_tensor(
             self.maze_layout, dtype=torch.long, device=self.device
         )
+        # Wall AABBs for the headless camera fallback (env-local coords).
+        num_walls = int(self._maze_wall_centers.shape[0])
+        self.obstacle_centers = torch.as_tensor(
+            self._maze_wall_centers, dtype=torch.float32, device=self.device
+        ).unsqueeze(0).expand(self.num_envs, num_walls, 2).contiguous()
+        self.obstacle_sizes = torch.full(
+            (num_walls, 2),
+            float(self.cfg.maze.cell_size),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        if self._camera_enabled():
+            self._init_camera()
         self.obs_history = collections.deque(
             [
                 torch.zeros(
@@ -61,6 +81,21 @@ class RotunbotMazeSRU(RotunbotMaze):
             maxlen=self.cfg.env.frame_stack,
         )
         self._init_goal_curriculum()
+
+    # -- sensing helper --------------------------------------------------------
+
+    def _camera_enabled(self):
+        camera_cfg = getattr(self.cfg, "camera", None)
+        return bool(
+            camera_cfg is not None and getattr(camera_cfg, "enable", False)
+        )
+
+    def _sensor_frame(self):
+        """Return the per-frame sensor channels (depth image or wall rays)."""
+        if self._camera_enabled():
+            self.capture_depth()
+            return self.depth_observation.flatten(1)
+        return self._wall_ray_distances()
 
     # -- wall-ray sensing -----------------------------------------------------
 
@@ -126,8 +161,8 @@ class RotunbotMazeSRU(RotunbotMaze):
             ),
             dim=-1,
         )
-        rays = self._wall_ray_distances()
-        frame = torch.cat((frame, rays), dim=-1)
+        sensor = self._sensor_frame()
+        frame = torch.cat((frame, sensor), dim=-1)
         self.obs_history.append(frame.clone())
         self.obs_buf = torch.stack(list(self.obs_history), dim=1).reshape(
             self.num_envs, -1
@@ -142,6 +177,10 @@ class RotunbotMazeSRU(RotunbotMaze):
         if len(env_ids) > 0:
             for frame in self.obs_history:
                 frame[env_ids] = 0.0
+            if self._camera_enabled():
+                # The frame captured just before a terminal reset belongs to
+                # the previous episode; start the new history from open space.
+                self.depth_observation[env_ids] = 1.0
         if terminal_success is not None:
             self._update_goal_curriculum(terminal_success)
             self._update_stop_curriculum(terminal_success)

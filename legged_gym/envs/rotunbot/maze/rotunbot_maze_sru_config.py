@@ -190,12 +190,59 @@ class RotunbotMazeSRUSmallCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct on the small maze."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_small_sigma15h"
+        run_name = "sru_maze_small_sigma15i"
         max_iterations = 2000
         save_interval = 50
         resume = True
         load_optimizer = False
-        load_run = "Aug23_07-40-56_sru_maze_small_sigma15g"
-        checkpoint = 28301
+        load_run = "Aug23_09-21-33_sru_maze_small_sigma15h"
+        checkpoint = 30301
 
 
+
+
+class RotunbotMazeSRUCamCfg(RotunbotMazeSRUCfg):
+    """Maze task with a forward depth camera (port of the reference
+    rotunbot_target_depth camera setup).
+
+    Frame = 19-D repro-style proprio + 8x32 normalized depth image (256).
+    Training uses the headless ray/AABB fallback; with a graphics device the
+    real Isaac Gym depth camera is used (same observation encoding).
+    """
+
+    class env(RotunbotMazeSRUCfg.env):
+        depth_height = 8
+        depth_width = 32
+        depth_dim = int(depth_height * depth_width)  # 256
+        num_single_obs = 19 + depth_dim  # 275
+        num_observations = int(RotunbotMazeSRUCfg.env.frame_stack * num_single_obs)  # 5500
+        num_privileged_obs = int(RotunbotMazeSRUCfg.env.frame_stack * num_single_obs)  # 5500
+
+    class camera:
+        enable = True
+        width = 32
+        height = 8
+        horizontal_fov = 105.0
+        near_plane = 0.05
+        far_plane = 8.0
+        position = (0.42, 0.0, 0.0)
+        rotation = (0.0, 0.0, 0.0, 1.0)
+        add_noise = True
+        noise_std = 0.025
+        dropout_probability = 0.015
+        quantization = 0.01
+
+
+class RotunbotMazeSRUCamCfgPPO(RotunbotMazeSRUCfgPPO):
+    """SRU direct policy on the camera maze task."""
+
+    class runner(RotunbotMazeSRUCfgPPO.runner):
+        run_name = "sru_maze_cam_direct"
+        max_iterations = 2000
+        save_interval = 50
+        # Fresh training: the camera observation (275-D/frame) is a new input
+        # layout; the ray-based checkpoints do not fit.
+        resume = False
+        load_optimizer = False
+        load_run = None
+        checkpoint = -1
