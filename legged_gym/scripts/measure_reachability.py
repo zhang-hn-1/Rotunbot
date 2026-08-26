@@ -1,6 +1,7 @@
 """Measure fixed-action motion of the frozen P2P simulator without training."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -16,12 +17,71 @@ from legged_gym.navigation.reachability import (
 )
 
 
+BEARING_GROUPS_DEG = (0.0, 45.0, 90.0, 135.0, 180.0, -135.0, -90.0, -45.0)
+LOCAL_REACH_DISTANCE_M = 0.35
+
+
+def _bearing_error_deg(first, second):
+    return abs(float(np.degrees(np.angle(
+        np.exp(1j * np.deg2rad(float(first) - float(second)))
+    ))))
+
+
+def summarize_bearing_dependence(samples, coverage_summary=None):
+    """Combine measured displacement bearings with optional goal coverage."""
+    rows = {}
+    coverage_rows = {
+        (float(row["distance_m"]), float(row["bearing_deg"])): row
+        for row in (coverage_summary or {}).get("case_summaries", [])
+    }
+    for bearing in BEARING_GROUPS_DEG:
+        selected = []
+        for sample in samples:
+            displacement = np.asarray(sample.displacement_body_xy, dtype=np.float64)
+            radius = float(np.linalg.norm(displacement))
+            if radius <= 1.0e-12:
+                continue
+            sample_bearing = float(np.degrees(np.arctan2(displacement[1], displacement[0])))
+            nearest = min(
+                BEARING_GROUPS_DEG,
+                key=lambda target: _bearing_error_deg(sample_bearing, target),
+            )
+            if nearest == bearing:
+                selected.append(radius)
+        matching_coverage = [
+            row for (distance, row_bearing), row in coverage_rows.items()
+            if _bearing_error_deg(row_bearing, bearing) <= 1.0e-9
+        ]
+        coverage_episodes = sum(int(row["episodes"]) for row in matching_coverage)
+        coverage_successes = sum(
+            float(row["success_rate"]) * int(row["episodes"])
+            for row in matching_coverage
+        )
+        coverage_timeouts = sum(int(row["timeout_count"]) for row in matching_coverage)
+        rows[str(int(bearing))] = {
+            "bearing_deg": bearing,
+            "measured_action_count": len(selected),
+            "reachable_action_count": int(sum(radius >= LOCAL_REACH_DISTANCE_M for radius in selected)),
+            "reachable_action_rate": (
+                float(np.mean([radius >= LOCAL_REACH_DISTANCE_M for radius in selected]))
+                if selected else 0.0
+            ),
+            "max_displacement_m": max(selected, default=0.0),
+            "mean_displacement_m": float(np.mean(selected)) if selected else 0.0,
+            "coverage_episode_count": coverage_episodes,
+            "coverage_success_rate": coverage_successes / coverage_episodes if coverage_episodes else 0.0,
+            "coverage_timeout_rate": coverage_timeouts / coverage_episodes if coverage_episodes else 0.0,
+        }
+    return rows
+
+
 def _parse_script_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", default=CHECKPOINT_RELATIVE_PATH)
     parser.add_argument("--output-dir", default="logs/hierarchical_navigation/reachability")
     parser.add_argument("--duration-steps", type=int, default=250)
     parser.add_argument("--angular-bins", type=int, default=16)
+    parser.add_argument("--coverage-summary")
     return parser.parse_args()
 
 
@@ -114,6 +174,19 @@ def run(args, script_args):
     save_samples(output_dir / "raw_samples.json", samples)
     envelope = ReachabilityEnvelope.from_samples(samples, script_args.angular_bins)
     save_envelope(output_dir / "envelope.json", envelope)
+    coverage_summary = (
+        json.loads(Path(script_args.coverage_summary).read_text(encoding="utf-8"))
+        if script_args.coverage_summary else None
+    )
+    bearing_summary = summarize_bearing_dependence(samples, coverage_summary)
+    (output_dir / "bearing_summary.json").write_text(
+        json.dumps(bearing_summary, indent=2), encoding="utf-8"
+    )
+    (output_dir / "summary.json").write_text(json.dumps({
+        "sample_count": len(samples),
+        "coverage_summary": script_args.coverage_summary,
+        "bearing_summary": bearing_summary,
+    }, indent=2), encoding="utf-8")
     print(f"Saved {len(samples)} raw reachability samples to {output_dir}", flush=True)
     return envelope
 

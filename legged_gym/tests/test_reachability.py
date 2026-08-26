@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
+from legged_gym.scripts.measure_reachability import summarize_bearing_dependence
+
 from legged_gym.navigation.reachability import (
     ReachabilityEnvelope,
     ReachabilitySample,
@@ -50,6 +52,22 @@ class ReachabilityTests(unittest.TestCase):
         )
         result = envelope.filter([0.0, 1.0])
         np.testing.assert_allclose(result, [0.0, 0.5], atol=1e-12)
+
+    def test_bearing_summary_combines_sweep_and_coverage(self):
+        samples = [self._sample((1.0, 0.0)), self._sample((0.0, 0.2))]
+        coverage = {
+            "case_summaries": [
+                {"distance_m": 1.0, "bearing_deg": 0.0, "episodes": 3,
+                 "success_rate": 1.0, "timeout_count": 0},
+                {"distance_m": 1.0, "bearing_deg": 90.0, "episodes": 3,
+                 "success_rate": 0.0, "timeout_count": 3},
+            ]
+        }
+        summary = summarize_bearing_dependence(samples, coverage)
+        self.assertEqual(summary["0"]["measured_action_count"], 1)
+        self.assertEqual(summary["0"]["reachable_action_count"], 1)
+        self.assertEqual(summary["0"]["coverage_success_rate"], 1.0)
+        self.assertEqual(summary["90"]["coverage_timeout_rate"], 1.0)
 
 
 if __name__ == "__main__":

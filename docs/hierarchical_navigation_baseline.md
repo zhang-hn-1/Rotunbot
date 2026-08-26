@@ -39,6 +39,18 @@ The wrapper suppresses the original success-reset side effect only for an
 intermediate waypoint; it does not change the P2P success calculation, reward,
 controller, network, history dimensions, or action interface.
 
+The Oracle scheduler has two explicit phases. In `NAVIGATE`, it executes the
+next BFS cell and replans only after the local waypoint is reached. Once the
+measured robot cell equals the global goal cell, it enters `FINAL_APPROACH`,
+sets the temporary goal to the exact global goal, and stops local waypoint
+replanning/counting. A dynamic exit is recorded as `final_approach_escape`
+rather than silently restarting ordinary navigation.
+
+Turn-aware switching is an independent opt-in evaluator policy. Turns below
+45 degrees retain the distance-only 0.35 m switch; turns at or above 45
+degrees additionally require speed <= 0.30 m/s. The Frozen 4150 controller is
+unchanged.
+
 ## Gates
 
 1. `evaluate_single_local_goal.py`: single-goal executor check using the

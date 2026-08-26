@@ -34,6 +34,7 @@ from legged_gym.navigation.goal_switch import GoalSwitchController
 from legged_gym.navigation.hierarchical_maze import HierarchicalMazeCfg, HierarchicalMazeP2P
 from legged_gym.navigation.local_goal_adapter import local_to_world
 from legged_gym.navigation.oracle_episode import OracleEpisodePlanner
+from legged_gym.navigation.oracle_episode import waypoint_reached
 from legged_gym.navigation.oracle_metrics import summarize_oracle_results, maze_spl
 from legged_gym.navigation.bfs_planner import plan_cells, world_to_cell
 from legged_gym.navigation.reachability import load_envelope
@@ -49,6 +50,7 @@ def _parse_script_args():
     parser.add_argument("--reachability-envelope")
     parser.add_argument("--smoke", action="store_true", help="10-episode software-integrity smoke mode")
     parser.add_argument("--episode-manifest")
+    parser.add_argument("--turn-aware", action="store_true")
     return parser.parse_args()
 
 
@@ -199,10 +201,17 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
         "maze_seed": int(env.cfg.maze.seed),
         "protocol": "oracle_maze_120s",
         "low_level_protocol": "uniform_4150_original_60s_p2p",
+        "turn_aware": bool(script_args.turn_aware),
     })
     waypoint_records = []
     current_world_goal = None
     current_local_goal = None
+    current_delta_bearing_deg = 0.0
+    final_approach_entered = False
+    final_approach_success = False
+    final_approach_timeout = False
+    final_approach_escape = False
+    final_goal_cell = world_to_cell(global_goal, env.maze_layout.shape, env.cfg.maze.cell_size)
     collisions = 0
     success = False
     reason = "timeout"
@@ -249,6 +258,12 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     break
                 current_local_goal = waypoint.filtered_local_goal_xy
                 current_world_goal = np.asarray(waypoint.temporary_world_goal_xy)
+                current_delta_bearing_deg = float(waypoint.delta_bearing_deg)
+                if waypoint.is_final_approach:
+                    final_approach_entered = True
+                    current_world_goal = global_goal.copy()
+                    current_local_goal = waypoint.local_goal_xy
+                    current_delta_bearing_deg = 0.0
                 reconstructed_world = local_to_world(robot_xy, robot_yaw, waypoint.local_goal_xy)
                 reconstructed_temporary = local_to_world(
                     robot_xy, robot_yaw, waypoint.filtered_local_goal_xy
@@ -271,13 +286,15 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     state_continuity_violations += 1
                     reason = "goal_switch_error"
                     break
-                waypoint_records.append({
-                    "step": step,
-                    "cell": list(waypoint.cell),
-                    "local_goal_xy": list(current_local_goal),
-                    "world_goal_xy": current_world_goal.tolist(),
-                    "reached": False,
-                })
+                if not waypoint.is_final_approach:
+                    waypoint_records.append({
+                        "step": step,
+                        "cell": list(waypoint.cell),
+                        "local_goal_xy": list(current_local_goal),
+                        "world_goal_xy": current_world_goal.tolist(),
+                        "delta_bearing_deg": current_delta_bearing_deg,
+                        "reached": False,
+                    })
 
             action = policy(obs)
             obs, _privileged, _reward, dones, _infos = env.step(action)
@@ -307,19 +324,34 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
             if global_distance <= SUCCESS_DISTANCE_M and speed <= SUCCESS_SPEED_MPS:
                 success = True
                 reason = "global_success"
+                final_approach_success = final_approach_entered
                 break
             if collision:
                 reason = "collision"
                 break
             if bool(dones[0].item()):
                 reason = _failure_from_done(env)
+                final_approach_timeout = final_approach_entered and reason == "timeout"
                 break
-            if waypoint_distance <= script_args.waypoint_radius:
+            if final_approach_entered:
+                if world_to_cell(robot_xy, env.maze_layout.shape, env.cfg.maze.cell_size) != final_goal_cell:
+                    final_approach_escape = True
+                    reason = "final_approach_escape"
+                    break
+                continue
+            if waypoint_reached(
+                waypoint_distance,
+                speed,
+                current_delta_bearing_deg,
+                turn_aware=script_args.turn_aware,
+            ):
                 waypoint_reached_count += 1
                 if waypoint_records:
                     waypoint_records[-1]["reached"] = True
                 current_world_goal = None
                 current_local_goal = None
+    if final_approach_entered and not success and reason == "timeout":
+        final_approach_timeout = True
     completion_time = steps_taken * float(env.dt)
     logger.finish(
         success=success,
@@ -337,6 +369,10 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
         coordinate_error_count=coordinate_errors,
         state_continuity_violation_count=state_continuity_violations,
         checkpoint_control_configuration_error_count=0,
+        final_approach_entered=final_approach_entered,
+        final_approach_success=final_approach_success,
+        final_approach_timeout=final_approach_timeout,
+        final_approach_escape=final_approach_escape,
     )
     return logger
 
@@ -398,6 +434,7 @@ def run_gate(args, script_args):
         "gate": "oracle_maze_smoke" if script_args.smoke else "oracle_maze_raw",
         "smoke": bool(script_args.smoke),
         "reachability_filter": bool(envelope is not None),
+        "turn_aware": bool(script_args.turn_aware),
         "maze_episode_budget_s": 120.0,
         "low_level_episode_budget_s": 60.0,
         "episode_manifest": str(manifest_path),
