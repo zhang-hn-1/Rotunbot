@@ -9,8 +9,8 @@ import numpy as np
 
 from legged_gym.navigation.baseline import (
     CHECKPOINT_RELATIVE_PATH,
+    LOCAL_WAYPOINT_DISTANCE_M,
     SUCCESS_DISTANCE_M,
-    SUCCESS_SPEED_MPS,
 )
 from legged_gym.navigation.evaluation_logging import EpisodeLogger
 from legged_gym.navigation.frozen_p2p import (
@@ -41,7 +41,7 @@ def _parse_script_args():
     parser.add_argument("--checkpoint", default=CHECKPOINT_RELATIVE_PATH)
     parser.add_argument("--output-dir", default="logs/hierarchical_navigation/gate2")
     parser.add_argument("--max-steps-per-waypoint", type=int, default=3002)
-    parser.add_argument("--radius", type=float, default=SUCCESS_DISTANCE_M)
+    parser.add_argument("--radius", type=float, default=LOCAL_WAYPOINT_DISTANCE_M)
     return parser.parse_args()
 
 
@@ -135,7 +135,7 @@ def _run_sequence(env, policy, name, local_sequence, script_args, sequence_id):
                     action=action[0].detach().cpu().numpy(),
                     action_clipped=action_was_clipped(env, action),
                 )
-                if distance <= script_args.radius and speed <= SUCCESS_SPEED_MPS:
+                if distance <= script_args.radius:
                     reached = True
                     reason = "waypoint_reached"
                     break

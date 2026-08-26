@@ -49,9 +49,51 @@ def set_temporary_world_goal(env, world_goal_xy, env_index=0):
 
 
 def refresh_observation_after_goal_change(env):
-    """Append one observation with the new command without resetting anything."""
-    env.compute_observations()
+    """Refresh goal channels in-place without appending a history frame.
+
+    The frozen actor consumes 20 historical 19-D frames. A temporary goal
+    switch changes the semantic target for the whole actor input, while the
+    measured robot-state/action portions of those frames remain intact.
+    """
+    history = getattr(env, "obs_history", None)
+    if history is None or len(history) == 0:
+        raise AttributeError("environment must expose a non-empty obs_history")
+
+    commands = env.commands[:, :2]
+    command_scale = getattr(getattr(env, "obs_scales", None), "command", 1.0)
+    target = commands * command_scale
+    first = history[0]
+    if hasattr(first, "device"):
+        import torch
+
+        for frame in history:
+            frame[:, :2] = target
+        env.obs_buf = torch.stack(list(history), dim=1).reshape(env.num_envs, -1)
+        privileged_history = getattr(env, "critic_history", None)
+        if privileged_history is not None and len(privileged_history) > 0:
+            for frame in privileged_history:
+                frame[:, :2] = target
+            env.privileged_obs_buf = torch.cat(list(privileged_history), dim=1)
+    else:
+        target = np.asarray(target, dtype=np.float64)
+        for frame in history:
+            frame[:, :2] = target
+        env.obs_buf = np.stack(list(history), axis=1).reshape(len(target), -1)
+        privileged_history = getattr(env, "critic_history", None)
+        if privileged_history is not None and len(privileged_history) > 0:
+            for frame in privileged_history:
+                frame[:, :2] = target
+            env.privileged_obs_buf = np.concatenate(list(privileged_history), axis=1)
     return env.get_observations()
+
+
+def enforce_frozen_control_config(env_cfg):
+    """Disable executor gain randomization and assert the trained gains."""
+    env_cfg.control.direct_velocity_gain_randomize = False
+    assert not env_cfg.control.direct_velocity_gain_randomize
+    assert float(env_cfg.control.direct_velocity_gain) == VELOCITY_GAIN
+    assert float(env_cfg.control.direct_position_gain) == POSITION_GAIN
+    return env_cfg
 
 
 def robot_pose(env, env_index=0):
@@ -96,6 +138,7 @@ def load_frozen_p2p(args, checkpoint):
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.randomize_base_mass = False
     env_cfg.domain_rand.push_robots = False
+    enforce_frozen_control_config(env_cfg)
     if hasattr(env_cfg, "latency"):
         env_cfg.latency.enabled = False
     # Avoid the config's training resume path; the explicit path below is the

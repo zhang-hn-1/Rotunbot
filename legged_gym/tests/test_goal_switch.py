@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
+from legged_gym.navigation.frozen_p2p import refresh_observation_after_goal_change
 from legged_gym.navigation.goal_switch import GoalSwitchController
 
 
@@ -41,6 +43,34 @@ class GoalSwitchTests(unittest.TestCase):
         discontinuity = controller.measure_action_discontinuity([0.8, -0.2])
         self.assertAlmostEqual(discontinuity, 0.5)
         np.testing.assert_allclose(env.last_output_actions[0], [0.3, -0.2])
+
+    def test_goal_refresh_rewrites_all_target_frames_without_appending_history(self):
+        class HistoryEnv:
+            def __init__(self):
+                self.num_envs = 1
+                self.commands = np.array([[3.0, 4.0, 0.0]])
+                self.obs_scales = SimpleNamespace(command=2.0)
+                self.obs_history = [
+                    np.arange(19, dtype=np.float32).reshape(1, 19),
+                    (100 + np.arange(19, dtype=np.float32)).reshape(1, 19),
+                ]
+                self.obs_buf = None
+
+            def compute_observations(self):
+                raise AssertionError("goal switch must not append a new frame")
+
+            def get_observations(self):
+                return self.obs_buf
+
+        env = HistoryEnv()
+        before_robot_channels = [frame[:, 2:].copy() for frame in env.obs_history]
+        result = refresh_observation_after_goal_change(env)
+
+        self.assertEqual(len(env.obs_history), 2)
+        for index, frame in enumerate(env.obs_history):
+            np.testing.assert_allclose(frame[0, :2], [6.0, 8.0])
+            np.testing.assert_array_equal(frame[:, 2:], before_robot_channels[index])
+        self.assertEqual(result.shape, (1, 38))
 
 
 if __name__ == "__main__":

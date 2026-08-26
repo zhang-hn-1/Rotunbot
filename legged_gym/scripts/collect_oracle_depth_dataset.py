@@ -119,7 +119,7 @@ def collect(args, script_args):
                 robot_xy, _ = robot_pose(env)
                 if np.linalg.norm(goal - robot_xy) <= 0.20 and robot_speed(env) <= 0.10:
                     break
-                if np.linalg.norm(np.asarray(current_waypoint.temporary_world_goal_xy) - robot_xy) <= 0.20 and robot_speed(env) <= 0.10:
+                if np.linalg.norm(np.asarray(current_waypoint.temporary_world_goal_xy) - robot_xy) <= 0.35:
                     previous_local = current_waypoint.filtered_local_goal_xy
                     current_waypoint = None
                 if bool(dones[0].item()):

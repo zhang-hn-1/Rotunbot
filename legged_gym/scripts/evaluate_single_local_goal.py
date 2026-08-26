@@ -9,6 +9,7 @@ import numpy as np
 
 from legged_gym.navigation.baseline import (
     CHECKPOINT_RELATIVE_PATH,
+    LOCAL_WAYPOINT_DISTANCE_M,
     SUCCESS_DISTANCE_M,
     SUCCESS_SPEED_MPS,
 )
@@ -100,11 +101,18 @@ def run_gate(args, script_args):
                         action_clipped=action_was_clipped(env, action),
                     )
                     done = bool(dones[0].item())
+                    terminal_distance = float(env.terminal_goal_dist[0].item())
+                    local_reached = (
+                        terminal_distance <= LOCAL_WAYPOINT_DISTANCE_M
+                        if done
+                        else current_distance <= LOCAL_WAYPOINT_DISTANCE_M
+                    )
+                    if local_reached:
+                        success = True
+                        reason = "local_goal"
+                        break
                     if done:
-                        success = bool(env.terminal_goal_dist[0].item() <= SUCCESS_DISTANCE_M and env.terminal_speed[0].item() <= SUCCESS_SPEED_MPS)
-                        if success:
-                            reason = "local_goal"
-                        elif bool(env.terminal_unstable[0].item()):
+                        if bool(env.terminal_unstable[0].item()):
                             reason = "unstable"
                         elif bool(env.terminal_timeout[0].item()):
                             reason = "timeout"

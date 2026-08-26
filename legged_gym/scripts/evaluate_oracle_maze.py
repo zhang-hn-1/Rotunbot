@@ -15,6 +15,7 @@ install_isaac_gym_compat()
 
 from legged_gym.navigation.baseline import (
     CHECKPOINT_RELATIVE_PATH,
+    LOCAL_WAYPOINT_DISTANCE_M,
     SUCCESS_DISTANCE_M,
     SUCCESS_SPEED_MPS,
 )
@@ -39,7 +40,7 @@ def _parse_script_args():
     parser.add_argument("--output-dir", default="logs/hierarchical_navigation/oracle_maze")
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--max-steps", type=int, default=6002)
-    parser.add_argument("--waypoint-radius", type=float, default=SUCCESS_DISTANCE_M)
+    parser.add_argument("--waypoint-radius", type=float, default=LOCAL_WAYPOINT_DISTANCE_M)
     parser.add_argument("--reachability-envelope")
     return parser.parse_args()
 
@@ -158,7 +159,7 @@ def _run_episode(env, policy, planner, rng, script_args, episode_id):
             if collision:
                 reason = "collision"
                 break
-            if waypoint_distance <= script_args.waypoint_radius and speed <= SUCCESS_SPEED_MPS:
+            if waypoint_distance <= script_args.waypoint_radius:
                 waypoint = planner.next_local_waypoint(robot_xy, robot_pose(env)[1], global_goal)
                 current_local_goal = waypoint.filtered_local_goal_xy
                 current_world_goal = np.asarray(waypoint.temporary_world_goal_xy)

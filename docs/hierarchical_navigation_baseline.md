@@ -13,6 +13,7 @@ around one immutable low-level skill.
 - Executor: `DIRECT_VP_TORQUE`
 - Accepted gains: velocity `100`, position `600`
 - Formal success: distance `<= 0.20 m` and linear speed `<= 0.10 m/s`
+- Local waypoint reach: distance `<= 0.35 m`; speed is not required.
 
 The checkpoint must be provided explicitly to runtime evaluators. A missing
 checkpoint is an error; evaluators never create or evaluate a random policy.
@@ -31,7 +32,9 @@ Global goal
 
 The robot-frame waypoint is never passed directly to the actor. The adapter
 converts it to the absolute world-frame target channels expected by the
-original P2P observation. A waypoint switch changes only `env.commands[:, :2]`.
+original P2P observation. A waypoint switch changes only `env.commands[:, :2]`
+and rewrites the target channels of the existing history frames in place; it
+does not append an extra observation frame.
 The wrapper suppresses the original success-reset side effect only for an
 intermediate waypoint; it does not change the P2P success calculation, reward,
 controller, network, history dimensions, or action interface.

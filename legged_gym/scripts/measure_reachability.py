@@ -47,6 +47,7 @@ def _measure_one(env, action0, action1, duration_steps):
     start_xy, start_yaw = robot_pose(env)
     positions = []
     speeds = []
+    body_velocities = []
     action = torch.tensor([[action0, action1]], dtype=torch.float32, device=env.device)
     clipped = False
     for _ in range(int(duration_steps)):
@@ -54,6 +55,17 @@ def _measure_one(env, action0, action1, duration_steps):
         position, _ = robot_pose(env)
         positions.append(position)
         speeds.append(robot_speed(env))
+        if hasattr(env, "base_lin_vel"):
+            body_velocity = env.base_lin_vel[0, :2].detach().cpu().numpy()
+        else:
+            _, yaw = robot_pose(env)
+            world_velocity = env.root_states[0, 7:9].detach().cpu().numpy()
+            cosine, sine = np.cos(yaw), np.sin(yaw)
+            body_velocity = np.array([
+                cosine * world_velocity[0] + sine * world_velocity[1],
+                -sine * world_velocity[0] + cosine * world_velocity[1],
+            ])
+        body_velocities.append(body_velocity)
         if hasattr(env, "actions"):
             applied = env.actions[0].detach().cpu().numpy()
             clipped = clipped or bool(np.any(np.abs(applied - action[0].cpu().numpy()) > 1.0e-6))
@@ -65,6 +77,11 @@ def _measure_one(env, action0, action1, duration_steps):
     displacement_body = inverse_rotation.dot(displacement_world)
     tail = np.asarray(speeds[-min(20, len(speeds)):]) if speeds else np.zeros(1)
     steady_speed = float(np.mean(tail))
+    velocity_tail = (
+        np.asarray(body_velocities[-min(20, len(body_velocities)):])
+        if body_velocities else np.zeros((1, 2))
+    )
+    steady_velocity_body = np.mean(velocity_tail, axis=0)
     forward = abs(float(displacement_body[0]))
     lateral = abs(float(displacement_body[1]))
     coupling = lateral / max(forward, 1.0e-6)
@@ -74,7 +91,7 @@ def _measure_one(env, action0, action1, duration_steps):
         action0=action0,
         action1=action1,
         displacement_body_xy=displacement_body,
-        steady_state_velocity_body_xy=(steady_speed, 0.0),
+        steady_state_velocity_body_xy=steady_velocity_body,
         rise_time_s=rise_time,
         cross_axis_coupling=coupling,
         action_clipping=clipped,

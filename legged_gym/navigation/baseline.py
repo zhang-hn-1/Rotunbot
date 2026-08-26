@@ -5,6 +5,7 @@ from pathlib import Path
 
 P2P_TASK_NAME = "rotunbot_target_repro"
 CHECKPOINT_RELATIVE_PATH = (
+    "logs/rotunbot_target_repro/"
     "Aug16_02-57-06_uniform_t1_long500_from3809/model_4150.pt"
 )
 OBSERVATION_DIM = 19
@@ -15,6 +16,7 @@ VELOCITY_GAIN = 100.0
 POSITION_GAIN = 600.0
 SUCCESS_DISTANCE_M = 0.20
 SUCCESS_SPEED_MPS = 0.10
+LOCAL_WAYPOINT_DISTANCE_M = 0.35
 
 
 def require_checkpoint(path):
