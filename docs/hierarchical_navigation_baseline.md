@@ -72,6 +72,31 @@ unchanged.
    data-derived radial envelope. This is deferred until Raw 100 is complete.
 7. `collect_oracle_depth_dataset.py`: provider-neutral depth collection only
    after Oracle closed-loop validation; no depth model is trained here.
+8. `evaluate_oracle_diagnostics.py`: Raw or Reachability diagnostic replay.
+   It logs the active/current/next BFS cells, robot-frame goal geometry,
+   switch age, turn/reachability state, raw and filtered goals, clip ratio,
+   exterior wall clearance, and cross-track error. Collision rows use the
+   reset-before-reset terminal pose cached by the maze environment.
+9. `evaluate_control_diagnostics.py`: non-training C1 straight corridor, C2
+   single 90-degree corner with initial speeds 0/0.2/0.4/0.6 m/s, and C3
+   fixed wall detour. These gates use the Frozen 4150 policy and do not alter
+   the Oracle planner.
+
+## Collision diagnostic definitions
+
+`nearest_wall_surface_distance` is the distance from robot center to the
+nearest axis-aligned wall surface. `robot_clearance` subtracts the configured
+robot collision radius, so non-positive clearance corresponds to geometric
+wall overlap. `reachability_clip_ratio` is the fractional reduction in local
+goal norm after deterministic filtering.
+
+Each collision has one primary class in this fixed order:
+`FINAL_APPROACH_COLLISION`, `POST_SWITCH_COLLISION` (switch age <= 10
+simulation steps), `CORNER_CUT_COLLISION`, `STRAIGHT_CORRIDOR_COLLISION`,
+`APPROACH_COLLISION`, `OTHER`. The same record also stores overlapping boolean
+labels for final approach, post-switch, corner, straight corridor, and
+approach. Summary windows <=5, <=10, and <=20 preserve sensitivity to the
+post-switch threshold without rerunning simulation.
 
 Pure geometry and serialization tests do not require Isaac Gym. GPU commands
 must use `/home/jason/legged_gym/.venv/bin/python` on the target machine.

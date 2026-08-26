@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from .oracle_diagnostics import summarize_collision_diagnostics
+
 
 FAILURE_REASONS = (
     "global_success",
@@ -34,12 +36,13 @@ def summarize_oracle_results(results, protocol="oracle_maze_120s"):
     final_approach_success_count = sum(bool(row.get("final_approach_success", False)) for row in rows)
     final_approach_timeout_count = sum(bool(row.get("final_approach_timeout", False)) for row in rows)
     final_approach_escape_count = sum(bool(row.get("final_approach_escape", False)) for row in rows)
+    collision_records = [row["collision_diagnostic"] for row in rows if row.get("collision_diagnostic")]
 
     def mean(field):
         return float(np.mean([float(row.get(field, 0.0)) for row in rows]))
 
     global_success_rate = float(reason_counts["global_success"] / count)
-    return {
+    summary = {
         "protocol": protocol,
         "low_level_protocol": "uniform_4150_original_60s_p2p",
         "episodes": count,
@@ -70,3 +73,5 @@ def summarize_oracle_results(results, protocol="oracle_maze_120s"):
         ),
         "episodes_detail": list(rows),
     }
+    summary.update(summarize_collision_diagnostics(collision_records, episode_count=count))
+    return summary

@@ -32,11 +32,18 @@ from legged_gym.navigation.frozen_p2p import (
 )
 from legged_gym.navigation.goal_switch import GoalSwitchController
 from legged_gym.navigation.hierarchical_maze import HierarchicalMazeCfg, HierarchicalMazeP2P
-from legged_gym.navigation.local_goal_adapter import local_to_world
+from legged_gym.navigation.local_goal_adapter import local_to_world, world_to_local
 from legged_gym.navigation.oracle_episode import OracleEpisodePlanner
 from legged_gym.navigation.oracle_episode import waypoint_reached
 from legged_gym.navigation.oracle_metrics import summarize_oracle_results, maze_spl
-from legged_gym.navigation.bfs_planner import plan_cells, world_to_cell
+from legged_gym.navigation.bfs_planner import cell_center, plan_cells, world_to_cell
+from legged_gym.navigation.oracle_diagnostics import (
+    classify_collision,
+    local_goal_polar,
+    nearest_wall_clearance,
+    reachability_clip_ratio,
+    point_to_segment_distance,
+)
 from legged_gym.navigation.reachability import load_envelope
 
 
@@ -178,6 +185,22 @@ def _failure_from_done(env):
     return "waypoint_failure"
 
 
+def _diagnostic_bfs_context(env, robot_xy, waypoint_cell, next_bfs_cell):
+    """Return world-space BFS segments without changing planner state."""
+    origin = env.env_origins[0, :2].detach().cpu().numpy().astype(np.float64)
+    shape = env.maze_layout.shape
+    size = float(env.cfg.maze.cell_size)
+    current_cell = world_to_cell(robot_xy - origin, shape, size)
+    current_center = cell_center(current_cell, shape, size) + origin
+    waypoint_center = cell_center(waypoint_cell, shape, size) + origin
+    current_segment = [current_center.tolist(), waypoint_center.tolist()]
+    next_segment = None
+    if next_bfs_cell is not None:
+        next_center = cell_center(next_bfs_cell, shape, size) + origin
+        next_segment = [waypoint_center.tolist(), next_center.tolist()]
+    return current_cell, current_segment, next_segment
+
+
 def _release_episode_cache():
     """Return temporary PyTorch allocations before the next long episode."""
     import gc
@@ -206,7 +229,13 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
     waypoint_records = []
     current_world_goal = None
     current_local_goal = None
+    current_raw_local_goal = None
     current_delta_bearing_deg = 0.0
+    current_waypoint_cell = None
+    current_next_bfs_cell = None
+    current_reachability_filtered = False
+    current_reachability_clip_ratio = 0.0
+    steps_since_goal_switch = 0
     final_approach_entered = False
     final_approach_success = False
     final_approach_timeout = False
@@ -219,6 +248,7 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
     state_continuity_violations = 0
     actual_path_length = 0.0
     waypoint_reached_count = 0
+    collision_diagnostic = None
     steps_taken = 0
     last_xy, _ = robot_pose(env)
     global_distance = float(np.linalg.norm(global_goal - last_xy))
@@ -257,13 +287,36 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     logger.record_step(step=step, planner_error=str(error))
                     break
                 current_local_goal = waypoint.filtered_local_goal_xy
+                current_raw_local_goal = waypoint.local_goal_xy
                 current_world_goal = np.asarray(waypoint.temporary_world_goal_xy)
                 current_delta_bearing_deg = float(waypoint.delta_bearing_deg)
+                current_waypoint_cell = tuple(waypoint.cell)
+                current_next_bfs_cell = None
                 if waypoint.is_final_approach:
                     final_approach_entered = True
                     current_world_goal = global_goal.copy()
                     current_local_goal = waypoint.local_goal_xy
                     current_delta_bearing_deg = 0.0
+                else:
+                    try:
+                        active_path = plan_cells(
+                            env.maze_layout,
+                            world_to_cell(robot_xy - env.env_origins[0, :2].detach().cpu().numpy(), env.maze_layout.shape, env.cfg.maze.cell_size),
+                            world_to_cell(global_goal - env.env_origins[0, :2].detach().cpu().numpy(), env.maze_layout.shape, env.cfg.maze.cell_size),
+                        )
+                        current_next_bfs_cell = (
+                            tuple(active_path[2]) if len(active_path) > 2 else None
+                        )
+                    except Exception:
+                        current_next_bfs_cell = None
+                current_reachability_filtered = bool(
+                    np.linalg.norm(np.asarray(waypoint.local_goal_xy) - np.asarray(waypoint.filtered_local_goal_xy))
+                    > 1.0e-8
+                )
+                current_reachability_clip_ratio = reachability_clip_ratio(
+                    waypoint.local_goal_xy, waypoint.filtered_local_goal_xy
+                )
+                steps_since_goal_switch = 0
                 reconstructed_world = local_to_world(robot_xy, robot_yaw, waypoint.local_goal_xy)
                 reconstructed_temporary = local_to_world(
                     robot_xy, robot_yaw, waypoint.filtered_local_goal_xy
@@ -299,27 +352,85 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
             action = policy(obs)
             obs, _privileged, _reward, dones, _infos = env.step(action)
             robot_xy, _ = robot_pose(env)
+            done = bool(dones[0].item())
             actual_path_length += float(np.linalg.norm(robot_xy - last_xy))
             last_xy = robot_xy
             global_distance = float(np.linalg.norm(global_goal - robot_xy))
             waypoint_distance = float(np.linalg.norm(current_world_goal - robot_xy))
             speed = robot_speed(env)
             collision = bool(env.maze_collision_buf[0].item())
+            diagnostic_xy = robot_xy
+            diagnostic_yaw = robot_pose(env)[1]
+            diagnostic_speed = speed
+            if collision or done:
+                diagnostic_xy = (
+                    env.terminal_position[0].detach().cpu().numpy().astype(np.float64)
+                )
+                diagnostic_yaw = float(env.terminal_yaw[0].detach().cpu().item())
+                diagnostic_speed = float(env.terminal_speed[0].detach().cpu().item())
+            measured_local_goal = np.asarray(
+                world_to_local(diagnostic_xy, diagnostic_yaw, current_world_goal),
+                dtype=np.float64,
+            )
+            local_goal_distance, local_goal_bearing = local_goal_polar(measured_local_goal)
+            current_cell = None
+            current_segment = None
+            next_segment = None
+            if current_waypoint_cell is not None:
+                try:
+                    current_cell, current_segment, next_segment = _diagnostic_bfs_context(
+                        env, diagnostic_xy, current_waypoint_cell, current_next_bfs_cell
+                    )
+                except (TypeError, ValueError, IndexError):
+                    pass
+            origin = env.env_origins[0, :2].detach().cpu().numpy().astype(np.float64)
+            nearest_surface_distance, robot_clearance = nearest_wall_clearance(
+                diagnostic_xy - origin,
+                env._maze_wall_centers,
+                [float(env.cfg.maze.cell_size), float(env.cfg.maze.cell_size)],
+                float(env.cfg.maze.robot_collision_radius),
+            )
+            cross_track_error = (
+                point_to_segment_distance(diagnostic_xy, current_segment[0], current_segment[1])
+                if current_segment is not None else None
+            )
             collisions += int(collision)
+            step_since_goal_switch = int(steps_since_goal_switch)
             logger.record_step(
                 step=step,
                 time_s=(step + 1) * float(env.dt),
-                robot_xy=robot_xy,
+                robot_xy=diagnostic_xy,
                 global_goal_xy=global_goal,
                 world_goal_xy=current_world_goal,
                 local_goal_xy=current_local_goal,
                 global_distance=global_distance,
                 waypoint_distance=waypoint_distance,
-                speed=speed,
+                speed=diagnostic_speed,
+                current_cell=(list(current_cell) if current_cell is not None else None),
+                waypoint_cell=(list(current_waypoint_cell) if current_waypoint_cell is not None else None),
+                next_bfs_cell=(list(current_next_bfs_cell) if current_next_bfs_cell is not None else None),
+                robot_yaw=diagnostic_yaw,
+                robot_speed=diagnostic_speed,
+                local_goal_distance=local_goal_distance,
+                local_goal_bearing=local_goal_bearing,
+                delta_bearing_deg=current_delta_bearing_deg,
                 collision=collision,
+                steps_since_goal_switch=step_since_goal_switch,
+                turn_aware_triggered=bool(
+                    script_args.turn_aware and abs(current_delta_bearing_deg) >= 45.0
+                ),
+                reachability_filtered=current_reachability_filtered,
+                raw_local_goal_xy=current_raw_local_goal,
+                filtered_local_goal_xy=current_local_goal,
+                reachability_clip_ratio=current_reachability_clip_ratio,
+                nearest_wall_distance=nearest_surface_distance,
+                nearest_wall_surface_distance=nearest_surface_distance,
+                robot_clearance=robot_clearance,
+                cross_track_error_to_current_bfs_segment=cross_track_error,
                 action=action[0].detach().cpu().numpy(),
                 action_clipped=action_was_clipped(env, action),
             )
+            steps_since_goal_switch += 1
 
             if global_distance <= SUCCESS_DISTANCE_M and speed <= SUCCESS_SPEED_MPS:
                 success = True
@@ -327,6 +438,32 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                 final_approach_success = final_approach_entered
                 break
             if collision:
+                labels = classify_collision(
+                    phase=planner.phase,
+                    steps_since_goal_switch=step_since_goal_switch,
+                    delta_bearing_deg=current_delta_bearing_deg,
+                    waypoint_reached=False,
+                    current_cell=current_cell,
+                    waypoint_cell=current_waypoint_cell,
+                    next_bfs_cell=current_next_bfs_cell,
+                )
+                collision_diagnostic = {
+                    **labels,
+                    "collision_step": int(step),
+                    "collision_xy": diagnostic_xy.tolist(),
+                    "collision_phase": planner.phase,
+                    "steps_since_goal_switch": step_since_goal_switch,
+                    "collision_local_goal_bearing": local_goal_bearing,
+                    "collision_local_goal_distance": local_goal_distance,
+                    "current_cell": list(current_cell) if current_cell is not None else None,
+                    "waypoint_cell": list(current_waypoint_cell) if current_waypoint_cell is not None else None,
+                    "next_bfs_cell": list(current_next_bfs_cell) if current_next_bfs_cell is not None else None,
+                    "current_bfs_segment": current_segment,
+                    "next_bfs_segment": next_segment,
+                    "nearest_wall_surface_distance": nearest_surface_distance,
+                    "robot_clearance": robot_clearance,
+                    "cross_track_error_to_current_bfs_segment": cross_track_error,
+                }
                 reason = "collision"
                 break
             if bool(dones[0].item()):
@@ -373,6 +510,25 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
         final_approach_success=final_approach_success,
         final_approach_timeout=final_approach_timeout,
         final_approach_escape=final_approach_escape,
+        collision_diagnostic=(collision_diagnostic if collision else None),
+        collision_step=(collision_diagnostic["collision_step"] if collision else None),
+        collision_xy=(collision_diagnostic["collision_xy"] if collision else None),
+        collision_phase=(collision_diagnostic["collision_phase"] if collision else None),
+        collision_steps_since_goal_switch=(
+            collision_diagnostic["steps_since_goal_switch"] if collision else None
+        ),
+        collision_local_goal_bearing=(
+            collision_diagnostic["collision_local_goal_bearing"] if collision else None
+        ),
+        collision_local_goal_distance=(
+            collision_diagnostic["collision_local_goal_distance"] if collision else None
+        ),
+        collision_current_bfs_segment=(
+            collision_diagnostic["current_bfs_segment"] if collision else None
+        ),
+        collision_next_bfs_segment=(
+            collision_diagnostic["next_bfs_segment"] if collision else None
+        ),
     )
     return logger
 

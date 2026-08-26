@@ -1,6 +1,7 @@
 import unittest
 
 from legged_gym.navigation.oracle_metrics import maze_spl, summarize_oracle_results
+from legged_gym.navigation.oracle_diagnostics import POST_SWITCH_COLLISION
 from legged_gym.scripts.compare_oracle_variants import build_comparison_table
 
 
@@ -82,6 +83,26 @@ class OracleMetricsTests(unittest.TestCase):
         self.assertEqual([row["variant"] for row in table], ["A", "B", "C", "D"])
         self.assertIn("waypoint_failure_rate", table[0])
         self.assertIn("planner_error_count", table[0])
+
+    def test_summary_includes_collision_diagnostic_classes_and_windows(self):
+        summary = summarize_oracle_results([
+            {
+                "reason": "collision",
+                "collision_diagnostic": {
+                    "collision_class_primary": POST_SWITCH_COLLISION,
+                    "steps_since_goal_switch": 4,
+                    "is_post_switch": True,
+                    "is_corner": True,
+                    "is_final_approach": False,
+                    "is_straight_corridor": False,
+                    "is_approach": True,
+                },
+            },
+            {"reason": "timeout"},
+        ])
+        self.assertEqual(summary["collision_class_counts"][POST_SWITCH_COLLISION], 1)
+        self.assertEqual(summary["collision_post_switch_window_counts"]["5"], 1)
+        self.assertEqual(summary["overlap_label_counts"]["is_corner"], 1)
 
 
 if __name__ == "__main__":

@@ -143,6 +143,7 @@ class HierarchicalMazeP2P(RotunbotTargetRepro):
         self.terminal_speed = torch.zeros(self.num_envs, device=self.device)
         self.terminal_balance_reward = torch.zeros(self.num_envs, device=self.device)
         self.terminal_position = torch.zeros(self.num_envs, 2, device=self.device)
+        self.terminal_yaw = torch.zeros(self.num_envs, device=self.device)
         self.terminal_timeout = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.terminal_unstable = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.terminal_out_of_bounds = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -203,7 +204,13 @@ class HierarchicalMazeP2P(RotunbotTargetRepro):
         self._intermediate_goal = bool(enabled)
 
     def check_termination(self):
+        import torch
+
         super().check_termination()
+        self.terminal_yaw[:] = torch.atan2(
+            2.0 * (self.base_quat[:, 3] * self.base_quat[:, 2] + self.base_quat[:, 0] * self.base_quat[:, 1]),
+            1.0 - 2.0 * (self.base_quat[:, 1] * self.base_quat[:, 1] + self.base_quat[:, 2] * self.base_quat[:, 2]),
+        )
         self.maze_collision_buf = self._maze_collision_mask()
         if self.cfg.maze.terminate_on_collision:
             self.reset_buf |= self.maze_collision_buf
