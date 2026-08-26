@@ -10,7 +10,6 @@ import numpy as np
 from legged_gym.navigation.baseline import (
     CHECKPOINT_RELATIVE_PATH,
     LOCAL_WAYPOINT_DISTANCE_M,
-    SUCCESS_DISTANCE_M,
 )
 from legged_gym.navigation.evaluation_logging import EpisodeLogger
 from legged_gym.navigation.frozen_p2p import (
@@ -105,8 +104,10 @@ def _run_sequence(env, policy, name, local_sequence, script_args, sequence_id):
     all_success = True
     total_steps = 0
     previous_local = None
+    previous_policy_action = None
     try:
         for waypoint_index, local_goal in enumerate(local_sequence):
+            waypoint_start_steps = total_steps
             robot_xy, robot_yaw = robot_pose(env)
             world_goal = local_to_world(robot_xy, robot_yaw, local_goal)
             before = _snapshot(env)
@@ -116,9 +117,17 @@ def _run_sequence(env, policy, name, local_sequence, script_args, sequence_id):
             obs = refresh_observation_after_goal_change(env)
             reached = False
             reason = "timeout"
-            stop_duration_s = 0.0
+            action_before_switch = (
+                previous_policy_action.copy()
+                if waypoint_index > 0 and previous_policy_action is not None
+                else None
+            )
+            first_action_after_switch = None
             for _ in range(script_args.max_steps_per_waypoint):
                 action = policy(obs)
+                policy_action = action[0].detach().cpu().numpy().copy()
+                if first_action_after_switch is None:
+                    first_action_after_switch = policy_action
                 obs, _privileged, _reward, dones, _infos = env.step(action)
                 total_steps += 1
                 current_xy, _ = robot_pose(env)
@@ -135,6 +144,7 @@ def _run_sequence(env, policy, name, local_sequence, script_args, sequence_id):
                     action=action[0].detach().cpu().numpy(),
                     action_clipped=action_was_clipped(env, action),
                 )
+                previous_policy_action = policy_action
                 if distance <= script_args.radius:
                     reached = True
                     reason = "waypoint_reached"
@@ -153,8 +163,28 @@ def _run_sequence(env, policy, name, local_sequence, script_args, sequence_id):
                     "reason": reason,
                     "switch_index": event.switch_index,
                     "state_continuous": continuity,
-                    "action_discontinuity": switcher.measure_action_discontinuity(action) if "action" in locals() else None,
-                    "stop_duration_s": stop_duration_s,
+                    "action_before_switch": (
+                        action_before_switch.tolist()
+                        if action_before_switch is not None
+                        else None
+                    ),
+                    "action_after_switch": (
+                        first_action_after_switch.tolist()
+                        if waypoint_index > 0 and first_action_after_switch is not None
+                        else None
+                    ),
+                    "action_discontinuity": (
+                        switcher.measure_action_discontinuity(
+                            first_action_after_switch,
+                            previous_action=action_before_switch,
+                        )
+                        if action_before_switch is not None
+                        and first_action_after_switch is not None
+                        else None
+                    ),
+                    "waypoint_completion_time_s": (
+                        (total_steps - waypoint_start_steps) * float(env.dt)
+                    ),
                 }
             )
             previous_local = list(local_goal)
@@ -167,7 +197,7 @@ def _run_sequence(env, policy, name, local_sequence, script_args, sequence_id):
         reason="sequence_complete" if all_success else "waypoint_failure",
         waypoint_count=len(waypoint_results),
         waypoint_results=waypoint_results,
-        goal_switch_latency_s=(total_steps / max(len(waypoint_results), 1)) * float(env.dt),
+        average_waypoint_completion_time_s=(total_steps / max(len(waypoint_results), 1)) * float(env.dt),
         previous_local_goal_xy=previous_local,
     )
     return logger

@@ -44,6 +44,14 @@ class GoalSwitchTests(unittest.TestCase):
         self.assertAlmostEqual(discontinuity, 0.5)
         np.testing.assert_allclose(env.last_output_actions[0], [0.3, -0.2])
 
+    def test_action_discontinuity_accepts_switch_boundary_actions(self):
+        env = FakeEnv()
+        controller = GoalSwitchController(env)
+        discontinuity = controller.measure_action_discontinuity(
+            [0.9, 0.1], previous_action=[0.4, -0.2]
+        )
+        self.assertAlmostEqual(discontinuity, np.sqrt(0.5 ** 2 + 0.3 ** 2))
+
     def test_goal_refresh_rewrites_all_target_frames_without_appending_history(self):
         class HistoryEnv:
             def __init__(self):

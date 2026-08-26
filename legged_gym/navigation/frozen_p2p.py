@@ -155,8 +155,21 @@ def load_frozen_p2p(args, checkpoint):
         headless=args.headless,
     )
     runner = load_frozen_runner(args, env, train_cfg, checkpoint)
-    policy = runner.get_inference_policy(device=args.rl_device)
+    policy = frozen_inference_policy(runner, args.rl_device)
     return env, runner, policy
+
+
+def frozen_inference_policy(runner, device):
+    """Return a no-grad inference callable for long evaluation sweeps."""
+    import torch
+
+    inference = runner.get_inference_policy(device=device)
+
+    def policy(observations):
+        with torch.no_grad():
+            return inference(observations)
+
+    return policy
 
 
 def load_frozen_runner(args, env, train_cfg, checkpoint):

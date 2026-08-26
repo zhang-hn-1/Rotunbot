@@ -41,15 +41,24 @@ controller, network, history dimensions, or action interface.
 
 ## Gates
 
-1. `evaluate_single_local_goal.py`: conservative 0.5/1.0/1.5 m goals at
-   0/+-30/+-45 degrees.
-2. `evaluate_goal_switch.py`: continuous straight, L, S, rectangle, and sharp
-   direction sequences without episode reset.
-3. `evaluate_oracle_maze.py`: seed-0 ground-truth maze, reachable goals, and
-   closed-loop replanning from the actual robot pose.
-4. `measure_reachability.py`: fixed-action motion measurements and a
-   data-derived radial envelope.
-5. `collect_oracle_depth_dataset.py`: provider-neutral depth collection only
+1. `evaluate_single_local_goal.py`: single-goal executor check using the
+   distance-only `0.35 m` local-waypoint criterion.
+2. `evaluate_single_local_goal_coverage.py`: the formal 4x8 distance/bearing
+   coverage matrix, with three repetitions per case.
+3. `evaluate_goal_switch.py`: continuous straight, L, S, rectangle, and sharp
+   direction sequences without episode reset. It records the action pair at
+   each switch boundary and `average_waypoint_completion_time_s`.
+4. `evaluate_oracle_maze.py --smoke`: ten raw Oracle episodes with no
+   reachability filter. This gate checks planner, coordinate, state-history,
+   and checkpoint/control integrity separately from physical failures.
+5. `evaluate_oracle_maze.py`: fixed-manifest Raw 100 episodes. Its summary
+   reports Global SR, collision/timeout/waypoint-failure rates, local-waypoint
+   reach, actual/BFS path lengths, Maze SPL, completion time, waypoint count,
+   and the required failure-reason histogram. The Maze protocol budget is
+   `120 s`; the original uniform-4150 P2P protocol remains `60 s`.
+6. `measure_reachability.py`: fixed-action motion measurements and a
+   data-derived radial envelope. This is deferred until Raw 100 is complete.
+7. `collect_oracle_depth_dataset.py`: provider-neutral depth collection only
    after Oracle closed-loop validation; no depth model is trained here.
 
 Pure geometry and serialization tests do not require Isaac Gym. GPU commands

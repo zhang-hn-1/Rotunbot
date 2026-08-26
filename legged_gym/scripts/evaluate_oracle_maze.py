@@ -21,7 +21,9 @@ from legged_gym.navigation.baseline import (
 )
 from legged_gym.navigation.evaluation_logging import EpisodeLogger
 from legged_gym.navigation.frozen_p2p import (
+    enforce_frozen_control_config,
     action_was_clipped,
+    frozen_inference_policy,
     load_frozen_runner,
     refresh_observation_after_goal_change,
     robot_pose,
@@ -30,7 +32,10 @@ from legged_gym.navigation.frozen_p2p import (
 )
 from legged_gym.navigation.goal_switch import GoalSwitchController
 from legged_gym.navigation.hierarchical_maze import HierarchicalMazeCfg, HierarchicalMazeP2P
+from legged_gym.navigation.local_goal_adapter import local_to_world
 from legged_gym.navigation.oracle_episode import OracleEpisodePlanner
+from legged_gym.navigation.oracle_metrics import summarize_oracle_results, maze_spl
+from legged_gym.navigation.bfs_planner import plan_cells, world_to_cell
 from legged_gym.navigation.reachability import load_envelope
 
 
@@ -42,6 +47,8 @@ def _parse_script_args():
     parser.add_argument("--max-steps", type=int, default=6002)
     parser.add_argument("--waypoint-radius", type=float, default=LOCAL_WAYPOINT_DISTANCE_M)
     parser.add_argument("--reachability-envelope")
+    parser.add_argument("--smoke", action="store_true", help="10-episode software-integrity smoke mode")
+    parser.add_argument("--episode-manifest")
     return parser.parse_args()
 
 
@@ -68,7 +75,7 @@ def _load_maze(args, checkpoint):
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.randomize_base_mass = False
     env_cfg.domain_rand.push_robots = False
-    env_cfg.control.direct_velocity_gain_randomize = False
+    enforce_frozen_control_config(env_cfg)
     env_cfg.latency.enabled = False
     _, train_cfg = task_registry.get_cfgs(name="rotunbot_target_repro")
     train_cfg.runner.resume = False
@@ -82,7 +89,7 @@ def _load_maze(args, checkpoint):
         headless=args.headless,
     )
     runner = load_frozen_runner(args, env, train_cfg, checkpoint)
-    return env, runner, runner.get_inference_policy(device=args.rl_device)
+    return env, runner, frozen_inference_policy(runner, args.rl_device)
 
 
 def _set_center_start(env):
@@ -103,35 +110,180 @@ def _set_center_start(env):
     env.compute_observations()
 
 
-def _run_episode(env, policy, planner, rng, script_args, episode_id):
+def _state_snapshot(env):
+    history = getattr(env, "obs_history", None)
+    previous = getattr(env, "last_actions", None)
+    episode = getattr(env, "episode_length_buf", None)
+    reset = getattr(env, "reset_buf", None)
+    values = {}
+    for name, value in (("previous", previous), ("episode", episode), ("reset", reset)):
+        if hasattr(value, "detach"):
+            value = value.detach().cpu().numpy().copy()
+        elif value is not None:
+            value = np.asarray(value).copy()
+        values[name] = value
+    values["history_length"] = len(history) if history is not None else None
+    return values
+
+
+def _state_is_continuous(before, after):
+    return (
+        before["history_length"] == after["history_length"]
+        and np.array_equal(before["previous"], after["previous"])
+        and np.array_equal(before["episode"], after["episode"])
+        and np.array_equal(before["reset"], after["reset"])
+    )
+
+
+def _episode_manifest(path, reachable, episodes, seed=0):
+    path = Path(path)
+    if path.is_file():
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        if len(manifest) != int(episodes):
+            raise ValueError("episode manifest length does not match --episodes")
+        for expected_episode_id, entry in enumerate(manifest):
+            goal_index = int(entry["goal_index"])
+            if not 0 <= goal_index < len(reachable):
+                raise ValueError(f"manifest goal_index out of range: {goal_index}")
+            if int(entry["episode_id"]) != expected_episode_id:
+                raise ValueError("episode manifest ids must be contiguous and ordered")
+            expected_goal = np.asarray(reachable[goal_index], dtype=np.float64)
+            actual_goal = np.asarray(entry["goal_xy"], dtype=np.float64)
+            if actual_goal.shape != (2,) or not np.allclose(actual_goal, expected_goal, atol=1.0e-8):
+                raise ValueError("episode manifest goal_xy does not match the maze goal list")
+        return manifest
+    rng = np.random.default_rng(seed)
+    manifest = []
+    for episode_id in range(int(episodes)):
+        goal_index = int(rng.integers(0, len(reachable)))
+        manifest.append({
+            "episode_id": episode_id,
+            "goal_index": goal_index,
+            "goal_xy": np.asarray(reachable[goal_index], dtype=np.float64).tolist(),
+        })
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def _failure_from_done(env):
+    if bool(env.terminal_unstable[0].item()):
+        return "unstable"
+    if bool(env.terminal_out_of_bounds[0].item()):
+        return "out_of_bounds"
+    if bool(env.terminal_timeout[0].item()):
+        return "timeout"
+    return "waypoint_failure"
+
+
+def _release_episode_cache():
+    """Return temporary PyTorch allocations before the next long episode."""
+    import gc
+    import torch
+
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goal_index):
     obs, _ = env.reset()
     _set_center_start(env)
-    reachable = np.asarray(env._maze_goal_positions)
-    goal_index = int(rng.integers(0, len(reachable)))
-    global_goal = reachable[goal_index] + env.env_origins[0, :2].detach().cpu().numpy()
+    global_goal = np.asarray(global_goal, dtype=np.float64)
     switcher = GoalSwitchController(env)
     switcher.set_intermediate_goal_mode(True)
-    logger = EpisodeLogger({"gate": "oracle_maze", "episode_id": episode_id, "maze_seed": int(env.cfg.maze.seed)})
+    logger = EpisodeLogger({
+        "gate": "oracle_maze",
+        "episode_id": episode_id,
+        "goal_index": goal_index,
+        "maze_seed": int(env.cfg.maze.seed),
+        "protocol": "oracle_maze_120s",
+        "low_level_protocol": "uniform_4150_original_60s_p2p",
+    })
     waypoint_records = []
     current_world_goal = None
     current_local_goal = None
     collisions = 0
     success = False
     reason = "timeout"
+    coordinate_errors = 0
+    state_continuity_violations = 0
+    actual_path_length = 0.0
+    waypoint_reached_count = 0
+    steps_taken = 0
+    last_xy, _ = robot_pose(env)
+    global_distance = float(np.linalg.norm(global_goal - last_xy))
     try:
-        for step in range(script_args.max_steps):
+        start_cell = world_to_cell(last_xy, env.maze_layout.shape, env.cfg.maze.cell_size)
+        goal_cell = world_to_cell(global_goal, env.maze_layout.shape, env.cfg.maze.cell_size)
+        bfs_path = plan_cells(env.maze_layout, start_cell, goal_cell)
+        bfs_shortest_path_length = float(max(len(bfs_path) - 1, 0) * env.cfg.maze.cell_size)
+    except Exception as error:
+        reason = "planner_error"
+        bfs_shortest_path_length = 0.0
+        logger.finish(
+            success=False,
+            reason=reason,
+            global_goal_xy=global_goal,
+            waypoint_count=0,
+            local_waypoint_reached_count=0,
+            actual_path_length_m=0.0,
+            bfs_shortest_path_length_m=bfs_shortest_path_length,
+            maze_spl=0.0,
+            completion_time_s=0.0,
+            coordinate_error_count=0,
+            state_continuity_violation_count=0,
+            checkpoint_control_configuration_error_count=0,
+            planner_error=str(error),
+        )
+        return logger
+    for step in range(script_args.max_steps):
+            steps_taken = step + 1
             robot_xy, robot_yaw = robot_pose(env)
             if current_world_goal is None:
-                waypoint = planner.next_local_waypoint(robot_xy, robot_yaw, global_goal)
+                try:
+                    waypoint = planner.next_local_waypoint(robot_xy, robot_yaw, global_goal)
+                except Exception as error:
+                    reason = "planner_error"
+                    logger.record_step(step=step, planner_error=str(error))
+                    break
                 current_local_goal = waypoint.filtered_local_goal_xy
                 current_world_goal = np.asarray(waypoint.temporary_world_goal_xy)
-                switcher.update_world_goal(current_world_goal, time_s=step * float(env.dt))
-                waypoint_records.append({"step": step, "cell": list(waypoint.cell), "local_goal_xy": list(current_local_goal), "world_goal_xy": current_world_goal.tolist()})
-                obs = refresh_observation_after_goal_change(env)
+                reconstructed_world = local_to_world(robot_xy, robot_yaw, waypoint.local_goal_xy)
+                reconstructed_temporary = local_to_world(
+                    robot_xy, robot_yaw, waypoint.filtered_local_goal_xy
+                )
+                if (
+                    np.linalg.norm(reconstructed_world - np.asarray(waypoint.world_goal_xy)) > 1.0e-8
+                    or np.linalg.norm(reconstructed_temporary - current_world_goal) > 1.0e-8
+                ):
+                    coordinate_errors += 1
+                before = _state_snapshot(env)
+                try:
+                    switcher.update_world_goal(current_world_goal, time_s=step * float(env.dt))
+                    obs = refresh_observation_after_goal_change(env)
+                except Exception as error:
+                    reason = "goal_switch_error"
+                    logger.record_step(step=step, goal_switch_error=str(error))
+                    break
+                after = _state_snapshot(env)
+                if not _state_is_continuous(before, after):
+                    state_continuity_violations += 1
+                    reason = "goal_switch_error"
+                    break
+                waypoint_records.append({
+                    "step": step,
+                    "cell": list(waypoint.cell),
+                    "local_goal_xy": list(current_local_goal),
+                    "world_goal_xy": current_world_goal.tolist(),
+                    "reached": False,
+                })
 
             action = policy(obs)
             obs, _privileged, _reward, dones, _infos = env.step(action)
             robot_xy, _ = robot_pose(env)
+            actual_path_length += float(np.linalg.norm(robot_xy - last_xy))
+            last_xy = robot_xy
             global_distance = float(np.linalg.norm(global_goal - robot_xy))
             waypoint_distance = float(np.linalg.norm(current_world_goal - robot_xy))
             speed = robot_speed(env)
@@ -159,27 +311,32 @@ def _run_episode(env, policy, planner, rng, script_args, episode_id):
             if collision:
                 reason = "collision"
                 break
-            if waypoint_distance <= script_args.waypoint_radius:
-                waypoint = planner.next_local_waypoint(robot_xy, robot_pose(env)[1], global_goal)
-                current_local_goal = waypoint.filtered_local_goal_xy
-                current_world_goal = np.asarray(waypoint.temporary_world_goal_xy)
-                switcher.update_world_goal(current_world_goal, time_s=(step + 1) * float(env.dt))
-                waypoint_records.append({"step": step + 1, "cell": list(waypoint.cell), "local_goal_xy": list(current_local_goal), "world_goal_xy": current_world_goal.tolist()})
-                obs = refresh_observation_after_goal_change(env)
             if bool(dones[0].item()):
-                reason = "unstable_or_timeout"
+                reason = _failure_from_done(env)
                 break
-    finally:
-        env.gym.destroy_sim(env.sim)
+            if waypoint_distance <= script_args.waypoint_radius:
+                waypoint_reached_count += 1
+                if waypoint_records:
+                    waypoint_records[-1]["reached"] = True
+                current_world_goal = None
+                current_local_goal = None
+    completion_time = steps_taken * float(env.dt)
     logger.finish(
         success=success,
         reason=reason,
         global_goal_xy=global_goal,
         waypoint_count=len(waypoint_records),
+        local_waypoint_reached_count=waypoint_reached_count,
         waypoint_sequence=waypoint_records,
         collision_count=collisions,
-        completion_time_s=(step + 1) * float(env.dt),
+        actual_path_length_m=actual_path_length,
+        bfs_shortest_path_length_m=bfs_shortest_path_length,
+        maze_spl=maze_spl(success, bfs_shortest_path_length, actual_path_length),
+        completion_time_s=completion_time,
         final_distance=global_distance,
+        coordinate_error_count=coordinate_errors,
+        state_continuity_violation_count=state_continuity_violations,
+        checkpoint_control_configuration_error_count=0,
     )
     return logger
 
@@ -187,36 +344,64 @@ def _run_episode(env, policy, planner, rng, script_args, episode_id):
 def run_gate(args, script_args):
     output_dir = Path(script_args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if script_args.smoke and script_args.reachability_envelope:
+        raise ValueError("Oracle smoke must run without a reachability filter")
     # Envelope loading is explicit so a future reachability-aware run cannot
-    # silently substitute a guessed geometry. It is optional for the first map gate.
-    envelope = load_envelope(script_args.reachability_envelope) if script_args.reachability_envelope else None
-    env, _runner, policy = _load_maze(args, script_args.checkpoint)
-    planner = OracleEpisodePlanner(
-        env.maze_layout,
-        env.maze_layout.shape,
-        env.cfg.maze.cell_size,
-        reachability=envelope,
+    # silently substitute a guessed geometry. It is deliberately disabled in
+    # the Raw smoke/100-episode gates.
+    envelope = (
+        None
+        if script_args.smoke
+        else load_envelope(script_args.reachability_envelope)
+        if script_args.reachability_envelope
+        else None
     )
-    rng = np.random.default_rng(0)
+    env, _runner, policy = _load_maze(args, script_args.checkpoint)
+    reachable = np.asarray(env._maze_goal_positions, dtype=np.float64)
+    manifest_path = (
+        Path(script_args.episode_manifest)
+        if script_args.episode_manifest
+        else output_dir / "episode_manifest.json"
+    )
+    manifest = _episode_manifest(manifest_path, reachable, script_args.episodes)
     results = []
-    # Each episode gets a fresh simulator to avoid Isaac Gym state leakage.
-    for episode_id in range(script_args.episodes):
-        if episode_id:
-            env, _runner, policy = _load_maze(args, script_args.checkpoint)
-            planner = OracleEpisodePlanner(env.maze_layout, env.maze_layout.shape, env.cfg.maze.cell_size, envelope)
-        logger = _run_episode(env, policy, planner, rng, script_args, episode_id)
-        logger.write_json(output_dir / f"episode_{episode_id:04d}.json")
-        results.append(logger.summary)
-    summary = {
-        "gate": "oracle_maze",
-        "episodes": len(results),
-        "global_success_rate": float(np.mean([row["success"] for row in results])) if results else 0.0,
-        "collision_rate": float(np.mean([row["reason"] == "collision" for row in results])) if results else 0.0,
-        "timeout_rate": float(np.mean([row["reason"] in ("timeout", "unstable_or_timeout") for row in results])) if results else 0.0,
-        "average_completion_time_s": float(np.mean([row["completion_time_s"] for row in results])) if results else 0.0,
-        "average_waypoint_count": float(np.mean([row["waypoint_count"] for row in results])) if results else 0.0,
-        "episodes_detail": results,
-    }
+    # Reuse one simulator and reset the robot between manifest entries. This
+    # keeps episode state isolated while avoiding repeated PhysX context
+    # allocation, which fragments the CUDA allocator over long Raw runs.
+    origin = env.env_origins[0, :2].detach().cpu().numpy()
+    try:
+        for episode_id, entry in enumerate(manifest):
+            global_goal = np.asarray(entry["goal_xy"], dtype=np.float64) + origin
+            planner = OracleEpisodePlanner(
+                env.maze_layout,
+                env.maze_layout.shape,
+                env.cfg.maze.cell_size,
+                reachability=envelope,
+            )
+            logger = _run_episode(
+                env,
+                policy,
+                planner,
+                script_args,
+                episode_id,
+                global_goal,
+                int(entry["goal_index"]),
+            )
+            logger.write_json(output_dir / f"episode_{episode_id:04d}.json")
+            results.append(logger.summary)
+            del logger
+            _release_episode_cache()
+    finally:
+        env.gym.destroy_sim(env.sim)
+    summary = summarize_oracle_results(results, protocol="oracle_maze_120s")
+    summary.update({
+        "gate": "oracle_maze_smoke" if script_args.smoke else "oracle_maze_raw",
+        "smoke": bool(script_args.smoke),
+        "reachability_filter": bool(envelope is not None),
+        "maze_episode_budget_s": 120.0,
+        "low_level_episode_budget_s": 60.0,
+        "episode_manifest": str(manifest_path),
+    })
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2), flush=True)
     return summary

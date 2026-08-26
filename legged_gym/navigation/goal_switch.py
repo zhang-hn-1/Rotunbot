@@ -53,10 +53,17 @@ class GoalSwitchController:
         self.current_world_goal = goal.copy()
         return event
 
-    def measure_action_discontinuity(self, action):
-        if not hasattr(self.env, "last_actions"):
-            raise AttributeError("environment must expose last_actions")
-        previous = _array(self.env.last_actions[self.env_index])[:2]
+    def measure_action_discontinuity(self, action, previous_action=None):
+        if previous_action is None:
+            if not hasattr(self.env, "last_actions"):
+                raise AttributeError("environment must expose last_actions")
+            previous = _array(self.env.last_actions[self.env_index])[:2]
+        else:
+            previous = _array(previous_action)
+            if previous.shape == (1, 2):
+                previous = previous[0]
+            if previous.shape != (2,) or not np.all(np.isfinite(previous)):
+                raise ValueError("previous_action must contain two finite values")
         current = _array(action)
         if current.shape == (1, 2):
             current = current[0]
