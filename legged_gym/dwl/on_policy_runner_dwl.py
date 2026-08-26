@@ -14,6 +14,7 @@ from legged_gym.dwl.actor_critic_sru_lh import (
     ActorCriticSRULH,
     ActorCriticSRUModulate,
 )
+from legged_gym.dwl.actor_critic_depth import ActorCriticDepth
 from rsl_rl.env import VecEnv
 
 

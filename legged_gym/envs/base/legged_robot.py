@@ -480,6 +480,14 @@ class LeggedRobot(BaseTask):
         return noise_vec
 
     #----------------------------------------
+    def _select_robot_root_states(self, all_root_states):
+        """Select the robot actor's root states from the full actor tensor.
+
+        Single-actor scenes use actor 0; scenes with extra actors (e.g. maze
+        walls) override this to select the robot by its actor index.
+        """
+        return all_root_states.view(self.num_envs, -1, 13)[:, 0, :]
+
     def _init_buffers(self):
         """ Initialize torch tensors which will contain simulation states and processed quantities
         """
@@ -492,7 +500,9 @@ class LeggedRobot(BaseTask):
         self.gym.refresh_net_contact_force_tensor(self.sim)
 
         # create some wrapper tensors for different slices
-        self.root_states = gymtorch.wrap_tensor(actor_root_state)
+        self.root_states = self._select_robot_root_states(
+            gymtorch.wrap_tensor(actor_root_state)
+        )
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]

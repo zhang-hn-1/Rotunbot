@@ -58,6 +58,8 @@ from .rotunbot.target_point.rotunbot_target_lh import RotunbotTargetLH
 from .rotunbot.target_point.rotunbot_target_lh_config import RotunbotTargetLHCfg, RotunbotTargetLHCfgPPO
 from .rotunbot.target_point.rotunbot_target_repro import RotunbotTargetRepro
 from .rotunbot.target_point.rotunbot_target_repro_config import RotunbotTargetReproCfg, RotunbotTargetReproCfgPPO
+from .rotunbot.target_point.rotunbot_target_depth import RotunbotTargetDepth
+from .rotunbot.target_point.rotunbot_target_depth_config import RotunbotTargetDepthCfg, RotunbotTargetDepthCfgPPO
 from .rotunbot.target_point.rotunbot_target_sru_config import (
     RotunbotTargetSRUCfg,
     RotunbotTargetSRUCfgPPO,
@@ -95,6 +97,7 @@ task_registry.register( "rotunbot_target_obstacle", RotunbotTargetObstacle, Rotu
 task_registry.register( "rotunbot_real", RotunbotReal, RotunbotRealCfg(), RotunbotRealCfgPPO() )
 task_registry.register( "rotunbot_target_lh", RotunbotTargetLH, RotunbotTargetLHCfg(), RotunbotTargetLHCfgPPO() )
 task_registry.register( "rotunbot_target_repro", RotunbotTargetRepro, RotunbotTargetReproCfg(), RotunbotTargetReproCfgPPO() )
+task_registry.register( "rotunbot_target_depth", RotunbotTargetDepth, RotunbotTargetDepthCfg(), RotunbotTargetDepthCfgPPO() )
 task_registry.register( "rotunbot_target_sru", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUCfgPPO() )
 task_registry.register( "rotunbot_target_sru_mod", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUModCfgPPO() )
 task_registry.register( "rotunbot_target_sru_distill", RotunbotTargetRepro, RotunbotTargetSRUCfg(), RotunbotTargetSRUDistillCfgPPO() )

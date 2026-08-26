@@ -237,12 +237,10 @@ class RotunbotMazeSRUCamCfgPPO(RotunbotMazeSRUCfgPPO):
     """SRU direct policy on the camera maze task."""
 
     class runner(RotunbotMazeSRUCfgPPO.runner):
-        run_name = "sru_maze_cam_direct"
-        max_iterations = 2000
+        run_name = "sru_maze_cam_stage2"
+        max_iterations = 3000
         save_interval = 50
-        # Fresh training: the camera observation (275-D/frame) is a new input
-        # layout; the ray-based checkpoints do not fit.
-        resume = False
+        resume = True
         load_optimizer = False
-        load_run = None
-        checkpoint = -1
+        load_run = "Aug23_11-15-11_sru_maze_cam_direct"
+        checkpoint = 2000

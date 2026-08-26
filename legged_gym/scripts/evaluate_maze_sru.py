@@ -74,6 +74,10 @@ def main():
         help="Only evaluate goals within this distance of the maze center "
         "(matches the training curriculum; None = full maze).",
     )
+    parser.add_argument(
+        "--task", default=TASK,
+        help="Task registry name (rotunbot_maze_sru / _cam / _small ...).",
+    )
     args = parser.parse_args()
     args.run_dir = str(Path(args.run_dir).resolve())
 
@@ -81,7 +85,7 @@ def main():
         sys.argv[0], "--headless", "--sim_device=cuda:0", "--rl_device=cuda:0",
     ]
     gym_args = get_args()
-    env_cfg, train_cfg = task_registry.get_cfgs(name=TASK)
+    env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg.seed = int(args.seed)
     train_cfg.seed = int(args.seed)
     env_cfg.env.num_envs = 1
@@ -91,11 +95,11 @@ def main():
     # optionally restricted to match the training curriculum.
     env_cfg.commands.target_curriculum = False
     env_cfg.commands.curriculum_stop_distance_start = env_cfg.commands.stop_distance
-    env, _ = task_registry.make_env(name=TASK, args=gym_args, env_cfg=env_cfg)
+    env, _ = task_registry.make_env(name=args.task, args=gym_args, env_cfg=env_cfg)
     if args.max_goal_distance is not None:
         env.max_goal_distance = float(args.max_goal_distance)
 
-    gym_args.task = TASK
+    gym_args.task = args.task
     gym_args.load_run = str(args.run_dir)
     gym_args.checkpoint = int(args.checkpoint)
     train_cfg.runner.resume = True
