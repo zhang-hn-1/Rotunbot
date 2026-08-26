@@ -1,0 +1,14 @@
+[
+  {
+    "checkpoint": 3800,
+    "episode": 1,
+    "steps_recorded": 633,
+    "success": 1,
+    "collision": 0,
+    "timeout": 0,
+    "terminal_x": 7.9281744956970215,
+    "terminal_y": 8.07988166809082,
+    "terminal_goal_distance": 0.10742431879043579,
+    "terminal_speed": 0.09874214977025986
+  }
+]

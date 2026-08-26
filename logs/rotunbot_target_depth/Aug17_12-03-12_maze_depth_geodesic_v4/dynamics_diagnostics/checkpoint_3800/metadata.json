@@ -1,0 +1,29 @@
+{
+  "task": "rotunbot_target_depth",
+  "checkpoint": 3800,
+  "load_run": "/data/lzq/workspace/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_target_depth/Aug17_12-03-12_maze_depth_geodesic_v4",
+  "policy_dt_s": 0.03999999910593033,
+  "sim_dt_s": 0.019999999552965164,
+  "control_decimation": 2,
+  "goal_xy": [
+    8.0,
+    8.0
+  ],
+  "body_names_from_sim": [
+    "base_link",
+    "link1",
+    "link2"
+  ],
+  "robot_body_names_recorded": [
+    "base_link",
+    "link1",
+    "link2"
+  ],
+  "robot_body_indices_domain_sim": [
+    0,
+    1,
+    2
+  ],
+  "noise_enabled": false,
+  "camera_enabled": false
+}

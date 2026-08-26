@@ -1,0 +1,1922 @@
+{
+  "checkpoint": "/home/jason/SphericalRobot_LeggedGym-master-sru/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_local_goal_p2p/Aug25_13-01-05_/model_500.pt",
+  "episodes": 100,
+  "stage": "A",
+  "distances": [
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "bearings_deg": [
+    0.0,
+    45.0,
+    -45.0
+  ],
+  "yaws_deg": [
+    0.0,
+    90.0,
+    180.0,
+    -90.0
+  ],
+  "world_positions": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      4.0,
+      -3.0
+    ],
+    [
+      -6.0,
+      5.0
+    ],
+    [
+      8.0,
+      7.0
+    ]
+  ],
+  "seed": 17,
+  "reach_radius": 0.35,
+  "summary": {
+    "episodes": 100,
+    "success": 36,
+    "timeout": 64,
+    "divergence": 24,
+    "near_miss": 40,
+    "success_rate": 0.36,
+    "timeout_rate": 0.64,
+    "divergence_rate": 0.24,
+    "near_miss_rate": 0.4,
+    "mean_min_distance": 0.753006948530674,
+    "mean_final_distance": 1.1111575981974602,
+    "mean_steps": 246.48,
+    "mean_clip_ratio": 0.46933808087466267,
+    "yaw_groups": {
+      "-90": {
+        "episodes": 24,
+        "success": 9,
+        "timeout": 15,
+        "divergence": 6,
+        "near_miss": 9,
+        "success_rate": 0.375,
+        "timeout_rate": 0.625,
+        "divergence_rate": 0.25,
+        "near_miss_rate": 0.375,
+        "mean_min_distance": 0.7447863928973675,
+        "mean_final_distance": 1.0798411530752976,
+        "mean_steps": 245.54166666666666,
+        "mean_clip_ratio": 0.4588112907125876
+      },
+      "0": {
+        "episodes": 28,
+        "success": 8,
+        "timeout": 20,
+        "divergence": 6,
+        "near_miss": 14,
+        "success_rate": 0.2857142857142857,
+        "timeout_rate": 0.7142857142857143,
+        "divergence_rate": 0.21428571428571427,
+        "near_miss_rate": 0.5,
+        "mean_min_distance": 0.7851532314504895,
+        "mean_final_distance": 1.2416885143944196,
+        "mean_steps": 253.10714285714286,
+        "mean_clip_ratio": 0.4970490676331641
+      },
+      "180": {
+        "episodes": 24,
+        "success": 8,
+        "timeout": 16,
+        "divergence": 5,
+        "near_miss": 11,
+        "success_rate": 0.3333333333333333,
+        "timeout_rate": 0.6666666666666666,
+        "divergence_rate": 0.20833333333333334,
+        "near_miss_rate": 0.4583333333333333,
+        "mean_min_distance": 0.7553587630391121,
+        "mean_final_distance": 1.1637899714211624,
+        "mean_steps": 242.58333333333334,
+        "mean_clip_ratio": 0.48174213314390224
+      },
+      "90": {
+        "episodes": 24,
+        "success": 11,
+        "timeout": 13,
+        "divergence": 7,
+        "near_miss": 6,
+        "success_rate": 0.4583333333333333,
+        "timeout_rate": 0.5416666666666666,
+        "divergence_rate": 0.2916666666666667,
+        "near_miss_rate": 0.25,
+        "mean_min_distance": 0.7213716929157575,
+        "mean_final_distance": 0.937555601199468,
+        "mean_steps": 243.58333333333334,
+        "mean_clip_ratio": 0.4351313342159124
+      }
+    },
+    "yaw_success_gap": 0.17261904761904762
+  },
+  "records": [
+    {
+      "episode": 1,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.0219839097124932,
+        0.3066907771186791
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3446764051914215,
+      "final_distance": 0.3446764051914215,
+      "steps": 89,
+      "clip_ratio": 0.16292134831460675
+    },
+    {
+      "episode": 2,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.46049477432387675,
+        -0.2103746222355345
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.853029727935791,
+      "final_distance": 2.010068416595459,
+      "steps": 301,
+      "clip_ratio": 0.6495016611295681
+    },
+    {
+      "episode": 3,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.26610743779795265,
+        0.20421986684341265
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34627142548561096,
+      "final_distance": 0.34627142548561096,
+      "steps": 224,
+      "clip_ratio": 0.6540178571428571
+    },
+    {
+      "episode": 4,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.1613830572238304,
+        -0.3898379510827882
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.5869026780128479,
+      "final_distance": 0.5869026780128479,
+      "steps": 301,
+      "clip_ratio": 0.5980066445182725
+    },
+    {
+      "episode": 5,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -0.4730632212094732,
+        -0.11582889545570252
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34607142210006714,
+      "final_distance": 0.34607142210006714,
+      "steps": 89,
+      "clip_ratio": 0.08426966292134831
+    },
+    {
+      "episode": 6,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.2463951961663844,
+        -0.247616232486778
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34470394253730774,
+      "final_distance": 0.34470394253730774,
+      "steps": 159,
+      "clip_ratio": 0.5440251572327044
+    },
+    {
+      "episode": 7,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.0016026705680337594,
+        -0.1825649094542503
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.8080033659934998,
+      "final_distance": 1.011432409286499,
+      "steps": 301,
+      "clip_ratio": 0.7757475083056479
+    },
+    {
+      "episode": 8,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.3463278091284241,
+        0.4451939145048893
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.2404048442840576,
+      "final_distance": 1.2637357711791992,
+      "steps": 301,
+      "clip_ratio": 0.8554817275747508
+    },
+    {
+      "episode": 9,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -0.0984090630893305,
+        0.498447005087021
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.44146138429641724,
+      "final_distance": 1.6583038568496704,
+      "steps": 301,
+      "clip_ratio": 0.7325581395348837
+    },
+    {
+      "episode": 10,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -0.4378072087475533,
+        0.31260900044161555
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9252235293388367,
+      "final_distance": 2.0827620029449463,
+      "steps": 301,
+      "clip_ratio": 0.6694352159468439
+    },
+    {
+      "episode": 11,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.3753165021282806,
+        -0.3490845197230199
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.4090595245361328,
+      "final_distance": 1.8692903518676758,
+      "steps": 301,
+      "clip_ratio": 0.0664451827242525
+    },
+    {
+      "episode": 12,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        0.20556861559195072,
+        0.05889186860467477
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.916378140449524,
+      "final_distance": 2.7974722385406494,
+      "steps": 301,
+      "clip_ratio": 0.0681063122923588
+    },
+    {
+      "episode": 13,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        0.4551878622608687,
+        -0.2899899905097777
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.349491149187088,
+      "final_distance": 0.349491149187088,
+      "steps": 85,
+      "clip_ratio": 0.03529411764705882
+    },
+    {
+      "episode": 14,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        0.03996335062012368,
+        0.38245610680870024
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3494791090488434,
+      "final_distance": 0.3494791090488434,
+      "steps": 179,
+      "clip_ratio": 0.6089385474860335
+    },
+    {
+      "episode": 15,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        0.1387731810597964,
+        -0.19080047004167477
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3491896092891693,
+      "final_distance": 0.3491896092891693,
+      "steps": 249,
+      "clip_ratio": 0.6224899598393574
+    },
+    {
+      "episode": 16,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.4181361458652574,
+        0.439776047011715
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34935855865478516,
+      "final_distance": 0.34935855865478516,
+      "steps": 297,
+      "clip_ratio": 0.7188552188552189
+    },
+    {
+      "episode": 17,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.02590152889359465,
+        0.4963261827822232
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3474661707878113,
+      "final_distance": 0.3474661707878113,
+      "steps": 92,
+      "clip_ratio": 0.125
+    },
+    {
+      "episode": 18,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.35839285937986465,
+        0.31220425224806403
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.5887941718101501,
+      "final_distance": 1.2665742635726929,
+      "steps": 301,
+      "clip_ratio": 0.8156146179401993
+    },
+    {
+      "episode": 19,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        0.31337812174908863,
+        0.4199750224976402
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3492668867111206,
+      "final_distance": 0.3492668867111206,
+      "steps": 200,
+      "clip_ratio": 0.68
+    },
+    {
+      "episode": 20,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.4821656835616972,
+        -0.12780715844256518
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.0286179780960083,
+      "final_distance": 1.0286179780960083,
+      "steps": 301,
+      "clip_ratio": 0.8222591362126246
+    },
+    {
+      "episode": 21,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.44833100663960435,
+        0.2520348335719639
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.43824177980422974,
+      "final_distance": 1.6979048252105713,
+      "steps": 301,
+      "clip_ratio": 0.7225913621262459
+    },
+    {
+      "episode": 22,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.14535826407152674,
+        0.4595052188429044
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9166008234024048,
+      "final_distance": 1.3016605377197266,
+      "steps": 301,
+      "clip_ratio": 0.0016611295681063123
+    },
+    {
+      "episode": 23,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        -0.12517098650279013,
+        0.2743749246385532
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.4141743183135986,
+      "final_distance": 1.4433869123458862,
+      "steps": 301,
+      "clip_ratio": 0.04983388704318937
+    },
+    {
+      "episode": 24,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        0.36778867546810157,
+        -0.2610534346320512
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.90692937374115,
+      "final_distance": 2.098961591720581,
+      "steps": 301,
+      "clip_ratio": 0.05813953488372093
+    },
+    {
+      "episode": 25,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        0.05681662420811684,
+        0.4573921803278458
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34982791543006897,
+      "final_distance": 0.34982791543006897,
+      "steps": 92,
+      "clip_ratio": 0.07065217391304347
+    },
+    {
+      "episode": 26,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        0.026917770187306567,
+        -0.14029218213176708
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34611284732818604,
+      "final_distance": 0.34611284732818604,
+      "steps": 139,
+      "clip_ratio": 0.5827338129496403
+    },
+    {
+      "episode": 27,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.23279964130939546,
+        0.2864696925542106
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.6230265498161316,
+      "final_distance": 0.7774552702903748,
+      "steps": 301,
+      "clip_ratio": 0.6013289036544851
+    },
+    {
+      "episode": 28,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.3072524983620438,
+        0.1038964303481884
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.7690953016281128,
+      "final_distance": 2.5975868701934814,
+      "steps": 301,
+      "clip_ratio": 0.39368770764119604
+    },
+    {
+      "episode": 29,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        0.05554642925510189,
+        0.05348082558603884
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34488776326179504,
+      "final_distance": 0.34488776326179504,
+      "steps": 61,
+      "clip_ratio": 0.00819672131147541
+    },
+    {
+      "episode": 30,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.3705140631633088,
+        0.15856513610190415
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3494182825088501,
+      "final_distance": 0.3494182825088501,
+      "steps": 144,
+      "clip_ratio": 0.5416666666666666
+    },
+    {
+      "episode": 31,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        0.41652922591434083,
+        -0.18112100533599218
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.37335634231567383,
+      "final_distance": 0.7673187255859375,
+      "steps": 301,
+      "clip_ratio": 0.7325581395348837
+    },
+    {
+      "episode": 32,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.16792680998062082,
+        0.40904076080704654
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.8107753992080688,
+      "final_distance": 0.8107753992080688,
+      "steps": 301,
+      "clip_ratio": 0.7724252491694352
+    },
+    {
+      "episode": 33,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        0.07834519283772579,
+        -0.2274222870535284
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.45013242959976196,
+      "final_distance": 1.7182165384292603,
+      "steps": 301,
+      "clip_ratio": 0.7475083056478405
+    },
+    {
+      "episode": 34,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.49023664704989134,
+        0.2532694488058497
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9889390468597412,
+      "final_distance": 2.187377691268921,
+      "steps": 301,
+      "clip_ratio": 0.579734219269103
+    },
+    {
+      "episode": 35,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.15199600145805536,
+        -0.032841095740744786
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.3293181657791138,
+      "final_distance": 1.3293181657791138,
+      "steps": 301,
+      "clip_ratio": 0.06312292358803986
+    },
+    {
+      "episode": 36,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        -0.22749701534352407,
+        0.13310199271109657
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.8828989267349243,
+      "final_distance": 2.1852152347564697,
+      "steps": 301,
+      "clip_ratio": 0.009966777408637873
+    },
+    {
+      "episode": 37,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.22898448406375982,
+        -0.19021191255691394
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34845826029777527,
+      "final_distance": 0.34845826029777527,
+      "steps": 73,
+      "clip_ratio": 0.1643835616438356
+    },
+    {
+      "episode": 38,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        -0.4249701816723118,
+        0.48679052826247093
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3448636829853058,
+      "final_distance": 0.3448636829853058,
+      "steps": 163,
+      "clip_ratio": 0.4049079754601227
+    },
+    {
+      "episode": 39,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.4100411197908659,
+        -0.4793386115054986
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3499417006969452,
+      "final_distance": 0.3499417006969452,
+      "steps": 224,
+      "clip_ratio": 0.6540178571428571
+    },
+    {
+      "episode": 40,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.0641848111543708,
+        0.18599832906121172
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.5310667753219604,
+      "final_distance": 2.041666269302368,
+      "steps": 301,
+      "clip_ratio": 0.3372093023255814
+    },
+    {
+      "episode": 41,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        -0.09698725130491903,
+        0.2316404726463146
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34506508708000183,
+      "final_distance": 0.34506508708000183,
+      "steps": 82,
+      "clip_ratio": 0.07926829268292683
+    },
+    {
+      "episode": 42,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.45981533064380564,
+        0.0901465625796769
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.5437052249908447,
+      "final_distance": 1.1846108436584473,
+      "steps": 301,
+      "clip_ratio": 0.845514950166113
+    },
+    {
+      "episode": 43,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        -0.108426167195391,
+        -0.30435184392782155
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.6777109503746033,
+      "final_distance": 1.1913880109786987,
+      "steps": 301,
+      "clip_ratio": 0.5880398671096345
+    },
+    {
+      "episode": 44,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        -0.24858153640554348,
+        -0.3491985151446616
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.41945183277130127,
+      "final_distance": 0.4299435019493103,
+      "steps": 301,
+      "clip_ratio": 0.6677740863787376
+    },
+    {
+      "episode": 45,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        -0.38959221610890993,
+        -0.28761028460988525
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.4814893901348114,
+      "final_distance": 1.7570232152938843,
+      "steps": 301,
+      "clip_ratio": 0.6445182724252492
+    },
+    {
+      "episode": 46,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.3420242888724414,
+        0.036977963932767755
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.849073588848114,
+      "final_distance": 1.6315711736679077,
+      "steps": 301,
+      "clip_ratio": 0.48172757475083056
+    },
+    {
+      "episode": 47,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.3049357748755377,
+        0.42018576201430036
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.3689227104187012,
+      "final_distance": 2.2573940753936768,
+      "steps": 301,
+      "clip_ratio": 0.3488372093023256
+    },
+    {
+      "episode": 48,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        0.3107846849870781,
+        -0.45055706678740626
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.9001308679580688,
+      "final_distance": 2.585902214050293,
+      "steps": 301,
+      "clip_ratio": 0.006644518272425249
+    },
+    {
+      "episode": 49,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.425959068678301,
+        -3.407207781886081
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.37683114409446716,
+      "final_distance": 1.5990732908248901,
+      "steps": 301,
+      "clip_ratio": 0.7325581395348837
+    },
+    {
+      "episode": 50,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.270965764759743,
+        -2.6610564645339476
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.8430877327919006,
+      "final_distance": 1.9552769660949707,
+      "steps": 301,
+      "clip_ratio": 0.6710963455149501
+    },
+    {
+      "episode": 51,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.157451368846735,
+        -3.096317317483913
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.1479222774505615,
+      "final_distance": 1.6966323852539062,
+      "steps": 301,
+      "clip_ratio": 0.5249169435215947
+    },
+    {
+      "episode": 52,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        3.57501706884906,
+        -3.414846535451459
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9561900496482849,
+      "final_distance": 0.9575282335281372,
+      "steps": 301,
+      "clip_ratio": 0.5166112956810631
+    },
+    {
+      "episode": 53,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.136502705360194,
+        -3.258295698278129
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34725943207740784,
+      "final_distance": 0.34725943207740784,
+      "steps": 65,
+      "clip_ratio": 0.07692307692307693
+    },
+    {
+      "episode": 54,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.032282434090335,
+        -3.23477287906425
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34585270285606384,
+      "final_distance": 0.34585270285606384,
+      "steps": 142,
+      "clip_ratio": 0.5563380281690141
+    },
+    {
+      "episode": 55,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        3.663409082601759,
+        -3.2047616612224568
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.348411500453949,
+      "final_distance": 0.348411500453949,
+      "steps": 223,
+      "clip_ratio": 0.7130044843049327
+    },
+    {
+      "episode": 56,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.22486679172293,
+        -3.013186264139361
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.8355287313461304,
+      "final_distance": 0.9528207778930664,
+      "steps": 301,
+      "clip_ratio": 0.5282392026578073
+    },
+    {
+      "episode": 57,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        3.8927697973284703,
+        -3.0135175420159563
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.49999985098838806,
+      "final_distance": 1.9160256385803223,
+      "steps": 301,
+      "clip_ratio": 0.7674418604651163
+    },
+    {
+      "episode": 58,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.053983855306262,
+        -2.9843323184042507
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9711883664131165,
+      "final_distance": 2.0241129398345947,
+      "steps": 301,
+      "clip_ratio": 0.5049833887043189
+    },
+    {
+      "episode": 59,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        3.9450589573189605,
+        -2.5326142723906386
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.4601212739944458,
+      "final_distance": 2.2699825763702393,
+      "steps": 301,
+      "clip_ratio": 0.21926910299003322
+    },
+    {
+      "episode": 60,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        4.251732179661328,
+        -3.270938854791656
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.8614153861999512,
+      "final_distance": 2.100508451461792,
+      "steps": 301,
+      "clip_ratio": 0.006644518272425249
+    },
+    {
+      "episode": 61,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        3.8182447390230045,
+        -3.311200551913984
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3466511368751526,
+      "final_distance": 0.3466511368751526,
+      "steps": 89,
+      "clip_ratio": 0.0449438202247191
+    },
+    {
+      "episode": 62,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        3.8640921309453287,
+        -3.4716219904903767
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34493327140808105,
+      "final_distance": 0.34493327140808105,
+      "steps": 162,
+      "clip_ratio": 0.4228395061728395
+    },
+    {
+      "episode": 63,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.244503077700851,
+        -2.932111006085246
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34699639678001404,
+      "final_distance": 0.34699639678001404,
+      "steps": 220,
+      "clip_ratio": 0.6022727272727273
+    },
+    {
+      "episode": 64,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        3.9226808179444586,
+        -2.606563450155582
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3445756435394287,
+      "final_distance": 0.3445756435394287,
+      "steps": 287,
+      "clip_ratio": 0.681184668989547
+    },
+    {
+      "episode": 65,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        3.828746326002241,
+        -2.9214158194578217
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34850072860717773,
+      "final_distance": 0.34850072860717773,
+      "steps": 73,
+      "clip_ratio": 0.08904109589041095
+    },
+    {
+      "episode": 66,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.429757110510665,
+        -2.9441402611799594
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.5728669762611389,
+      "final_distance": 1.2398598194122314,
+      "steps": 301,
+      "clip_ratio": 0.7857142857142857
+    },
+    {
+      "episode": 67,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.112975435804358,
+        -3.1320460202383797
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.0011305809020996,
+      "final_distance": 1.295074462890625,
+      "steps": 301,
+      "clip_ratio": 0.7890365448504983
+    },
+    {
+      "episode": 68,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.4980976579527905,
+        -2.745217589951582
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.2679100036621094,
+      "final_distance": 1.3000394105911255,
+      "steps": 301,
+      "clip_ratio": 0.8222591362126246
+    },
+    {
+      "episode": 69,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        3.8033450576202332,
+        -3.1444842781941804
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.4481491446495056,
+      "final_distance": 1.4382259845733643,
+      "steps": 301,
+      "clip_ratio": 0.5681063122923588
+    },
+    {
+      "episode": 70,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.091508970360639,
+        -2.9813637129551784
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.8631808161735535,
+      "final_distance": 1.4205435514450073,
+      "steps": 301,
+      "clip_ratio": 0.3388704318936877
+    },
+    {
+      "episode": 71,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.0233063624092,
+        -3.3079107035532114
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.1443530321121216,
+      "final_distance": 1.1502132415771484,
+      "steps": 301,
+      "clip_ratio": 0.011627906976744186
+    },
+    {
+      "episode": 72,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 90.0,
+      "world_position": [
+        4.075702800591473,
+        -2.7960529956708084
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.896062970161438,
+      "final_distance": 1.9943631887435913,
+      "steps": 301,
+      "clip_ratio": 0.026578073089700997
+    },
+    {
+      "episode": 73,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.264991448661324,
+        -3.050619814815847
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3466971516609192,
+      "final_distance": 0.3466971516609192,
+      "steps": 82,
+      "clip_ratio": 0.23780487804878048
+    },
+    {
+      "episode": 74,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        3.945557757136667,
+        -2.995742506256983
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.4436190128326416,
+      "final_distance": 1.248569130897522,
+      "steps": 301,
+      "clip_ratio": 0.7591362126245847
+    },
+    {
+      "episode": 75,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.036253188173271,
+        -3.025073666477165
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.7842184901237488,
+      "final_distance": 1.1866315603256226,
+      "steps": 301,
+      "clip_ratio": 0.6794019933554817
+    },
+    {
+      "episode": 76,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        3.5121000356542855,
+        -3.2365726665851113
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.6465782523155212,
+      "final_distance": 0.6482462882995605,
+      "steps": 301,
+      "clip_ratio": 0.6495016611295681
+    },
+    {
+      "episode": 77,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.487807177068194,
+        -2.673679739971109
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3485313951969147,
+      "final_distance": 0.3485313951969147,
+      "steps": 61,
+      "clip_ratio": 0.11475409836065574
+    },
+    {
+      "episode": 78,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        3.967373016009811,
+        -2.748022069567802
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34333762526512146,
+      "final_distance": 0.34333762526512146,
+      "steps": 144,
+      "clip_ratio": 0.5486111111111112
+    },
+    {
+      "episode": 79,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        3.711248971907809,
+        -3.2328286089111713
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.6178469061851501,
+      "final_distance": 0.7140825986862183,
+      "steps": 301,
+      "clip_ratio": 0.7990033222591362
+    },
+    {
+      "episode": 80,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.017629412316836,
+        -2.8007051198534865
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34825757145881653,
+      "final_distance": 0.34825757145881653,
+      "steps": 283,
+      "clip_ratio": 0.7597173144876325
+    },
+    {
+      "episode": 81,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        3.5275641762674854,
+        -3.028287785424024
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.4791329801082611,
+      "final_distance": 1.8492242097854614,
+      "steps": 301,
+      "clip_ratio": 0.7691029900332226
+    },
+    {
+      "episode": 82,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.406084346036712,
+        -2.887742488056016
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.938307523727417,
+      "final_distance": 2.1521782875061035,
+      "steps": 301,
+      "clip_ratio": 0.6727574750830565
+    },
+    {
+      "episode": 83,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.493091261237938,
+        -3.4013123975839963
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.3730872869491577,
+      "final_distance": 2.287794351577759,
+      "steps": 301,
+      "clip_ratio": 0.3521594684385382
+    },
+    {
+      "episode": 84,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": 180.0,
+      "world_position": [
+        4.4086015807092265,
+        -2.662602119257361
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.8412071466445923,
+      "final_distance": 2.6938984394073486,
+      "steps": 301,
+      "clip_ratio": 0.11627906976744186
+    },
+    {
+      "episode": 85,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        3.5261584777784427,
+        -2.9634145139063452
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3475152850151062,
+      "final_distance": 0.3475152850151062,
+      "steps": 84,
+      "clip_ratio": 0.16071428571428573
+    },
+    {
+      "episode": 86,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        4.259279615610941,
+        -3.2779473299731445
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34636011719703674,
+      "final_distance": 0.34636011719703674,
+      "steps": 156,
+      "clip_ratio": 0.532051282051282
+    },
+    {
+      "episode": 87,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        4.149302289112889,
+        -2.649495844543134
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34590381383895874,
+      "final_distance": 0.34590381383895874,
+      "steps": 225,
+      "clip_ratio": 0.6711111111111111
+    },
+    {
+      "episode": 88,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        4.293946870585823,
+        -3.0718915838298244
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34911009669303894,
+      "final_distance": 0.34911009669303894,
+      "steps": 301,
+      "clip_ratio": 0.6810631229235881
+    },
+    {
+      "episode": 89,
+      "distance": 0.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        3.558346344071155,
+        -2.960827894063149
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.34844210743904114,
+      "final_distance": 0.34844210743904114,
+      "steps": 70,
+      "clip_ratio": 0.1357142857142857
+    },
+    {
+      "episode": 90,
+      "distance": 1.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        3.6880798933982426,
+        -2.9612988214020546
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.5723228454589844,
+      "final_distance": 1.224617838859558,
+      "steps": 301,
+      "clip_ratio": 0.8089700996677741
+    },
+    {
+      "episode": 91,
+      "distance": 1.5,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        3.7694350060589445,
+        -3.152686126976462
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9397820234298706,
+      "final_distance": 1.1730940341949463,
+      "steps": 301,
+      "clip_ratio": 0.8222591362126246
+    },
+    {
+      "episode": 92,
+      "distance": 2.0,
+      "bearing_deg": 45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        4.043732312182167,
+        -2.680414259442644
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.1384867429733276,
+      "final_distance": 1.1413826942443848,
+      "steps": 301,
+      "clip_ratio": 0.8538205980066446
+    },
+    {
+      "episode": 93,
+      "distance": 0.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        4.475318643574752,
+        -3.0944702780773135
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.42965659499168396,
+      "final_distance": 1.6258279085159302,
+      "steps": 301,
+      "clip_ratio": 0.6843853820598007
+    },
+    {
+      "episode": 94,
+      "distance": 1.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        3.507455531699614,
+        -2.7498409301442557
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.824587345123291,
+      "final_distance": 1.2265374660491943,
+      "steps": 301,
+      "clip_ratio": 0.39368770764119604
+    },
+    {
+      "episode": 95,
+      "distance": 1.5,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        3.8392616814443192,
+        -2.7423722315617054
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.174762487411499,
+      "final_distance": 1.331123948097229,
+      "steps": 301,
+      "clip_ratio": 0.03986710963455149
+    },
+    {
+      "episode": 96,
+      "distance": 2.0,
+      "bearing_deg": -45.0,
+      "yaw_deg": -90.0,
+      "world_position": [
+        4.330573452964532,
+        -3.466474312346904
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": true,
+      "near_miss": false,
+      "min_distance": 1.8980638980865479,
+      "final_distance": 1.9884443283081055,
+      "steps": 301,
+      "clip_ratio": 0.0049833887043189366
+    },
+    {
+      "episode": 97,
+      "distance": 0.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -5.769167461506102,
+        4.784829030375024
+      ],
+      "success": true,
+      "timeout": false,
+      "divergent": false,
+      "near_miss": false,
+      "min_distance": 0.3466262221336365,
+      "final_distance": 0.3466262221336365,
+      "steps": 76,
+      "clip_ratio": 0.20394736842105263
+    },
+    {
+      "episode": 98,
+      "distance": 1.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -6.1783557897995225,
+        4.834247254783313
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.4112754166126251,
+      "final_distance": 1.1963529586791992,
+      "steps": 301,
+      "clip_ratio": 0.7591362126245847
+    },
+    {
+      "episode": 99,
+      "distance": 1.5,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -5.961619713626386,
+        4.743257350651124
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.6719825267791748,
+      "final_distance": 0.991754412651062,
+      "steps": 301,
+      "clip_ratio": 0.6910299003322259
+    },
+    {
+      "episode": 100,
+      "distance": 2.0,
+      "bearing_deg": 0.0,
+      "yaw_deg": 0.0,
+      "world_position": [
+        -6.005531796650324,
+        4.783309395928232
+      ],
+      "success": false,
+      "timeout": true,
+      "divergent": false,
+      "near_miss": true,
+      "min_distance": 0.9984114766120911,
+      "final_distance": 1.0573689937591553,
+      "steps": 301,
+      "clip_ratio": 0.584717607973422
+    }
+  ]
+}
