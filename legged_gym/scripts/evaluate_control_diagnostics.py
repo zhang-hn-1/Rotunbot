@@ -19,9 +19,9 @@ from legged_gym.navigation.baseline import (  # noqa: E402
 )
 from legged_gym.navigation.control_diagnostics import (  # noqa: E402
     C2_INITIAL_SPEEDS_MPS,
-    select_corner_case,
-    select_detour_case,
-    select_straight_case,
+    select_real_corner_case,
+    select_real_straight_case,
+    synthetic_diagnostic_layout,
 )
 from legged_gym.navigation.evaluation_logging import EpisodeLogger  # noqa: E402
 from legged_gym.navigation.frozen_p2p import (  # noqa: E402
@@ -71,7 +71,7 @@ def _isaac_args():
         sys.argv = saved
 
 
-def _load_maze(args, checkpoint):
+def _load_maze(args, checkpoint, diagnostic_layout=None):
     from legged_gym.envs import task_registry
 
     env_cfg = HierarchicalMazeCfg()
@@ -82,6 +82,8 @@ def _load_maze(args, checkpoint):
     env_cfg.domain_rand.push_robots = False
     enforce_frozen_control_config(env_cfg)
     env_cfg.latency.enabled = False
+    if diagnostic_layout is not None:
+        env_cfg.maze.diagnostic_layout = np.asarray(diagnostic_layout, dtype=np.int8)
     _, train_cfg = task_registry.get_cfgs(name="rotunbot_target_repro")
     train_cfg.runner.resume = False
     set_seed(env_cfg.maze.seed)
@@ -115,6 +117,26 @@ def _set_initial_forward_speed(env, speed_mps):
         gymtorch.unwrap_tensor(env.robot_actor_indices),
         1,
     )
+    env.base_lin_vel[0, :2] = velocity
+
+
+def _set_initial_yaw(env, yaw_deg):
+    import torch
+    from isaacgym import gymtorch
+
+    yaw = float(np.deg2rad(yaw_deg))
+    env.root_states[0, 3:7] = torch.tensor(
+        [0.0, 0.0, np.sin(yaw / 2.0), np.cos(yaw / 2.0)],
+        dtype=env.root_states.dtype,
+        device=env.root_states.device,
+    )
+    env.gym.set_actor_root_state_tensor_indexed(
+        env.sim,
+        gymtorch.unwrap_tensor(env.actor_root_state),
+        gymtorch.unwrap_tensor(env.robot_actor_indices),
+        1,
+    )
+    env.base_quat[:] = env.root_states[:, 3:7]
 
 
 def _cell_world(env, cell):
@@ -122,11 +144,30 @@ def _cell_world(env, cell):
     return cell_center(cell, env.maze_layout.shape, env.cfg.maze.cell_size) + origin
 
 
-def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, output_dir):
-    obs, _ = env.reset()
-    from legged_gym.scripts.evaluate_oracle_maze import _set_center_start
+def _set_cell_start(env, cell):
+    import torch
+    from isaacgym import gymtorch
 
-    _set_center_start(env)
+    env.root_states[0, :2] = torch.as_tensor(
+        _cell_world(env, cell), dtype=env.root_states.dtype, device=env.root_states.device
+    )
+    env.root_states[0, 7:13] = 0.0
+    env.gym.set_actor_root_state_tensor_indexed(
+        env.sim,
+        gymtorch.unwrap_tensor(env.actor_root_state),
+        gymtorch.unwrap_tensor(env.robot_actor_indices),
+        1,
+    )
+    env.base_quat[:] = env.root_states[:, 3:7]
+    env.base_lin_vel[:] = 0.0
+    env.base_ang_vel[:] = 0.0
+    env.compute_observations()
+
+
+def _run_case(env, policy, name, cells, initial_speed_mps, initial_yaw_deg, script_args, index, output_dir, scenario):
+    obs, _ = env.reset()
+    _set_cell_start(env, cells[0])
+    _set_initial_yaw(env, initial_yaw_deg)
     _set_initial_forward_speed(env, initial_speed_mps)
     switcher = GoalSwitchController(env)
     switcher.set_intermediate_goal_mode(True)
@@ -137,7 +178,10 @@ def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, o
         "protocol": "non_training_control_diagnostic",
         "checkpoint": str(script_args.checkpoint),
         "initial_speed_mps": float(initial_speed_mps),
+        "initial_yaw_deg": float(initial_yaw_deg),
         "cells": [list(cell) for cell in cells],
+        "wall_cells": [list(cell) for cell in scenario.get("wall_cells", ())],
+        "topology_validated": bool(scenario.get("topology_validated", False)),
     })
     current_target_index = 0
     current_world_goal = None
@@ -175,19 +219,20 @@ def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, o
             diagnostic_speed = float(env.terminal_speed[0].detach().cpu().item())
         local_goal = world_to_local(diagnostic_xy, diagnostic_yaw, current_world_goal)
         local_distance, local_bearing = local_goal_polar(local_goal)
-        current_cell = world_to_cell(
+        actual_current_cell = world_to_cell(
             diagnostic_xy - env.env_origins[0, :2].detach().cpu().numpy(),
             env.maze_layout.shape,
             env.cfg.maze.cell_size,
         )
-        waypoint_cell = targets[current_target_index]
-        next_cell = targets[current_target_index + 1] if current_target_index + 1 < len(targets) else None
-        current_segment = [_cell_world(env, current_cell).tolist(), _cell_world(env, waypoint_cell).tolist()]
-        next_segment = (
-            [_cell_world(env, waypoint_cell).tolist(), _cell_world(env, next_cell).tolist()]
-            if next_cell is not None else None
+        planned_from_cell = cells[current_target_index]
+        planned_waypoint_cell = targets[current_target_index]
+        planned_next_cell = targets[current_target_index + 1] if current_target_index + 1 < len(targets) else None
+        planned_segment = [_cell_world(env, planned_from_cell).tolist(), _cell_world(env, planned_waypoint_cell).tolist()]
+        planned_next_segment = (
+            [_cell_world(env, planned_waypoint_cell).tolist(), _cell_world(env, planned_next_cell).tolist()]
+            if planned_next_cell is not None else None
         )
-        cross_track = point_to_segment_distance(diagnostic_xy, current_segment[0], current_segment[1])
+        cross_track = point_to_segment_distance(diagnostic_xy, planned_segment[0], planned_segment[1])
         origin = env.env_origins[0, :2].detach().cpu().numpy().astype(np.float64)
         wall_surface, clearance = nearest_wall_clearance(
             diagnostic_xy - origin,
@@ -203,8 +248,15 @@ def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, o
             robot_xy=diagnostic_xy,
             robot_yaw=diagnostic_yaw,
             robot_speed=diagnostic_speed,
-            waypoint_cell=waypoint_cell,
-            next_bfs_cell=next_cell,
+            actual_current_cell=actual_current_cell,
+            planned_from_cell=planned_from_cell,
+            planned_waypoint_cell=planned_waypoint_cell,
+            planned_next_cell=planned_next_cell,
+            planned_segment=planned_segment,
+            planned_next_segment=planned_next_segment,
+            planned_delta_bearing_deg=(90.0 if planned_next_cell is not None and current_target_index == 0 and name.startswith("C2") else 0.0),
+            waypoint_cell=planned_waypoint_cell,
+            next_bfs_cell=planned_next_cell,
             local_goal_distance=local_distance,
             local_goal_bearing=local_bearing,
             waypoint_distance=float(np.linalg.norm(current_world_goal - diagnostic_xy)),
@@ -226,11 +278,12 @@ def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, o
             labels = classify_collision(
                 phase="NAVIGATE",
                 steps_since_goal_switch=current_steps_since_switch,
-                delta_bearing_deg=(90.0 if next_cell is not None and current_target_index == 0 and name.startswith("C2") else 0.0),
+                delta_bearing_deg=(90.0 if planned_next_cell is not None and current_target_index == 0 and name.startswith("C2") else 0.0),
                 waypoint_reached=False,
-                current_cell=current_cell,
-                waypoint_cell=waypoint_cell,
-                next_bfs_cell=next_cell,
+                actual_current_cell=actual_current_cell,
+                planned_from_cell=planned_from_cell,
+                planned_waypoint_cell=planned_waypoint_cell,
+                planned_next_cell=planned_next_cell,
             )
             collision_diagnostic = {
                 **labels,
@@ -240,8 +293,14 @@ def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, o
                 "steps_since_goal_switch": current_steps_since_switch,
                 "collision_local_goal_bearing": local_bearing,
                 "collision_local_goal_distance": local_distance,
-                "current_bfs_segment": current_segment,
-                "next_bfs_segment": next_segment,
+                "actual_current_cell": list(actual_current_cell),
+                "planned_from_cell": list(planned_from_cell),
+                "planned_waypoint_cell": list(planned_waypoint_cell),
+                "planned_next_cell": list(planned_next_cell) if planned_next_cell is not None else None,
+                "planned_segment": planned_segment,
+                "planned_next_segment": planned_next_segment,
+                "current_bfs_segment": planned_segment,
+                "next_bfs_segment": planned_next_segment,
                 "nearest_wall_surface_distance": wall_surface,
                 "robot_clearance": clearance,
                 "cross_track_error_to_current_bfs_segment": cross_track,
@@ -281,28 +340,52 @@ def _run_case(env, policy, name, cells, initial_speed_mps, script_args, index, o
 def run_gate(args, script_args):
     output_dir = Path(script_args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    env, policy = _load_maze(args, script_args.checkpoint)
+    from legged_gym.maps import build_maze
+
+    start_cell = (7, 7)
+    seed0_layout = build_maze((15, 15), seed=0, center_clearance_radius=2)
+    try:
+        select_real_straight_case(
+            seed0_layout, start_cell, center_cell=start_cell,
+            center_clearance_radius=2, minimum_edges=3, maximum_edges=3,
+            boundary_margin=1,
+        )
+        diagnostic_layout = None
+        layout_source = "seed0_rotunbot_maze"
+    except ValueError:
+        diagnostic_layout = synthetic_diagnostic_layout()
+        layout_source = "synthetic_diagnostic_wall_layout"
+    env, policy = _load_maze(args, script_args.checkpoint, diagnostic_layout)
     start_cell = tuple(int(value) for value in np.asarray(env.maze_layout.shape) // 2)
     scenarios = {
-        "C1_straight_corridor": select_straight_case(
-            env.maze_layout, start_cell, minimum_edges=2, maximum_edges=2
+        "C1_straight_corridor": select_real_straight_case(
+            env.maze_layout, start_cell, center_cell=start_cell,
+            center_clearance_radius=env.cfg.maze.center_clearance_radius,
+            minimum_edges=3, maximum_edges=3, boundary_margin=1
         ),
-        "C2_single_90_corner": select_corner_case(env.maze_layout, start_cell),
-        "C3_single_wall_detour": select_detour_case(env.maze_layout, start_cell),
+            "C2_single_90_corner": select_real_corner_case(
+            env.maze_layout, start_cell, center_cell=start_cell,
+            center_clearance_radius=env.cfg.maze.center_clearance_radius,
+            boundary_margin=1,
+        ),
     }
     results = []
     index = 0
     try:
         for name, scenario in scenarios.items():
             speeds = C2_INITIAL_SPEEDS_MPS if name.startswith("C2") else (0.0,)
+            yaws = (-90.0, 0.0, 90.0, 180.0)
             for speed in speeds:
-                result = _run_case(
-                    env, policy, name, scenario["cells"], speed, script_args, index, output_dir
-                )
-                result["scenario"] = name
-                result["initial_speed_mps"] = float(speed)
-                results.append(result)
-                index += 1
+                for yaw in yaws:
+                    result = _run_case(
+                        env, policy, name, scenario["cells"], speed, yaw,
+                        script_args, index, output_dir, scenario
+                    )
+                    result["scenario"] = name
+                    result["initial_speed_mps"] = float(speed)
+                    result["initial_yaw_deg"] = float(yaw)
+                    results.append(result)
+                    index += 1
     finally:
         env.gym.destroy_sim(env.sim)
     summary = {
@@ -310,6 +393,7 @@ def run_gate(args, script_args):
         "checkpoint": str(script_args.checkpoint),
         "scenarios": {name: {key: value for key, value in scenario.items()} for name, scenario in scenarios.items()},
         "c2_initial_speeds_mps": list(C2_INITIAL_SPEEDS_MPS),
+        "layout_source": layout_source,
         "results": results,
         "c1": {
             "success_rate": float(np.mean([row["success"] for row in results if row["scenario"] == "C1_straight_corridor"])),

@@ -185,20 +185,39 @@ def _failure_from_done(env):
     return "waypoint_failure"
 
 
-def _diagnostic_bfs_context(env, robot_xy, waypoint_cell, next_bfs_cell):
-    """Return world-space BFS segments without changing planner state."""
+def _freeze_planned_geometry(env, robot_xy, waypoint, global_goal):
+    """Capture waypoint geometry once; never derive it from later robot drift."""
     origin = env.env_origins[0, :2].detach().cpu().numpy().astype(np.float64)
     shape = env.maze_layout.shape
     size = float(env.cfg.maze.cell_size)
-    current_cell = world_to_cell(robot_xy - origin, shape, size)
-    current_center = cell_center(current_cell, shape, size) + origin
-    waypoint_center = cell_center(waypoint_cell, shape, size) + origin
-    current_segment = [current_center.tolist(), waypoint_center.tolist()]
-    next_segment = None
-    if next_bfs_cell is not None:
-        next_center = cell_center(next_bfs_cell, shape, size) + origin
-        next_segment = [waypoint_center.tolist(), next_center.tolist()]
-    return current_cell, current_segment, next_segment
+    from_cell = world_to_cell(robot_xy - origin, shape, size)
+    goal_cell = world_to_cell(np.asarray(global_goal) - origin, shape, size)
+    if waypoint.is_final_approach:
+        path = (from_cell, goal_cell)
+        next_cell = None
+    else:
+        path = plan_cells(env.maze_layout, from_cell, goal_cell)
+        next_cell = tuple(path[2]) if len(path) > 2 else None
+    planned_waypoint_cell = tuple(waypoint.cell)
+    planned_from_cell = tuple(path[0])
+    planned_segment = [
+        (cell_center(planned_from_cell, shape, size) + origin).tolist(),
+        (cell_center(planned_waypoint_cell, shape, size) + origin).tolist(),
+    ]
+    planned_next_segment = None
+    if next_cell is not None:
+        planned_next_segment = [
+            (cell_center(planned_waypoint_cell, shape, size) + origin).tolist(),
+            (cell_center(next_cell, shape, size) + origin).tolist(),
+        ]
+    return {
+        "planned_from_cell": planned_from_cell,
+        "planned_waypoint_cell": planned_waypoint_cell,
+        "planned_next_cell": next_cell,
+        "planned_segment": planned_segment,
+        "planned_next_segment": planned_next_segment,
+        "planned_delta_bearing_deg": float(waypoint.delta_bearing_deg),
+    }
 
 
 def _release_episode_cache():
@@ -233,6 +252,12 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
     current_delta_bearing_deg = 0.0
     current_waypoint_cell = None
     current_next_bfs_cell = None
+    planned_from_cell = None
+    planned_waypoint_cell = None
+    planned_next_cell = None
+    planned_segment = None
+    planned_next_segment = None
+    planned_delta_bearing_deg = 0.0
     current_reachability_filtered = False
     current_reachability_clip_ratio = 0.0
     steps_since_goal_switch = 0
@@ -297,18 +322,16 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     current_world_goal = global_goal.copy()
                     current_local_goal = waypoint.local_goal_xy
                     current_delta_bearing_deg = 0.0
-                else:
-                    try:
-                        active_path = plan_cells(
-                            env.maze_layout,
-                            world_to_cell(robot_xy - env.env_origins[0, :2].detach().cpu().numpy(), env.maze_layout.shape, env.cfg.maze.cell_size),
-                            world_to_cell(global_goal - env.env_origins[0, :2].detach().cpu().numpy(), env.maze_layout.shape, env.cfg.maze.cell_size),
-                        )
-                        current_next_bfs_cell = (
-                            tuple(active_path[2]) if len(active_path) > 2 else None
-                        )
-                    except Exception:
-                        current_next_bfs_cell = None
+                planned = _freeze_planned_geometry(env, robot_xy, waypoint, global_goal)
+                planned_from_cell = planned["planned_from_cell"]
+                planned_waypoint_cell = planned["planned_waypoint_cell"]
+                planned_next_cell = planned["planned_next_cell"]
+                planned_segment = planned["planned_segment"]
+                planned_next_segment = planned["planned_next_segment"]
+                planned_delta_bearing_deg = planned["planned_delta_bearing_deg"]
+                # Keep the legacy names as frozen aliases for downstream logs.
+                current_waypoint_cell = planned_waypoint_cell
+                current_next_bfs_cell = planned_next_cell
                 current_reachability_filtered = bool(
                     np.linalg.norm(np.asarray(waypoint.local_goal_xy) - np.asarray(waypoint.filtered_local_goal_xy))
                     > 1.0e-8
@@ -343,6 +366,12 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     waypoint_records.append({
                         "step": step,
                         "cell": list(waypoint.cell),
+                        "planned_from_cell": list(planned_from_cell),
+                        "planned_waypoint_cell": list(planned_waypoint_cell),
+                        "planned_next_cell": list(planned_next_cell) if planned_next_cell is not None else None,
+                        "planned_segment": planned_segment,
+                        "planned_next_segment": planned_next_segment,
+                        "planned_delta_bearing_deg": planned_delta_bearing_deg,
                         "local_goal_xy": list(current_local_goal),
                         "world_goal_xy": current_world_goal.tolist(),
                         "delta_bearing_deg": current_delta_bearing_deg,
@@ -373,13 +402,13 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                 dtype=np.float64,
             )
             local_goal_distance, local_goal_bearing = local_goal_polar(measured_local_goal)
-            current_cell = None
-            current_segment = None
-            next_segment = None
-            if current_waypoint_cell is not None:
+            actual_current_cell = None
+            if planned_waypoint_cell is not None:
                 try:
-                    current_cell, current_segment, next_segment = _diagnostic_bfs_context(
-                        env, diagnostic_xy, current_waypoint_cell, current_next_bfs_cell
+                    actual_current_cell = world_to_cell(
+                        diagnostic_xy - env.env_origins[0, :2].detach().cpu().numpy(),
+                        env.maze_layout.shape,
+                        env.cfg.maze.cell_size,
                     )
                 except (TypeError, ValueError, IndexError):
                     pass
@@ -391,8 +420,8 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                 float(env.cfg.maze.robot_collision_radius),
             )
             cross_track_error = (
-                point_to_segment_distance(diagnostic_xy, current_segment[0], current_segment[1])
-                if current_segment is not None else None
+                point_to_segment_distance(diagnostic_xy, planned_segment[0], planned_segment[1])
+                if planned_segment is not None else None
             )
             collisions += int(collision)
             step_since_goal_switch = int(steps_since_goal_switch)
@@ -406,14 +435,21 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                 global_distance=global_distance,
                 waypoint_distance=waypoint_distance,
                 speed=diagnostic_speed,
-                current_cell=(list(current_cell) if current_cell is not None else None),
-                waypoint_cell=(list(current_waypoint_cell) if current_waypoint_cell is not None else None),
-                next_bfs_cell=(list(current_next_bfs_cell) if current_next_bfs_cell is not None else None),
+                actual_current_cell=(list(actual_current_cell) if actual_current_cell is not None else None),
+                current_cell=(list(actual_current_cell) if actual_current_cell is not None else None),
+                planned_from_cell=(list(planned_from_cell) if planned_from_cell is not None else None),
+                planned_waypoint_cell=(list(planned_waypoint_cell) if planned_waypoint_cell is not None else None),
+                planned_next_cell=(list(planned_next_cell) if planned_next_cell is not None else None),
+                planned_segment=planned_segment,
+                planned_next_segment=planned_next_segment,
+                planned_delta_bearing_deg=planned_delta_bearing_deg,
+                waypoint_cell=(list(planned_waypoint_cell) if planned_waypoint_cell is not None else None),
+                next_bfs_cell=(list(planned_next_cell) if planned_next_cell is not None else None),
                 robot_yaw=diagnostic_yaw,
                 robot_speed=diagnostic_speed,
                 local_goal_distance=local_goal_distance,
                 local_goal_bearing=local_goal_bearing,
-                delta_bearing_deg=current_delta_bearing_deg,
+                delta_bearing_deg=planned_delta_bearing_deg,
                 collision=collision,
                 steps_since_goal_switch=step_since_goal_switch,
                 turn_aware_triggered=bool(
@@ -443,9 +479,10 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     steps_since_goal_switch=step_since_goal_switch,
                     delta_bearing_deg=current_delta_bearing_deg,
                     waypoint_reached=False,
-                    current_cell=current_cell,
-                    waypoint_cell=current_waypoint_cell,
-                    next_bfs_cell=current_next_bfs_cell,
+                    actual_current_cell=actual_current_cell,
+                    planned_from_cell=planned_from_cell,
+                    planned_waypoint_cell=planned_waypoint_cell,
+                    planned_next_cell=planned_next_cell,
                 )
                 collision_diagnostic = {
                     **labels,
@@ -455,11 +492,18 @@ def _run_episode(env, policy, planner, script_args, episode_id, global_goal, goa
                     "steps_since_goal_switch": step_since_goal_switch,
                     "collision_local_goal_bearing": local_goal_bearing,
                     "collision_local_goal_distance": local_goal_distance,
-                    "current_cell": list(current_cell) if current_cell is not None else None,
-                    "waypoint_cell": list(current_waypoint_cell) if current_waypoint_cell is not None else None,
-                    "next_bfs_cell": list(current_next_bfs_cell) if current_next_bfs_cell is not None else None,
-                    "current_bfs_segment": current_segment,
-                    "next_bfs_segment": next_segment,
+                    "actual_current_cell": list(actual_current_cell) if actual_current_cell is not None else None,
+                    "planned_from_cell": list(planned_from_cell) if planned_from_cell is not None else None,
+                    "planned_waypoint_cell": list(planned_waypoint_cell) if planned_waypoint_cell is not None else None,
+                    "planned_next_cell": list(planned_next_cell) if planned_next_cell is not None else None,
+                    "current_cell": list(actual_current_cell) if actual_current_cell is not None else None,
+                    "waypoint_cell": list(planned_waypoint_cell) if planned_waypoint_cell is not None else None,
+                    "next_bfs_cell": list(planned_next_cell) if planned_next_cell is not None else None,
+                    "planned_segment": planned_segment,
+                    "planned_next_segment": planned_next_segment,
+                    "planned_delta_bearing_deg": planned_delta_bearing_deg,
+                    "current_bfs_segment": planned_segment,
+                    "next_bfs_segment": planned_next_segment,
                     "nearest_wall_surface_distance": nearest_surface_distance,
                     "robot_clearance": robot_clearance,
                     "cross_track_error_to_current_bfs_segment": cross_track_error,

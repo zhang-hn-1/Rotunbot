@@ -68,11 +68,19 @@ class RotunbotMaze(RotunbotTargetObstacle):
         return torques
 
     def _create_scene_assets(self):
-        self.maze_layout = build_maze(
-            grid_size=self.cfg.maze.grid_size,
-            seed=self.cfg.maze.seed,
-            center_clearance_radius=self.cfg.maze.center_clearance_radius,
-        )
+        diagnostic_layout = getattr(self.cfg.maze, "diagnostic_layout", None)
+        if diagnostic_layout is None:
+            self.maze_layout = build_maze(
+                grid_size=self.cfg.maze.grid_size,
+                seed=self.cfg.maze.seed,
+                center_clearance_radius=self.cfg.maze.center_clearance_radius,
+            )
+        else:
+            self.maze_layout = np.asarray(diagnostic_layout, dtype=np.uint8).copy()
+            if self.maze_layout.shape != tuple(self.cfg.maze.grid_size):
+                raise ValueError("diagnostic_layout shape must match maze.grid_size")
+            if self.maze_layout.ndim != 2 or not np.all(np.isin(self.maze_layout, (0, 1))):
+                raise ValueError("diagnostic_layout must be a binary occupancy grid")
         # Sharing one layout guarantees the same number and ordering of actors
         # in every vectorized environment, which Isaac Gym tensor views require.
         self.mazes = [self.maze_layout] * self.num_envs

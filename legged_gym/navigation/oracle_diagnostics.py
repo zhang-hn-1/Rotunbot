@@ -3,18 +3,23 @@
 import numpy as np
 
 
-APPROACH_COLLISION = "APPROACH_COLLISION"
+PLANNED_STRAIGHT_COLLISION = "PLANNED_STRAIGHT_COLLISION"
+PLANNED_CORNER_COLLISION = "PLANNED_CORNER_COLLISION"
+OFF_PATH_COLLISION = "OFF_PATH_COLLISION"
 POST_SWITCH_COLLISION = "POST_SWITCH_COLLISION"
-STRAIGHT_CORRIDOR_COLLISION = "STRAIGHT_CORRIDOR_COLLISION"
-CORNER_CUT_COLLISION = "CORNER_CUT_COLLISION"
 FINAL_APPROACH_COLLISION = "FINAL_APPROACH_COLLISION"
 OTHER_COLLISION = "OTHER"
 
+# Compatibility aliases for consumers of Diagnostics v1.
+APPROACH_COLLISION = PLANNED_STRAIGHT_COLLISION
+STRAIGHT_CORRIDOR_COLLISION = PLANNED_STRAIGHT_COLLISION
+CORNER_CUT_COLLISION = PLANNED_CORNER_COLLISION
+
 COLLISION_CLASSES = (
-    APPROACH_COLLISION,
+    PLANNED_STRAIGHT_COLLISION,
+    PLANNED_CORNER_COLLISION,
+    OFF_PATH_COLLISION,
     POST_SWITCH_COLLISION,
-    STRAIGHT_CORRIDOR_COLLISION,
-    CORNER_CUT_COLLISION,
     FINAL_APPROACH_COLLISION,
     OTHER_COLLISION,
 )
@@ -82,17 +87,17 @@ def nearest_wall_clearance(robot_xy, wall_centers_xy, wall_size_xy, robot_collis
     return surface_distance, surface_distance - radius
 
 
-def _is_corner(current_cell, waypoint_cell, next_bfs_cell):
-    if current_cell is None or waypoint_cell is None or next_bfs_cell is None:
-        return False
-    first = np.asarray(waypoint_cell, dtype=np.float64) - np.asarray(current_cell, dtype=np.float64)
-    second = np.asarray(next_bfs_cell, dtype=np.float64) - np.asarray(waypoint_cell, dtype=np.float64)
+def _is_corner(planned_from_cell, planned_waypoint_cell, planned_next_cell, delta_bearing_deg):
+    if planned_from_cell is None or planned_waypoint_cell is None or planned_next_cell is None:
+        return abs(float(delta_bearing_deg)) >= TURN_THRESHOLD_DEG
+    first = np.asarray(planned_waypoint_cell, dtype=np.float64) - np.asarray(planned_from_cell, dtype=np.float64)
+    second = np.asarray(planned_next_cell, dtype=np.float64) - np.asarray(planned_waypoint_cell, dtype=np.float64)
     if np.linalg.norm(first) <= 1.0e-12 or np.linalg.norm(second) <= 1.0e-12:
         return False
     angle = abs(float(np.degrees(np.arctan2(
         first[0] * second[1] - first[1] * second[0], first.dot(second)
     ))))
-    return angle >= TURN_THRESHOLD_DEG
+    return angle >= TURN_THRESHOLD_DEG or abs(float(delta_bearing_deg)) >= TURN_THRESHOLD_DEG
 
 
 def classify_collision(
@@ -101,26 +106,47 @@ def classify_collision(
     steps_since_goal_switch,
     delta_bearing_deg,
     waypoint_reached,
-    current_cell,
-    waypoint_cell,
-    next_bfs_cell,
+    actual_current_cell=None,
+    planned_from_cell=None,
+    planned_waypoint_cell=None,
+    planned_next_cell=None,
+    current_cell=None,
+    waypoint_cell=None,
+    next_bfs_cell=None,
 ):
-    """Return overlapping collision labels and one deterministic primary class."""
+    """Classify using frozen planned geometry and separately measured drift."""
+    if actual_current_cell is None:
+        actual_current_cell = current_cell
+    if planned_waypoint_cell is None:
+        planned_waypoint_cell = waypoint_cell
+    if planned_next_cell is None:
+        planned_next_cell = next_bfs_cell
+    if planned_from_cell is None:
+        planned_from_cell = actual_current_cell
     final_approach = str(phase) == "FINAL_APPROACH"
     post_switch = 0 <= int(steps_since_goal_switch) <= 10
-    corner = _is_corner(current_cell, waypoint_cell, next_bfs_cell) or (
-        abs(float(delta_bearing_deg)) >= TURN_THRESHOLD_DEG
+    corner = _is_corner(
+        planned_from_cell, planned_waypoint_cell, planned_next_cell, delta_bearing_deg
     )
-    straight = not corner and waypoint_cell is not None and current_cell != waypoint_cell
-    approach = str(phase) == "NAVIGATE" and waypoint_cell is not None
+    straight = not corner and planned_waypoint_cell is not None
+    off_path = (
+        planned_waypoint_cell is not None
+        and actual_current_cell is not None
+        and tuple(actual_current_cell) not in {
+            tuple(planned_from_cell), tuple(planned_waypoint_cell)
+        }
+    )
+    approach = str(phase) == "NAVIGATE" and planned_waypoint_cell is not None
     if final_approach:
         primary = FINAL_APPROACH_COLLISION
     elif post_switch:
         primary = POST_SWITCH_COLLISION
+    elif off_path:
+        primary = OFF_PATH_COLLISION
     elif corner and not bool(waypoint_reached):
-        primary = CORNER_CUT_COLLISION
+        primary = PLANNED_CORNER_COLLISION
     elif straight and not bool(waypoint_reached):
-        primary = STRAIGHT_CORRIDOR_COLLISION
+        primary = PLANNED_STRAIGHT_COLLISION
     elif approach:
         primary = APPROACH_COLLISION
     else:
@@ -129,6 +155,9 @@ def classify_collision(
         "collision_class_primary": primary,
         "is_final_approach": final_approach,
         "is_post_switch": post_switch,
+        "is_planned_corner": corner,
+        "is_planned_straight": straight,
+        "is_off_path": off_path,
         "is_corner": corner,
         "is_straight_corridor": straight,
         "is_approach": approach,
@@ -141,9 +170,19 @@ def summarize_collision_diagnostics(collision_records, episode_count):
     counts = {name: sum(row.get("collision_class_primary") == name for row in records) for name in COLLISION_CLASSES}
     collision_count = len(records)
     overlap_counts = {
-        name: sum(bool(row.get(name, False)) for row in records)
-        for name in ("is_final_approach", "is_post_switch", "is_corner", "is_straight_corridor", "is_approach")
+        name: sum(
+            bool(row.get(name, row.get("is_corner", False) if name == "is_planned_corner"
+                       else row.get("is_straight_corridor", False) if name == "is_planned_straight"
+                       else False))
+            for row in records
+        )
+        for name in (
+            "is_final_approach", "is_post_switch", "is_planned_corner",
+            "is_planned_straight", "is_off_path", "is_approach",
+        )
     }
+    overlap_counts["is_corner"] = overlap_counts["is_planned_corner"]
+    overlap_counts["is_straight_corridor"] = overlap_counts["is_planned_straight"]
     return {
         "collision_count": collision_count,
         "collision_class_counts": counts,
