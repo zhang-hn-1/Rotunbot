@@ -60,6 +60,7 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
     cfg: RotunbotMazeLocalDepthCfg
 
     def __init__(self, cfg, sim_params, physics_engine, sim_device, headless):
+        self.cfg = cfg
         self.num_single_obs = 272
         self.num_short_obs = 272
         self._init_depth_camera_state()
@@ -83,6 +84,8 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         return torch.zeros(cfg.env.num_single_obs, device=self.device)
 
     def _init_buffers(self):
+        if not bool(getattr(self.cfg.maze, "enabled", False)):
+            self._maze_wall_centers = []
         super()._init_buffers()
         self.global_goal_xy_world = torch.zeros(self.num_envs, 2, device=self.device)
         self.active_local_goal_xy_world = torch.zeros_like(self.global_goal_xy_world)

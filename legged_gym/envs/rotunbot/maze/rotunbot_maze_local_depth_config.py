@@ -83,6 +83,8 @@ class RotunbotMazeLocalDepthCfg(RotunbotMazeCfg):
 
 
 class RotunbotMazeLocalDepthCfgPPO(RotunbotMazeCfgPPO):
+    runner_class_name = "DWLOnPolicyRunner"
+
     class policy(RotunbotMazeCfgPPO.policy):
         policy_class_name = "ActorCriticDepthLocal"
         depth_height = RotunbotMazeLocalDepthCfg.env.depth_height
