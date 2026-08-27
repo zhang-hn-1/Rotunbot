@@ -62,6 +62,8 @@ from .rotunbot.target_point.rotunbot_target_depth import RotunbotTargetDepth
 from .rotunbot.target_point.rotunbot_target_depth_config import RotunbotTargetDepthCfg, RotunbotTargetDepthCfgPPO
 from .rotunbot.maze.rotunbot_maze import RotunbotMaze
 from .rotunbot.maze.rotunbot_maze_config import RotunbotMazeCfg, RotunbotMazeCfgPPO
+from .rotunbot.maze.rotunbot_maze_local_depth import RotunbotMazeLocalDepth
+from .rotunbot.maze.rotunbot_maze_local_depth_config import RotunbotMazeLocalDepthCfg, RotunbotMazeLocalDepthCfgPPO
 from .rotunbot.local_p2p.rotunbot_local_p2p import RotunbotLocalP2P
 from .rotunbot.local_p2p.rotunbot_local_p2p_config import RotunbotLocalP2PCfg, RotunbotLocalP2PCfgPPO
 from .rotunbot.local_goal_p2p.rotunbot_local_goal import RotunbotLocalGoal
@@ -87,5 +89,6 @@ task_registry.register( "rotunbot_target_lh", RotunbotTargetLH, RotunbotTargetLH
 task_registry.register( "rotunbot_target_repro", RotunbotTargetRepro, RotunbotTargetReproCfg(), RotunbotTargetReproCfgPPO() )
 task_registry.register( "rotunbot_target_depth", RotunbotTargetDepth, RotunbotTargetDepthCfg(), RotunbotTargetDepthCfgPPO() )
 task_registry.register( "rotunbot_maze", RotunbotMaze, RotunbotMazeCfg(), RotunbotMazeCfgPPO() )
+task_registry.register( "rotunbot_maze_local_depth", RotunbotMazeLocalDepth, RotunbotMazeLocalDepthCfg(), RotunbotMazeLocalDepthCfgPPO() )
 task_registry.register( "rotunbot_local_p2p", RotunbotLocalP2P, RotunbotLocalP2PCfg(), RotunbotLocalP2PCfgPPO() )
 task_registry.register( "rotunbot_local_goal", RotunbotLocalGoal, RotunbotLocalGoalCfg(), RotunbotLocalGoalCfgPPO() )
