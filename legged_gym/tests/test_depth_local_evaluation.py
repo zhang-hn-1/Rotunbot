@@ -2,7 +2,11 @@ import unittest
 
 import torch
 
-from legged_gym.scripts.evaluate_depth_local import aggregate_records, side_obstacle_observability
+from legged_gym.scripts.evaluate_depth_local import (
+    aggregate_records,
+    goal_y_bin,
+    side_obstacle_observability,
+)
 
 
 class DepthLocalEvaluationTests(unittest.TestCase):
@@ -23,6 +27,25 @@ class DepthLocalEvaluationTests(unittest.TestCase):
         self.assertEqual(result["collision_rate"], 0.5)
         self.assertEqual(result["waypoint_reach_count"], 3)
         self.assertEqual(result["depth_backend_actual"], ["fallback"])
+
+    def test_goal_y_bin_is_stable_at_boundaries(self):
+        self.assertEqual(goal_y_bin(0.19), "<0.2")
+        self.assertEqual(goal_y_bin(0.2), "0.2-0.4")
+        self.assertEqual(goal_y_bin(0.4), "0.4-0.6")
+        self.assertEqual(goal_y_bin(0.6), "0.4-0.6")
+        self.assertEqual(goal_y_bin(0.61), ">0.6")
+
+    def test_aggregate_reports_goal_y_bucket_success(self):
+        records = [
+            {"local_success": 1, "global_success": 1, "abs_goal_y": 0.1},
+            {"local_success": 0, "global_success": 0, "abs_goal_y": 0.3},
+            {"local_success": 1, "global_success": 1, "abs_goal_y": 0.5},
+        ]
+        summary = aggregate_records(records)
+        self.assertEqual(summary["local_goal_y_bins"]["<0.2"]["episodes"], 1)
+        self.assertEqual(summary["local_goal_y_bins"]["<0.2"]["local_success_rate"], 1.0)
+        self.assertEqual(summary["local_goal_y_bins"]["0.2-0.4"]["local_success_rate"], 0.0)
+        self.assertEqual(summary["local_goal_y_bins"]["0.4-0.6"]["local_success_rate"], 1.0)
 
     def test_formal_camera_rejects_fallback(self):
         with self.assertRaises(ValueError):

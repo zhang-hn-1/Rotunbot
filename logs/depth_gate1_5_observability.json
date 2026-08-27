@@ -1,0 +1,39 @@
+{
+  "horizontal_fov_deg": 105.0,
+  "radius_m": 1.5,
+  "obstacle_half_extent_m": 0.15,
+  "bearings_deg": [
+    45,
+    60,
+    75,
+    90,
+    -60,
+    -90
+  ],
+  "measurements": {
+    "45": {
+      "visible_fraction": 0.15625,
+      "min_normalized_depth": 0.1577984094619751
+    },
+    "60": {
+      "visible_fraction": 0.03125,
+      "min_normalized_depth": 0.17589068412780762
+    },
+    "75": {
+      "visible_fraction": 0.0,
+      "min_normalized_depth": 1.0
+    },
+    "90": {
+      "visible_fraction": 0.0,
+      "min_normalized_depth": 1.0
+    },
+    "-60": {
+      "visible_fraction": 0.03125,
+      "min_normalized_depth": 0.17589068412780762
+    },
+    "-90": {
+      "visible_fraction": 0.0,
+      "min_normalized_depth": 1.0
+    }
+  }
+}

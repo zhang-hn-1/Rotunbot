@@ -32,6 +32,8 @@ class RotunbotMazeLocalDepthCfg(RotunbotMazeCfg):
 
     class maze(RotunbotMazeCfg.maze):
         enabled = False
+        # ``none`` is Stage0; ``corridor`` is the controlled Stage1 scene.
+        scene_mode = "none"
         terminate_on_collision = True
         safety_clearance = 0.8
 

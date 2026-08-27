@@ -3,7 +3,7 @@
 import math
 
 import torch
-from isaacgym import gymtorch
+from isaacgym import gymapi, gymtorch
 from isaacgym.torch_utils import torch_rand_float
 
 from legged_gym.navigation.local_goal import world_goal_to_robot_xy
@@ -64,6 +64,8 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.num_single_obs = 272
         self.num_short_obs = 272
         self._init_depth_camera_state()
+        self._depth_scene_centers = []
+        self._depth_scene_half_extents = []
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
 
     def _create_envs(self):
@@ -71,11 +73,49 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self._create_camera_sensors()
 
     def _create_scene_assets(self):
+        scene_mode = getattr(self.cfg.maze, "scene_mode", "none")
+        if scene_mode == "corridor":
+            self._depth_scene_centers = [(0.0, -1.4), (0.0, 1.4)]
+            self._depth_scene_half_extents = [(8.0, 0.2), (8.0, 0.2)]
+            wall_options = gymapi.AssetOptions()
+            wall_options.fix_base_link = True
+            wall_asset = self.gym.create_box(self.sim, 16.0, 0.4, 1.2, wall_options)
+            return {
+                "corridor_asset": wall_asset,
+                "corridor_color": gymapi.Vec3(0.32, 0.38, 0.48),
+            }
         if not bool(getattr(self.cfg.maze, "enabled", False)):
             return {}
         return super()._create_scene_assets()
 
     def _create_scene_actors(self, env_handle, env_id, scene_assets):
+        if getattr(self.cfg.maze, "scene_mode", "none") == "corridor":
+            origin = self.env_origins[env_id]
+            for wall_index, (center_x, center_y) in enumerate(self._depth_scene_centers):
+                wall_pose = gymapi.Transform()
+                wall_pose.p = gymapi.Vec3(
+                    origin[0].item() + center_x,
+                    origin[1].item() + center_y,
+                    origin[2].item() + 0.6,
+                )
+                wall_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
+                wall_actor = self.gym.create_actor(
+                    env_handle,
+                    scene_assets["corridor_asset"],
+                    wall_pose,
+                    f"corridor_wall_{wall_index}",
+                    env_id,
+                    0,
+                    0,
+                )
+                self.gym.set_rigid_body_color(
+                    env_handle,
+                    wall_actor,
+                    0,
+                    gymapi.MESH_VISUAL,
+                    scene_assets["corridor_color"],
+                )
+            return
         if bool(getattr(self.cfg.maze, "enabled", False)):
             return super()._create_scene_actors(env_handle, env_id, scene_assets)
 
@@ -94,12 +134,26 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.needs_new_waypoint = torch.zeros_like(self.waypoint_reached)
         self.global_goal_reached = torch.zeros_like(self.waypoint_reached)
         self.waypoint_changed = torch.zeros_like(self.waypoint_reached)
+        self.waypoint_reach_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.terminal_local_success = torch.zeros_like(self.waypoint_reached)
+        self.terminal_global_success = torch.zeros_like(self.waypoint_reached)
+        self.terminal_collision = torch.zeros_like(self.waypoint_reached)
+        self.terminal_timeout = torch.zeros_like(self.waypoint_reached)
+        self.terminal_goal_distance = torch.zeros(self.num_envs, device=self.device)
+        self.terminal_local_goal_distance = torch.zeros_like(self.terminal_goal_distance)
+        self.terminal_position = torch.zeros(self.num_envs, 2, device=self.device)
+        self.terminal_waypoint_reach_count = torch.zeros_like(self.waypoint_reach_count)
         self.prev_local_goal_dist = torch.zeros(self.num_envs, device=self.device)
         self.depth_observation = torch.ones(self.num_envs, 8, 32, device=self.device)
         self._init_camera_tensors()
         self.depth_backend = self.depth_backend_actual
 
     def _get_depth_fallback_aabbs(self):
+        if getattr(self.cfg.maze, "scene_mode", "none") == "corridor":
+            return (
+                torch.as_tensor(self._depth_scene_centers, dtype=torch.float32, device=self.device),
+                torch.as_tensor(self._depth_scene_half_extents, dtype=torch.float32, device=self.device),
+            )
         if not bool(getattr(self.cfg.maze, "enabled", False)):
             return (
                 torch.empty(0, 2, device=self.device),
@@ -219,6 +273,8 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
         self.needs_new_waypoint[env_ids] = True
+        if hasattr(self, "waypoint_reach_count"):
+            self.waypoint_reach_count[env_ids] += 1
 
     def set_active_waypoint(self, waypoint_xy_world, env_ids=None):
         """Latch a planner-provided feasible waypoint for every environment."""
@@ -289,6 +345,15 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.time_out_buf[:] = self.episode_length_buf >= self.max_episode_length
         self.success_buf[:] = success
         terminal_collision = self.maze_collision_buf & bool(getattr(self.cfg.maze, "terminate_on_collision", True))
+        if hasattr(self, "terminal_local_success"):
+            self.terminal_local_success[:] = self.waypoint_reached
+            self.terminal_global_success[:] = self.global_goal_reached
+            self.terminal_collision[:] = terminal_collision
+            self.terminal_timeout[:] = self.time_out_buf
+            self.terminal_goal_distance[:] = global_dist
+            self.terminal_local_goal_distance[:] = local_dist
+            self.terminal_position[:] = self.root_states[:, :2]
+            self.terminal_waypoint_reach_count[:] = self.waypoint_reach_count
         self.reset_buf[:] = self.time_out_buf | success | roll_cutoff | pitch_cutoff | out_of_bounds | terminal_collision
 
     def reset_idx(self, env_ids):
@@ -299,6 +364,8 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.needs_new_waypoint[env_ids] = False
         self.global_goal_reached[env_ids] = False
         self.waypoint_changed[env_ids] = False
+        if hasattr(self, "waypoint_reach_count"):
+            self.waypoint_reach_count[env_ids] = 0
         self.active_local_goal_xy_world[env_ids] = self.global_goal_xy_world[env_ids]
         self._update_local_goal()
         self.prev_local_goal_dist[env_ids] = torch.linalg.vector_norm(self.active_local_goal_xy_robot[env_ids], dim=1)

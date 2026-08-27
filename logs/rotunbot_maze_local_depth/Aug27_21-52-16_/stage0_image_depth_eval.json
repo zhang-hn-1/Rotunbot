@@ -1,0 +1,130 @@
+{
+  "checkpoint": "/home/jason/SphericalRobot_LeggedGym-master-sru/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_maze_local_depth/Aug27_21-52-16_/model_200.pt",
+  "stage": 0,
+  "depth_backend_requested": "isaacgym",
+  "records": [
+    {
+      "episode": 1,
+      "local_success": 0,
+      "global_success": 0,
+      "collision": 0,
+      "timeout": 1,
+      "waypoint_reach_count": 0,
+      "final_distance": 5.916177272796631,
+      "final_local_distance": 5.916177272796631,
+      "path_length": 69.97118448415131,
+      "completion_time": 29.999999329447746,
+      "steps": 1500,
+      "abs_goal_y": 0.5388950109481812,
+      "depth_backend_requested": "isaacgym",
+      "depth_backend_actual": "isaacgym"
+    },
+    {
+      "episode": 2,
+      "local_success": 1,
+      "global_success": 1,
+      "collision": 0,
+      "timeout": 0,
+      "waypoint_reach_count": 0,
+      "final_distance": 0.2466387003660202,
+      "final_local_distance": 0.246638685464859,
+      "path_length": 0.5233640295627993,
+      "completion_time": 0.7599999830126762,
+      "steps": 38,
+      "abs_goal_y": 0.150479257106781,
+      "depth_backend_requested": "isaacgym",
+      "depth_backend_actual": "isaacgym"
+    },
+    {
+      "episode": 3,
+      "local_success": 1,
+      "global_success": 1,
+      "collision": 0,
+      "timeout": 0,
+      "waypoint_reach_count": 0,
+      "final_distance": 0.23108190298080444,
+      "final_local_distance": 0.23108188807964325,
+      "path_length": 38.65911161825352,
+      "completion_time": 16.91999962180853,
+      "steps": 846,
+      "abs_goal_y": 0.16942757368087769,
+      "depth_backend_requested": "isaacgym",
+      "depth_backend_actual": "isaacgym"
+    },
+    {
+      "episode": 4,
+      "local_success": 0,
+      "global_success": 0,
+      "collision": 0,
+      "timeout": 1,
+      "waypoint_reach_count": 0,
+      "final_distance": 6.399306297302246,
+      "final_local_distance": 6.399306297302246,
+      "path_length": 70.01829874806572,
+      "completion_time": 30.01999932900071,
+      "steps": 1501,
+      "abs_goal_y": 0.44405317306518555,
+      "depth_backend_requested": "isaacgym",
+      "depth_backend_actual": "isaacgym"
+    },
+    {
+      "episode": 5,
+      "local_success": 0,
+      "global_success": 0,
+      "collision": 0,
+      "timeout": 1,
+      "waypoint_reach_count": 0,
+      "final_distance": 6.3758225440979,
+      "final_local_distance": 6.3758225440979,
+      "path_length": 70.01777237591159,
+      "completion_time": 30.01999932900071,
+      "steps": 1501,
+      "abs_goal_y": 0.4545106589794159,
+      "depth_backend_requested": "isaacgym",
+      "depth_backend_actual": "isaacgym"
+    }
+  ],
+  "summary": {
+    "episodes": 5,
+    "local_success_rate": 0.4,
+    "global_success_rate": 0.4,
+    "collision_rate": 0.0,
+    "timeout_rate": 0.6,
+    "waypoint_reach_count": 0,
+    "final_distance_mean": 3.8338053435087205,
+    "path_length_mean": 49.83794625118899,
+    "completion_time_mean": 21.543999518454076,
+    "depth_backend_requested": [
+      "isaacgym"
+    ],
+    "depth_backend_actual": [
+      "isaacgym"
+    ],
+    "local_goal_y_bins": {
+      "<0.2": {
+        "episodes": 2,
+        "local_success_rate": 1.0,
+        "final_distance_mean": 0.23886030167341232,
+        "completion_time_mean": 8.839999802410603
+      },
+      "0.2-0.4": {
+        "episodes": 0,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 0.0,
+        "completion_time_mean": 0.0
+      },
+      "0.4-0.6": {
+        "episodes": 3,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 6.230435371398926,
+        "completion_time_mean": 30.013332662483055
+      },
+      ">0.6": {
+        "episodes": 0,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 0.0,
+        "completion_time_mean": 0.0
+      }
+    }
+  }
+}

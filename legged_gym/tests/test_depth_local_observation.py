@@ -35,6 +35,10 @@ class DepthLocalObservationTests(unittest.TestCase):
         self.assertTrue(torch.allclose(obs[:, 14:16], torch.ones(n, 2) * 6))
         self.assertTrue(torch.allclose(obs[:, 16:], torch.ones(n, 8, 32).reshape(n, -1) * 7))
 
+    def test_stage_scene_mode_has_explicit_empty_default(self):
+        cfg = RotunbotMazeLocalDepthCfg()
+        self.assertEqual(cfg.maze.scene_mode, "none")
+
     def test_actor_observation_has_no_world_xy_or_yaw_slots(self):
         self.assertNotIn("root_states[:, :2]", RotunbotMazeLocalDepth.compute_observations.__code__.co_names)
         self.assertEqual(RotunbotMazeLocalDepthCfg.env.state_dim, 16)

@@ -22,6 +22,26 @@ def _extract_backend(argv):
     return backend, remaining
 
 
+def _extract_scene_mode(argv):
+    mode = "none"
+    remaining = []
+    skip = False
+    for index, value in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        if value == "--scene-mode":
+            if index + 1 >= len(argv):
+                raise ValueError("--scene-mode requires none or corridor")
+            mode = argv[index + 1]
+            skip = True
+        else:
+            remaining.append(value)
+    if mode not in ("none", "corridor"):
+        raise ValueError("--scene-mode must be none or corridor")
+    return mode, remaining
+
+
 def smoke(argv=None):
     import isaacgym  # noqa: F401 - must precede torch in Isaac Gym Preview 4
     import numpy as np
@@ -35,6 +55,7 @@ def smoke(argv=None):
     from legged_gym.utils import get_args, task_registry
 
     backend, remaining = _extract_backend(list(sys.argv[1:] if argv is None else argv))
+    scene_mode, remaining = _extract_scene_mode(remaining)
     sys.argv = [sys.argv[0]] + remaining
     args = get_args()
     args.task = "rotunbot_maze_local_depth"
@@ -45,6 +66,8 @@ def smoke(argv=None):
     env_cfg.domain_rand.randomize_base_mass = False
     env_cfg.domain_rand.push_robots = False
     env_cfg.camera.depth_backend = backend
+    env_cfg.maze.scene_mode = scene_mode
+    env_cfg.maze.enabled = False
     if backend == "isaacgym":
         # Offscreen graphics remain enabled by the task config even when the
         # viewer is disabled with --headless.
@@ -70,7 +93,10 @@ def smoke(argv=None):
                 f"backend audit failed: requested={env.depth_backend_requested}, "
                 f"actual={env.depth_backend_actual}"
             )
-        print(f"Depth local smoke passed: backend={backend}, obs={tuple(obs.shape)}, critic={tuple(privileged.shape)}")
+        print(
+            f"Depth local smoke passed: backend={backend}, scene={scene_mode}, "
+            f"obs={tuple(obs.shape)}, critic={tuple(privileged.shape)}"
+        )
     finally:
         if env.viewer is not None:
             env.gym.destroy_viewer(env.viewer)

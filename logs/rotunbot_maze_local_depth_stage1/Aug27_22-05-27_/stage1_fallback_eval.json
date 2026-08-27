@@ -1,0 +1,98 @@
+{
+  "checkpoint": "/home/jason/SphericalRobot_LeggedGym-master-sru/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_maze_local_depth_stage1/Aug27_22-05-27_/model_200.pt",
+  "stage": 1,
+  "depth_backend_requested": "fallback",
+  "records": [
+    {
+      "episode": 1,
+      "local_success": 0,
+      "global_success": 0,
+      "collision": 0,
+      "timeout": 0,
+      "waypoint_reach_count": 0,
+      "final_distance": 1.6843278408050537,
+      "final_local_distance": 1.6843279600143433,
+      "path_length": 1.3196808191714808,
+      "completion_time": 1.219999972730875,
+      "steps": 61,
+      "abs_goal_y": 0.5388950109481812,
+      "depth_backend_requested": "fallback",
+      "depth_backend_actual": "fallback"
+    },
+    {
+      "episode": 2,
+      "local_success": 0,
+      "global_success": 0,
+      "collision": 1,
+      "timeout": 0,
+      "waypoint_reach_count": 0,
+      "final_distance": 3.1813013553619385,
+      "final_local_distance": 3.1813011169433594,
+      "path_length": 2.547618903568946,
+      "completion_time": 1.699999962002039,
+      "steps": 85,
+      "abs_goal_y": 0.150479257106781,
+      "depth_backend_requested": "fallback",
+      "depth_backend_actual": "fallback"
+    },
+    {
+      "episode": 3,
+      "local_success": 0,
+      "global_success": 0,
+      "collision": 1,
+      "timeout": 0,
+      "waypoint_reach_count": 0,
+      "final_distance": 2.3391621112823486,
+      "final_local_distance": 2.3391623497009277,
+      "path_length": 1.177490662841592,
+      "completion_time": 1.0399999767541885,
+      "steps": 52,
+      "abs_goal_y": 0.16942757368087769,
+      "depth_backend_requested": "fallback",
+      "depth_backend_actual": "fallback"
+    }
+  ],
+  "summary": {
+    "episodes": 3,
+    "local_success_rate": 0.0,
+    "global_success_rate": 0.0,
+    "collision_rate": 0.6666666666666666,
+    "timeout_rate": 0.0,
+    "waypoint_reach_count": 0,
+    "final_distance_mean": 2.4015971024831138,
+    "path_length_mean": 1.6815967951940063,
+    "completion_time_mean": 1.3199999704957008,
+    "depth_backend_requested": [
+      "fallback"
+    ],
+    "depth_backend_actual": [
+      "fallback"
+    ],
+    "local_goal_y_bins": {
+      "<0.2": {
+        "episodes": 2,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 2.7602317333221436,
+        "completion_time_mean": 1.3699999693781137
+      },
+      "0.2-0.4": {
+        "episodes": 0,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 0.0,
+        "completion_time_mean": 0.0
+      },
+      "0.4-0.6": {
+        "episodes": 1,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 1.6843278408050537,
+        "completion_time_mean": 1.219999972730875
+      },
+      ">0.6": {
+        "episodes": 0,
+        "local_success_rate": 0.0,
+        "final_distance_mean": 0.0,
+        "completion_time_mean": 0.0
+      }
+    }
+  }
+}

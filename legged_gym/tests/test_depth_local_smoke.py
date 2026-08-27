@@ -1,6 +1,6 @@
 import unittest
 
-from legged_gym.scripts.smoke_depth_local import _extract_backend
+from legged_gym.scripts.smoke_depth_local import _extract_backend, _extract_scene_mode
 
 
 class DepthLocalSmokeTests(unittest.TestCase):
@@ -13,6 +13,11 @@ class DepthLocalSmokeTests(unittest.TestCase):
         backend, argv = _extract_backend(["--depth-backend", "isaacgym"])
         self.assertEqual(backend, "isaacgym")
         self.assertEqual(argv, [])
+
+    def test_corridor_scene_is_explicit(self):
+        scene, argv = _extract_scene_mode(["--scene-mode", "corridor", "--headless"])
+        self.assertEqual(scene, "corridor")
+        self.assertEqual(argv, ["--headless"])
 
 
 if __name__ == "__main__":
