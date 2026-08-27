@@ -38,6 +38,7 @@ def fake_env(stage=0):
     env.active_local_goal_xy_robot = env.active_local_goal_xy_world.clone()
     env.prev_local_goal_dist = torch.tensor([1.2, 0.8])
     env.waypoint_changed = torch.zeros(2, dtype=torch.bool)
+    env.needs_new_waypoint = torch.zeros(2, dtype=torch.bool)
     env.waypoint_reached = torch.zeros(2, dtype=torch.bool)
     env.global_goal_reached = torch.zeros(2, dtype=torch.bool)
     env.maze_collision_buf = torch.zeros(2, dtype=torch.bool)
@@ -50,6 +51,8 @@ def fake_env(stage=0):
     env.base_lin_vel = torch.zeros(2, 3)
     env.actions = torch.zeros(2, 2)
     env.last_actions = torch.zeros(2, 2)
+    env.obs_buf = torch.zeros(2, 272)
+    env.privileged_obs_buf = torch.zeros(2, 18)
     return env
 
 

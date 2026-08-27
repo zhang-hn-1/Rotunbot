@@ -91,6 +91,7 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.active_local_goal_xy_world = torch.zeros_like(self.global_goal_xy_world)
         self.active_local_goal_xy_robot = torch.zeros_like(self.global_goal_xy_world)
         self.waypoint_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.needs_new_waypoint = torch.zeros_like(self.waypoint_reached)
         self.global_goal_reached = torch.zeros_like(self.waypoint_reached)
         self.waypoint_changed = torch.zeros_like(self.waypoint_reached)
         self.prev_local_goal_dist = torch.zeros(self.num_envs, device=self.device)
@@ -209,27 +210,44 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.depth_backend = self.depth_backend_actual
 
     def _advance_active_waypoint(self, env_ids=None):
+        """Mark reached waypoints pending planner replacement.
+
+        The planner, rather than this environment callback, owns the next
+        waypoint selection.  Keeping the current target here prevents one
+        transition from exposing the final global goal to the actor.
+        """
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
-        self.active_local_goal_xy_world[env_ids] = self.global_goal_xy_world[env_ids]
-        self._update_local_goal()
-        self.prev_local_goal_dist[env_ids] = torch.linalg.vector_norm(
-            self.active_local_goal_xy_robot[env_ids], dim=1
-        )
-        self.waypoint_changed[env_ids] = True
+        self.needs_new_waypoint[env_ids] = True
 
-    def set_active_waypoint(self, waypoint_xy_world):
+    def set_active_waypoint(self, waypoint_xy_world, env_ids=None):
         """Latch a planner-provided feasible waypoint for every environment."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         waypoint_xy_world = torch.as_tensor(
             waypoint_xy_world, dtype=torch.float32,
             device=self.device,
         )
-        if waypoint_xy_world.shape != self.active_local_goal_xy_world.shape:
-            raise ValueError(f"waypoint must have shape {tuple(self.active_local_goal_xy_world.shape)}")
-        self.active_local_goal_xy_world[:] = waypoint_xy_world
+        expected_shape = (len(env_ids), 2)
+        if waypoint_xy_world.shape != expected_shape:
+            raise ValueError(f"waypoint must have shape {expected_shape}")
+        self.active_local_goal_xy_world[env_ids] = waypoint_xy_world
         self._update_local_goal()
-        self.prev_local_goal_dist[:] = torch.linalg.vector_norm(self.active_local_goal_xy_robot, dim=1)
-        self.waypoint_changed[:] = True
+        self.prev_local_goal_dist[env_ids] = torch.linalg.vector_norm(
+            self.active_local_goal_xy_robot[env_ids], dim=1
+        )
+        self.needs_new_waypoint[env_ids] = False
+        self.waypoint_reached[env_ids] = False
+        self.waypoint_changed[env_ids] = True
+        # The planner normally injects the replacement between environment
+        # steps.  Refresh the goal slots immediately so the next actor call
+        # cannot consume the pending waypoint's stale observation.
+        if hasattr(self, "obs_buf") and self.obs_buf.shape[-1] >= 16:
+            local_goal = self.active_local_goal_xy_robot[env_ids] / 8.0
+            self.obs_buf[env_ids, 12:14] = local_goal
+            if getattr(self, "privileged_obs_buf", None) is not None:
+                self.privileged_obs_buf[env_ids, 12:14] = local_goal
 
     def filter_feasible_waypoints(self, local_waypoints):
         """Return candidates compatible with the measured planar action interface."""
@@ -258,7 +276,7 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.waypoint_reached[:] = local_dist <= float(getattr(self.cfg.commands, "local_waypoint_radius", 0.25))
         self.global_goal_reached[:] = global_dist <= float(getattr(self.cfg.commands, "global_goal_radius", 0.35))
         if stage >= 4:
-            advance = self.waypoint_reached & ~self.global_goal_reached
+            advance = self.waypoint_reached & ~self.global_goal_reached & ~self.needs_new_waypoint
             if torch.any(advance):
                 self._advance_active_waypoint(advance.nonzero(as_tuple=False).flatten())
             success = self.global_goal_reached
@@ -278,6 +296,7 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         if len(env_ids) == 0:
             return
         self.waypoint_reached[env_ids] = False
+        self.needs_new_waypoint[env_ids] = False
         self.global_goal_reached[env_ids] = False
         self.waypoint_changed[env_ids] = False
         self.active_local_goal_xy_world[env_ids] = self.global_goal_xy_world[env_ids]
