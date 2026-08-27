@@ -3,6 +3,7 @@
 import math
 
 import torch
+from isaacgym import gymtorch
 from isaacgym.torch_utils import torch_rand_float
 
 from legged_gym.navigation.local_goal import world_goal_to_robot_xy
@@ -132,6 +133,23 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.active_local_goal_xy_world[env_ids] = self.global_goal_xy_world[env_ids]
         self.commands[env_ids, :2] = self.global_goal_xy_world[env_ids]
 
+    def _reset_root_states(self, env_ids):
+        super()._reset_root_states(env_ids)
+        if len(env_ids) == 0 or not bool(getattr(self.cfg.commands, "random_start_yaw", False)):
+            return
+        yaw = torch_rand_float(-math.pi, math.pi, (len(env_ids), 1), device=self.device).squeeze(1)
+        self.root_states[env_ids, 3] = 0.0
+        self.root_states[env_ids, 4] = 0.0
+        self.root_states[env_ids, 5] = torch.sin(0.5 * yaw)
+        self.root_states[env_ids, 6] = torch.cos(0.5 * yaw)
+        actor_indices = self.robot_actor_indices[env_ids].to(dtype=torch.int32)
+        self.gym.set_actor_root_state_tensor_indexed(
+            self.sim,
+            gymtorch.unwrap_tensor(self.actor_root_state),
+            gymtorch.unwrap_tensor(actor_indices),
+            len(actor_indices),
+        )
+
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
             return
@@ -187,11 +205,47 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         self.privileged_obs_buf[:, 17] = self.maze_collision_buf.float()
         self.depth_backend = self.depth_backend_actual
 
-    def _advance_active_waypoint(self):
-        self.active_local_goal_xy_world[:] = self.global_goal_xy_world
+    def _advance_active_waypoint(self, env_ids=None):
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        self.active_local_goal_xy_world[env_ids] = self.global_goal_xy_world[env_ids]
+        self._update_local_goal()
+        self.prev_local_goal_dist[env_ids] = torch.linalg.vector_norm(
+            self.active_local_goal_xy_robot[env_ids], dim=1
+        )
+        self.waypoint_changed[env_ids] = True
+
+    def set_active_waypoint(self, waypoint_xy_world):
+        """Latch a planner-provided feasible waypoint for every environment."""
+        waypoint_xy_world = torch.as_tensor(
+            waypoint_xy_world, dtype=torch.float32,
+            device=self.device,
+        )
+        if waypoint_xy_world.shape != self.active_local_goal_xy_world.shape:
+            raise ValueError(f"waypoint must have shape {tuple(self.active_local_goal_xy_world.shape)}")
+        self.active_local_goal_xy_world[:] = waypoint_xy_world
         self._update_local_goal()
         self.prev_local_goal_dist[:] = torch.linalg.vector_norm(self.active_local_goal_xy_robot, dim=1)
         self.waypoint_changed[:] = True
+
+    def filter_feasible_waypoints(self, local_waypoints):
+        """Return candidates compatible with the measured planar action interface."""
+        candidates = torch.as_tensor(local_waypoints, dtype=torch.float32, device=self.device)
+        if candidates.ndim != 2 or candidates.shape[1] != 2:
+            raise ValueError("local_waypoints must have shape [M, 2]")
+        distance = torch.linalg.vector_norm(candidates, dim=1)
+        bearing = torch.abs(torch.atan2(candidates[:, 1], candidates[:, 0]))
+        distance_limit = getattr(self.cfg.commands, "distance_limit", (0.25, 2.0))
+        lateral_limit = float(getattr(self.cfg.commands, "lateral_limit", 0.8))
+        minimum_forward = float(getattr(self.cfg.commands, "minimum_forward_component", 0.15))
+        bearing_limit = math.radians(float(getattr(self.cfg.commands, "bearing_limit_deg", 120.0)))
+        return (
+            (distance >= float(distance_limit[0]))
+            & (distance <= float(distance_limit[1]))
+            & (candidates[:, 1].abs() <= lateral_limit)
+            & (candidates[:, 0] >= minimum_forward)
+            & (bearing <= bearing_limit)
+        )
 
     def check_termination(self):
         self._update_local_goal()
@@ -203,7 +257,7 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
         if stage >= 4:
             advance = self.waypoint_reached & ~self.global_goal_reached
             if torch.any(advance):
-                self._advance_active_waypoint()
+                self._advance_active_waypoint(advance.nonzero(as_tuple=False).flatten())
             success = self.global_goal_reached
         else:
             success = self.waypoint_reached
@@ -247,3 +301,11 @@ class RotunbotMazeLocalDepth(DepthCameraMixin, RotunbotMaze):
 
     def _reward_time(self):
         return torch.ones(self.num_envs, device=self.device)
+
+    def post_physics_step(self):
+        """Advance the progress baseline only after reward computation."""
+        super().post_physics_step()
+        self.prev_local_goal_dist[:] = torch.linalg.vector_norm(
+            self.active_local_goal_xy_robot, dim=1
+        )
+        self.waypoint_changed[:] = False

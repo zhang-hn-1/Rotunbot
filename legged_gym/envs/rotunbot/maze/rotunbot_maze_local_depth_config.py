@@ -44,6 +44,10 @@ class RotunbotMazeLocalDepthCfg(RotunbotMazeCfg):
         local_waypoint_radius = 0.25
         global_goal_radius = 0.35
         stop_vel = 0.1
+        distance_limit = (0.25, 2.0)
+        lateral_limit = 0.8
+        minimum_forward_component = 0.15
+        bearing_limit_deg = 120.0
         class ranges(RotunbotMazeCfg.commands.ranges):
             pos_x = [-10.0, 10.0]
             pos_y = [-10.0, 10.0]
