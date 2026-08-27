@@ -73,6 +73,19 @@ class RotunbotMazeLocalDepthCfg(RotunbotMazeCfg):
     class rewards(RotunbotMazeCfg.rewards):
         only_positive_rewards = False
         class scales(RotunbotMazeCfg.rewards.scales):
+            # V0 is a local-goal executor. Disable legacy global-target and
+            # balance shaping inherited from RotunbotTargetObstacle.
+            close_to_target = 0.0
+            to_target = 0.0
+            to_orientation = 0.0
+            stop = 0.0
+            lin_vel_limits = 0.0
+            ang_vel_limits = 0.0
+            balance = 0.0
+            lin_vel_z = 0.0
+            ang_vel_xy = 0.0
+            torques = 0.0
+            overturn = 0.0
             local_progress = 3.0
             local_reach = 20.0
             wall_penalty = 0.5

@@ -1,0 +1,398 @@
+{
+  "reward_names": [
+    "action_rate",
+    "collision",
+    "local_progress",
+    "local_reach",
+    "wall_penalty"
+  ],
+  "reward_scales": {
+    "action_rate": -0.00019999999552965166,
+    "collision": -0.3999999910593033,
+    "local_progress": 0.05999999865889549,
+    "local_reach": 0.3999999910593033,
+    "wall_penalty": 0.009999999776482582
+  },
+  "steps": [
+    {
+      "step": 1,
+      "goal_dist": 0.4833506941795349,
+      "active_local_goal_dist": 0.4833507239818573,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -1.985192284337245e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -4.4351923861540854e-05,
+      "reward_terms": {
+        "action_rate": -2.4499999199179e-05,
+        "collision": -0.0,
+        "local_progress": -1.985192284337245e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 2,
+      "goal_dist": 0.4838789105415344,
+      "active_local_goal_dist": 0.4838789105415344,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -3.1691193726146594e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -3.1691193726146594e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -3.1691193726146594e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 3,
+      "goal_dist": 0.4845955967903137,
+      "active_local_goal_dist": 0.4845955967903137,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -4.3001175072276965e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -4.3001175072276965e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -4.3001175072276965e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 4,
+      "goal_dist": 0.4854891002178192,
+      "active_local_goal_dist": 0.4854891002178192,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -5.361020521377213e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -5.361020521377213e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -5.361020521377213e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 5,
+      "goal_dist": 0.4865446984767914,
+      "active_local_goal_dist": 0.4865446984767914,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -6.333589408313856e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -6.333589408313856e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -6.333589408313856e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 6,
+      "goal_dist": 0.4877442717552185,
+      "active_local_goal_dist": 0.4877443015575409,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -7.197618106147274e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -7.197618106147274e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -7.197618106147274e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 7,
+      "goal_dist": 0.4890674352645874,
+      "active_local_goal_dist": 0.4890674352645874,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -7.938801718410105e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -7.938801718410105e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -7.938801718410105e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 8,
+      "goal_dist": 0.4904920160770416,
+      "active_local_goal_dist": 0.49049198627471924,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -8.547306060791016e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -8.547306060791016e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -8.547306060791016e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 9,
+      "goal_dist": 0.49199309945106506,
+      "active_local_goal_dist": 0.49199312925338745,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -9.006857726490125e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -9.006857726490125e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -9.006857726490125e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 10,
+      "goal_dist": 0.4935453236103058,
+      "active_local_goal_dist": 0.4935453236103058,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -9.313166083302349e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -9.313166083302349e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -9.313166083302349e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 11,
+      "goal_dist": 0.4951182007789612,
+      "active_local_goal_dist": 0.4951182007789612,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -9.437262633582577e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -0.00010687262692954391,
+      "reward_terms": {
+        "action_rate": -1.249999968422344e-05,
+        "collision": -0.0,
+        "local_progress": -9.437262633582577e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 12,
+      "goal_dist": 0.49668410420417786,
+      "active_local_goal_dist": 0.49668410420417786,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -9.395420056534931e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -9.395420056534931e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -9.395420056534931e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 13,
+      "goal_dist": 0.4982186257839203,
+      "active_local_goal_dist": 0.4982186555862427,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -9.207308175973594e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -9.207308175973594e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -9.207308175973594e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 14,
+      "goal_dist": 0.4996979236602783,
+      "active_local_goal_dist": 0.49969789385795593,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -8.875429193722084e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -8.875429193722084e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -8.875429193722084e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 15,
+      "goal_dist": 0.5010983943939209,
+      "active_local_goal_dist": 0.5010983943939209,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -8.403002721024677e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -8.403002721024677e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -8.403002721024677e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 16,
+      "goal_dist": 0.5023982524871826,
+      "active_local_goal_dist": 0.5023982524871826,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -7.79914844315499e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -7.79914844315499e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -7.79914844315499e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 17,
+      "goal_dist": 0.5035764575004578,
+      "active_local_goal_dist": 0.5035765171051025,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -7.069587445585057e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -7.069587445585057e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -7.069587445585057e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 18,
+      "goal_dist": 0.5046144723892212,
+      "active_local_goal_dist": 0.5046144723892212,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -6.227731500985101e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -6.227731500985101e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -6.227731500985101e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 19,
+      "goal_dist": 0.5054947137832642,
+      "active_local_goal_dist": 0.5054947733879089,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -5.2818057156400755e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -5.2818057156400755e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -5.2818057156400755e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    },
+    {
+      "step": 20,
+      "goal_dist": 0.5062028169631958,
+      "active_local_goal_dist": 0.5062028169631958,
+      "rew_close_to_target": 0.0,
+      "rew_stop": 0.0,
+      "rew_balance": 0.0,
+      "rew_local_progress": -4.2482613935135305e-05,
+      "rew_local_reach": 0.0,
+      "total_reward": -4.2482613935135305e-05,
+      "reward_terms": {
+        "action_rate": -0.0,
+        "collision": -0.0,
+        "local_progress": -4.2482613935135305e-05,
+        "local_reach": 0.0,
+        "wall_penalty": -0.0
+      },
+      "done": false
+    }
+  ]
+}

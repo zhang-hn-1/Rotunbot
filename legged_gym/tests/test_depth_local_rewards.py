@@ -77,6 +77,20 @@ class DepthLocalRewardTests(unittest.TestCase):
         self.assertFalse(cfg.rewards.only_positive_rewards)
         self.assertLess(total, 0.0)
 
+    def test_v0_disables_legacy_target_and_balance_rewards(self):
+        scales = RotunbotMazeLocalDepthCfg.rewards.scales
+        for name in (
+            "close_to_target", "to_target", "to_orientation", "stop",
+            "lin_vel_limits", "ang_vel_limits", "balance", "lin_vel_z",
+            "ang_vel_xy", "torques", "overturn",
+        ):
+            self.assertEqual(getattr(scales, name), 0.0, name)
+        self.assertEqual(scales.local_progress, 3.0)
+        self.assertEqual(scales.local_reach, 20.0)
+        self.assertEqual(scales.wall_penalty, 0.5)
+        self.assertEqual(scales.collision, -20.0)
+        self.assertEqual(scales.action_rate, -0.01)
+
 
 if __name__ == "__main__":
     unittest.main()
