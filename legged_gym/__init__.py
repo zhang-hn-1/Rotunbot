@@ -30,5 +30,16 @@
 
 import os
 
+# Isaac Gym Preview 4 and the pinned rsl_rl release target the Python 3.8 /
+# NumPy APIs that are removed or lazily exposed by newer environments.  Keep
+# the compatibility shim at package import time so all task entry points use
+# the same runtime behavior.
+import distutils
+import distutils.version
+import numpy as np
+
+if not hasattr(np, "float"):
+    np.float = float
+
 LEGGED_GYM_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LEGGED_GYM_ENVS_DIR = os.path.join(LEGGED_GYM_ROOT_DIR, 'legged_gym', 'envs')
