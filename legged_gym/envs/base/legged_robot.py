@@ -89,6 +89,10 @@ class LeggedRobot(BaseTask):
         for _ in range(self.cfg.control.decimation):
             self.torques = self._compute_torques(self.actions).view(self.torques.shape)
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
+            if getattr(self, "contact_yaw_damping_enabled", False):
+                self.gym.refresh_rigid_body_state_tensor(self.sim)
+                self.gym.refresh_net_contact_force_tensor(self.sim)
+            self._apply_contact_yaw_damping()
             self.gym.simulate(self.sim)
             if self.device == 'cpu':
                 self.gym.fetch_results(self.sim, True)
@@ -103,6 +107,140 @@ class LeggedRobot(BaseTask):
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
+
+    def _init_contact_yaw_damping(self):
+        """Initialize the bounded contact-patch yaw resistance model."""
+        self.contact_yaw_damping_enabled = bool(
+            getattr(self.cfg.asset, "contact_yaw_damping", False)
+        )
+        zeros = dict(
+            dtype=torch.float, device=self.device, requires_grad=False
+        )
+        self.contact_yaw_damping_torque = torch.zeros(self.num_envs, **zeros)
+        self.contact_yaw_damping_grounded = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device,
+            requires_grad=False,
+        )
+        self.contact_yaw_damping_support_force = torch.zeros(
+            self.num_envs, **zeros
+        )
+        self.contact_yaw_damping_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device,
+            requires_grad=False,
+        )
+        self.contact_yaw_damping_spin_rate = torch.zeros(self.num_envs, **zeros)
+        self.contact_yaw_damping_planar_speed = torch.zeros(
+            self.num_envs, **zeros
+        )
+        self.contact_yaw_damping_speed_factor = torch.zeros(
+            self.num_envs, **zeros
+        )
+        if not self.contact_yaw_damping_enabled:
+            return
+
+        body_name = str(getattr(self.cfg.asset, "contact_yaw_damping_body", ""))
+        if not body_name:
+            raise ValueError(
+                "asset.contact_yaw_damping_body must name the contact body"
+            )
+        self.contact_yaw_damping_body_index = int(
+            self.gym.find_actor_rigid_body_handle(
+                self.envs[0], self.actor_handles[0], body_name
+            )
+        )
+        if self.contact_yaw_damping_body_index < 0:
+            raise ValueError("contact yaw damping body was not found: %s" % body_name)
+        if self.contact_yaw_damping_body_index >= self.contact_forces.shape[1]:
+            raise RuntimeError("contact yaw damping body index is out of range")
+
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self._contact_yaw_rigid_body_states = gymtorch.wrap_tensor(
+            rigid_body_state
+        ).view(self.num_envs, -1, 13)
+        if self._contact_yaw_rigid_body_states.shape[1] != self.contact_forces.shape[1]:
+            raise RuntimeError(
+                "rigid-body state and contact-force body counts disagree"
+            )
+
+        asset_cfg = self.cfg.asset
+        self.contact_yaw_damping_viscous = float(
+            getattr(asset_cfg, "contact_yaw_damping_viscous", 0.0)
+        )
+        self.contact_yaw_damping_coulomb = float(
+            getattr(asset_cfg, "contact_yaw_damping_coulomb", 0.0)
+        )
+        self.contact_yaw_damping_transition = float(
+            getattr(asset_cfg, "contact_yaw_damping_transition", 0.02)
+        )
+        self.contact_yaw_damping_max_torque = float(
+            getattr(asset_cfg, "contact_yaw_damping_max_torque", 0.0)
+        )
+        self.contact_yaw_damping_force_threshold = float(
+            getattr(asset_cfg, "contact_yaw_damping_force_threshold", 10.0)
+        )
+        self.contact_yaw_damping_speed_scale = float(
+            getattr(asset_cfg, "contact_yaw_damping_speed_scale", 0.10)
+        )
+        self.contact_yaw_damping_speed_exponent = float(
+            getattr(asset_cfg, "contact_yaw_damping_speed_exponent", 4.0)
+        )
+        if self.contact_yaw_damping_viscous < 0.0 or self.contact_yaw_damping_coulomb < 0.0:
+            raise ValueError("contact yaw damping coefficients must be non-negative")
+        if self.contact_yaw_damping_transition <= 0.0:
+            raise ValueError("contact yaw damping transition must be positive")
+        if self.contact_yaw_damping_max_torque <= 0.0:
+            raise ValueError("contact yaw damping max torque must be positive")
+        if self.contact_yaw_damping_speed_scale <= 0.0:
+            raise ValueError("contact yaw damping speed scale must be positive")
+        if self.contact_yaw_damping_speed_exponent < 1.0:
+            raise ValueError("contact yaw damping exponent must be at least one")
+        self._contact_yaw_external_torques = torch.zeros_like(self.contact_forces)
+
+    def _apply_contact_yaw_damping(self):
+        """Apply opposing world-up torque while the configured body is grounded."""
+        if not getattr(self, "contact_yaw_damping_enabled", False):
+            return
+        body_index = self.contact_yaw_damping_body_index
+        support_force = self.contact_forces[:, body_index, self.up_axis_idx]
+        grounded = support_force > self.contact_yaw_damping_force_threshold
+        shell_state = self._contact_yaw_rigid_body_states[:, body_index, :]
+        planar_speed = torch.linalg.vector_norm(shell_state[:, 7:9], dim=1)
+        speed_factor = torch.reciprocal(
+            1.0 + torch.pow(
+                planar_speed / self.contact_yaw_damping_speed_scale,
+                self.contact_yaw_damping_speed_exponent,
+            )
+        )
+        world_yaw_rate = shell_state[:, 10 + self.up_axis_idx]
+        damping_torque = -(
+            self.contact_yaw_damping_viscous * world_yaw_rate
+            + self.contact_yaw_damping_coulomb
+            * torch.tanh(world_yaw_rate / self.contact_yaw_damping_transition)
+        )
+        damping_torque = torch.clamp(
+            damping_torque * speed_factor,
+            -self.contact_yaw_damping_max_torque,
+            self.contact_yaw_damping_max_torque,
+        )
+        damping_torque = torch.where(
+            grounded, damping_torque, torch.zeros_like(damping_torque)
+        )
+        self.contact_yaw_damping_grounded.copy_(grounded)
+        self.contact_yaw_damping_active.copy_(grounded)
+        self.contact_yaw_damping_support_force.copy_(support_force)
+        self.contact_yaw_damping_spin_rate.copy_(world_yaw_rate)
+        self.contact_yaw_damping_planar_speed.copy_(planar_speed)
+        self.contact_yaw_damping_speed_factor.copy_(speed_factor)
+        self.contact_yaw_damping_torque.copy_(damping_torque)
+        self._contact_yaw_external_torques.zero_()
+        self._contact_yaw_external_torques[:, body_index, self.up_axis_idx] = damping_torque
+        applied = self.gym.apply_rigid_body_force_tensors(
+            self.sim, None, gymtorch.unwrap_tensor(self._contact_yaw_external_torques),
+            gymapi.ENV_SPACE,
+        )
+        if applied is False:
+            raise RuntimeError("Isaac Gym rejected contact yaw damping tensor")
 
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
@@ -511,6 +649,7 @@ class LeggedRobot(BaseTask):
         self.base_quat = self.root_states[:, 3:7]
 
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
+        self._init_contact_yaw_damping()
 
         # initialize some data used later on
         self.common_step_counter = 0

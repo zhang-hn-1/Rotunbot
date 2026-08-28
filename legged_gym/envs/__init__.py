@@ -42,6 +42,10 @@ from .rotunbot.rotunbot import Rotunbot
 from .rotunbot.rotunbot_config import  RotunbotRoughCfg, RotunbotRoughCfgPPO
 from .rotunbot.vel_tracking.rotunbot_vel import RotunbotVel
 from .rotunbot.vel_tracking.rotunbot_vel_config import RotunbotVelCfg , RotunbotVelCfgPPO
+from .rotunbot.vel_tracking.rotunbot_vel_config import (
+    RotunbotVelSRU50V49IntegrationCfg,
+    RotunbotVelSRU50V49IntegrationCfgPPO,
+)
 from .rotunbot.trajectory_tracking.rotunbot_tra import RotunbotTrajectory
 from .rotunbot.trajectory_tracking.rotunbot_tra_config import RotunbotTrajectoryCfg, RotunbotTrajectoryCfgPPO
 from .rotunbot.vel_tracking.rotunbot_vel import RotunbotVel
@@ -90,5 +94,11 @@ task_registry.register( "rotunbot_target_repro", RotunbotTargetRepro, RotunbotTa
 task_registry.register( "rotunbot_target_depth", RotunbotTargetDepth, RotunbotTargetDepthCfg(), RotunbotTargetDepthCfgPPO() )
 task_registry.register( "rotunbot_maze", RotunbotMaze, RotunbotMazeCfg(), RotunbotMazeCfgPPO() )
 task_registry.register( "rotunbot_maze_local_depth", RotunbotMazeLocalDepth, RotunbotMazeLocalDepthCfg(), RotunbotMazeLocalDepthCfgPPO() )
+task_registry.register(
+    "rotunbot_vel_sru50_v49_integration",
+    RotunbotVel,
+    RotunbotVelSRU50V49IntegrationCfg(),
+    RotunbotVelSRU50V49IntegrationCfgPPO(),
+)
 task_registry.register( "rotunbot_local_p2p", RotunbotLocalP2P, RotunbotLocalP2PCfg(), RotunbotLocalP2PCfgPPO() )
 task_registry.register( "rotunbot_local_goal", RotunbotLocalGoal, RotunbotLocalGoalCfg(), RotunbotLocalGoalCfgPPO() )

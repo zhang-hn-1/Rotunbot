@@ -101,18 +101,24 @@ def parse_sim_params(args, cfg):
     return sim_params
 
 def get_load_path(root, load_run=-1, checkpoint=-1):
-    try:
-        runs = os.listdir(root)
-        #TODO sort by date to handle change of month
-        runs.sort()
-        if 'exported' in runs: runs.remove('exported')
-        last_run = os.path.join(root, runs[-1])
-    except:
-        raise ValueError("No runs in this directory: " + root)
-    if load_run==-1:
-        load_run = last_run
+    # Evaluation may intentionally load a policy trained under another task
+    # whose observation/action contract is identical. Resolve an explicit
+    # absolute run before touching ``root``.
+    if isinstance(load_run, str) and os.path.isabs(load_run):
+        load_run = os.path.normpath(load_run)
     else:
-        load_run = os.path.join(root, load_run)
+        try:
+            runs = os.listdir(root)
+            #TODO sort by date to handle change of month
+            runs.sort()
+            if 'exported' in runs: runs.remove('exported')
+            last_run = os.path.join(root, runs[-1])
+        except:
+            raise ValueError("No runs in this directory: " + root)
+        if load_run==-1:
+            load_run = last_run
+        else:
+            load_run = os.path.join(root, load_run)
 
     if checkpoint==-1:
         models = [file for file in os.listdir(load_run) if 'model' in file]

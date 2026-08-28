@@ -1,980 +1,2239 @@
-# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: BSD-3-Clause
-# 
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-# list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Copyright (c) 2021 ETH Zurich, Nikita Rudin
-
-from time import time
-import numpy as np
-import os
-
-from isaacgym.torch_utils import *
-from isaacgym import gymtorch, gymapi, gymutil
+"""Low-level feasible forward-velocity/yaw-rate tracking task."""
 
 import torch
-# from torch.tensor import Tensor
-from typing import Tuple, Dict
+from isaacgym import gymapi, gymtorch
 
-from legged_gym.envs import LeggedRobot
-from legged_gym import LEGGED_GYM_ROOT_DIR
+from legged_gym.envs.base.legged_robot import LeggedRobot
+
 from .rotunbot_vel_config import RotunbotVelCfg
-from scipy.spatial.transform import Rotation
 
-class PIDController:
-    def __init__(self, kp, ki, kd , num_env):
-        """
-        初始化PID控制器
-        参数:kp (float): 比例增益;ki (float): 积分增益;kd (float): 微分增益
-        """
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.last_error = torch.zeros(num_env, device='cuda', dtype=torch.float)
-        self.integral = torch.zeros(num_env, device='cuda', dtype=torch.float)
 
-    def compute(self, setpoint , current_value, dt):
-        
-        error = setpoint - current_value
-        self.integral += error * dt
-        derivative = (error - self.last_error) / dt
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        self.last_error = error
-        return output
-    
-    def reset(self , env_ids):
-        self.last_error[env_ids] = 0.
-        self.integral[env_ids] = 0.
+def command_update_interval_steps(policy_dt, command_frequency_hz):
+    """Return an exact policy-step interval for a sampled high-level command.
 
-def copysign_new(a, b):
+    A navigation command must remain constant for an integer number of low-level
+    policy steps.  Silently rounding an incompatible frequency changes the
+    deployed interface, so reject non-integral ratios instead.
+    """
+    if command_frequency_hz is None:
+        return 1
+    policy_dt = float(policy_dt)
+    command_frequency_hz = float(command_frequency_hz)
+    if policy_dt <= 0.0 or command_frequency_hz <= 0.0:
+        raise ValueError("policy_dt and command_frequency_hz must be positive")
+    exact_interval = 1.0 / (policy_dt * command_frequency_hz)
+    interval = int(round(exact_interval))
+    if interval < 1 or abs(exact_interval - interval) > 1.0e-6:
+        raise ValueError(
+            "command frequency must divide the low-level policy frequency: "
+            f"policy_dt={policy_dt}, command_frequency_hz={command_frequency_hz}"
+        )
+    return interval
 
-    a = torch.tensor(a, device=b.device, dtype=torch.float)
-    a = a.expand_as(b)
-    return torch.abs(a) * torch.sign(b)
 
-def get_euler_rpy(q):
-    qx, qy, qz, qw = 0, 1, 2, 3
-    # roll (x-axis rotation)
-    sinr_cosp = 2.0 * (q[..., qw] * q[..., qx] + q[..., qy] * q[..., qz])
-    cosr_cosp = q[..., qw] * q[..., qw] - q[..., qx] * \
-        q[..., qx] - q[..., qy] * q[..., qy] + q[..., qz] * q[..., qz]
-    roll = torch.atan2(sinr_cosp, cosr_cosp)
+def planar_velocity_in_heading_frame(heading, world_linear_velocity):
+    """Express world velocity in a gravity-aligned planar heading frame."""
+    forward_xy = torch.stack((torch.cos(heading), torch.sin(heading)), dim=1)
+    lateral_xy = torch.stack((-torch.sin(heading), torch.cos(heading)), dim=1)
+    forward_velocity = torch.sum(
+        world_linear_velocity[:, :2] * forward_xy,
+        dim=1,
+    )
+    lateral_velocity = torch.sum(
+        world_linear_velocity[:, :2] * lateral_xy,
+        dim=1,
+    )
+    return torch.stack(
+        (forward_velocity, lateral_velocity, world_linear_velocity[:, 2]),
+        dim=1,
+    )
 
-    # pitch (y-axis rotation)
-    sinp = 2.0 * (q[..., qw] * q[..., qy] - q[..., qz] * q[..., qx])
-    pitch = torch.where(torch.abs(sinp) >= 1, copysign_new(
-        np.pi / 2.0, sinp), torch.asin(sinp))
 
-    # yaw (z-axis rotation)
-    siny_cosp = 2.0 * (q[..., qw] * q[..., qz] + q[..., qx] * q[..., qy])
-    cosy_cosp = q[..., qw] * q[..., qw] + q[..., qx] * \
-        q[..., qx] - q[..., qy] * q[..., qy] - q[..., qz] * q[..., qz]
-    yaw = torch.atan2(siny_cosp, cosy_cosp)
+def yaw_from_quaternion(quaternion):
+    """Return gravity-aligned yaw for quaternions stored as (x, y, z, w)."""
+    qx, qy, qz, qw = quaternion.unbind(dim=1)
+    sin_yaw = 2.0 * (qw * qz + qx * qy)
+    cos_yaw = 1.0 - 2.0 * (qy.square() + qz.square())
+    return torch.atan2(sin_yaw, cos_yaw)
 
-    return roll % (2*np.pi), pitch % (2*np.pi), yaw % (2*np.pi)
 
-def get_euler_xyz_tensor(quat):
-    r, p, w = get_euler_rpy(quat)
-    # stack r, p, w in dim1
-    euler_xyz = torch.stack((r, p, w), dim=-1)
-    euler_xyz[euler_xyz > np.pi] -= 2 * np.pi
-    return euler_xyz
+def feasible_yaw_rate_limit(
+    forward_velocity,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+):
+    """Return the speed-dependent nonholonomic yaw-rate bound.
+
+    Legacy tasks use the geometric ``|w| <= |v| / radius`` envelope.  A task
+    may additionally fade steering authority in between two empirically
+    identified speeds.  This represents the Rotunbot's inability to generate
+    useful yaw at (almost) zero rolling speed without pretending that it can
+    rotate in place.  A smoothstep ramp keeps the reference and its first
+    derivative continuous at both boundaries.
+    """
+    speed = torch.abs(forward_velocity)
+    radius_bound = speed / float(minimum_turn_radius)
+    yaw_limit = torch.minimum(
+        radius_bound,
+        torch.full_like(radius_bound, float(maximum_yaw_rate)),
+    ) * float(envelope_fraction)
+    start_speed = float(turn_authority_start_speed)
+    full_speed = float(turn_authority_full_speed)
+    if full_speed > start_speed:
+        normalized_speed = torch.clamp(
+            (speed - start_speed) / (full_speed - start_speed),
+            0.0,
+            1.0,
+        )
+        authority = normalized_speed.square() * (3.0 - 2.0 * normalized_speed)
+        yaw_limit = yaw_limit * authority
+    return yaw_limit
+
+
+def speed_scheduled_value(
+    forward_velocity,
+    low_speed_value,
+    full_speed_value,
+    transition_start_speed,
+    transition_full_speed,
+):
+    """Smoothly blend a calibrated low-speed value into its nominal value."""
+    speed = torch.abs(forward_velocity)
+    start_speed = float(transition_start_speed)
+    full_speed = float(transition_full_speed)
+    if full_speed <= start_speed:
+        return torch.full_like(speed, float(full_speed_value))
+    fraction = torch.clamp(
+        (speed - start_speed) / (full_speed - start_speed), 0.0, 1.0
+    )
+    fraction = fraction.square() * (3.0 - 2.0 * fraction)
+    return float(low_speed_value) + (
+        float(full_speed_value) - float(low_speed_value)
+    ) * fraction
+
+
+def project_velocity_commands(
+    commands,
+    maximum_forward_speed,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    stationary_threshold=0.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+    authority_forward_velocity=None,
+    authority_speed_preview_margin=0.0,
+):
+    """Project [v, w] commands into the Rotunbot feasible command set."""
+    projected = commands.clone()
+    projected[:, 0] = torch.clamp(
+        projected[:, 0],
+        -float(maximum_forward_speed),
+        float(maximum_forward_speed),
+    )
+    authority_velocity = projected[:, 0]
+    if authority_forward_velocity is not None:
+        measured_authority = torch.abs(
+            authority_forward_velocity.to(
+                device=projected.device, dtype=projected.dtype
+            ).reshape(-1)
+        ) + float(authority_speed_preview_margin)
+        authority_speed = torch.minimum(
+            torch.abs(projected[:, 0]), measured_authority
+        )
+        # ``feasible_yaw_rate_limit`` uses only the magnitude, so a positive
+        # authority speed is sufficient and remains compatible with Torch 1.10.
+        authority_velocity = authority_speed
+    yaw_limit = feasible_yaw_rate_limit(
+        authority_velocity,
+        maximum_yaw_rate,
+        minimum_turn_radius,
+        envelope_fraction,
+        turn_authority_start_speed,
+        turn_authority_full_speed,
+    )
+    projected[:, 1] = torch.maximum(
+        torch.minimum(projected[:, 1], yaw_limit),
+        -yaw_limit,
+    )
+    if stationary_threshold > 0.0:
+        stationary = torch.abs(projected[:, 0]) < float(stationary_threshold)
+        projected[stationary, 1] = 0.0
+    return projected
+
+
+def advance_correlated_velocity_commands(
+    commands,
+    linear_step,
+    yaw_step,
+    minimum_speed,
+    maximum_forward_speed,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    stationary_threshold=0.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+):
+    """Advance a bounded 5 Hz command random walk without flipping drive sign.
+
+    SRU outputs are temporally correlated, not independent full-range samples
+    every 0.2 s.  This helper perturbs speed magnitude and yaw rate locally,
+    then projects the result into the same physical ``(v, w)`` domain used by
+    training and deployment.
+    """
+    updated = commands[:, :2].clone()
+    drive_sign = torch.where(
+        updated[:, 0] >= 0.0,
+        torch.ones_like(updated[:, 0]),
+        -torch.ones_like(updated[:, 0]),
+    )
+    speed_delta = (
+        2.0 * torch.rand_like(updated[:, 0]) - 1.0
+    ) * float(linear_step)
+    speed = torch.clamp(
+        torch.abs(updated[:, 0]) + speed_delta,
+        float(minimum_speed),
+        float(maximum_forward_speed),
+    )
+    updated[:, 0] = drive_sign * speed
+    updated[:, 1] += (
+        2.0 * torch.rand_like(updated[:, 1]) - 1.0
+    ) * float(yaw_step)
+    return project_velocity_commands(
+        updated,
+        maximum_forward_speed,
+        maximum_yaw_rate,
+        minimum_turn_radius,
+        envelope_fraction,
+        stationary_threshold=stationary_threshold,
+        turn_authority_start_speed=turn_authority_start_speed,
+        turn_authority_full_speed=turn_authority_full_speed,
+    )
+
+
+def nominal_actuator_actions(
+    commands,
+    forward_speed_per_action=0.40,
+    yaw_gain_intercept=0.0915,
+    yaw_gain_speed_slope=0.175,
+):
+    """Map feasible ``[v, w]`` commands to normalized Rotunbot actions.
+
+    The map is the symmetric nominal inverse identified by the fixed-action
+    tests.  It supplies a physically valid baseline; PPO learns only a bounded
+    residual around it.
+    """
+    actions = torch.zeros_like(commands[:, :2])
+    actions[:, 0] = torch.clamp(
+        commands[:, 0] / float(forward_speed_per_action),
+        -1.0,
+        1.0,
+    )
+    yaw_gain = float(yaw_gain_intercept) + float(yaw_gain_speed_slope) * torch.abs(
+        commands[:, 0]
+    )
+    actions[:, 1] = torch.clamp(
+        -torch.sign(commands[:, 0])
+        * commands[:, 1]
+        / yaw_gain,
+        -1.0,
+        1.0,
+    )
+    return actions
+
+
+def lead_compensated_velocity_commands(
+    commands,
+    command_rates,
+    linear_lead_time,
+    angular_lead_time,
+    maximum_forward_speed,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    stationary_threshold=0.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+):
+    """Lead the governed reference without leaving the feasible command set.
+
+    The nominal inverse is a steady-state map and therefore lags a changing
+    reference.  A bounded look-ahead based on the *governed* command rate adds
+    the missing acceleration feedforward while retaining the sphere's speed,
+    yaw-rate, and minimum-turn-radius constraints.
+    """
+    led = commands[:, :2].clone()
+    led[:, 0] += float(linear_lead_time) * command_rates[:, 0]
+    led[:, 1] += float(angular_lead_time) * command_rates[:, 1]
+    return project_velocity_commands(
+        led,
+        maximum_forward_speed,
+        maximum_yaw_rate,
+        minimum_turn_radius,
+        envelope_fraction,
+        stationary_threshold=stationary_threshold,
+        turn_authority_start_speed=turn_authority_start_speed,
+        turn_authority_full_speed=turn_authority_full_speed,
+    )
+
+
+def velocity_error_feedback_actions(
+    commands,
+    measured_forward_velocity,
+    measured_yaw_rate,
+    forward_speed_per_action=0.40,
+    yaw_gain_intercept=0.0915,
+    yaw_gain_speed_slope=0.175,
+    linear_feedback_gain=0.0,
+    angular_feedback_gain=0.20,
+    linear_action_limit=0.0,
+    angular_action_limit=0.15,
+    stationary_threshold=0.02,
+):
+    """Convert measured ``(v, w)`` error into bounded actuator corrections.
+
+    The calibrated inverse map is accurate at steady state, but a sphere keeps
+    substantial linear and yaw momentum after an abrupt command change.  This
+    proportional feedback supplies the predictable braking/correction term;
+    PPO remains responsible only for the smaller nonlinear residual.
+
+    When the command governor temporarily requests a full stop, the measured
+    forward direction selects the steering sign so yaw momentum is actively
+    opposed instead of waiting for passive contact damping.
+    """
+    measured_forward_velocity = measured_forward_velocity.reshape(-1)
+    measured_yaw_rate = measured_yaw_rate.reshape(-1)
+    feedback = torch.zeros_like(commands[:, :2])
+
+    linear_error = commands[:, 0] - measured_forward_velocity
+    linear_gain = torch.as_tensor(
+        linear_feedback_gain,
+        dtype=commands.dtype,
+        device=commands.device,
+    )
+    feedback[:, 0] = torch.clamp(
+        linear_gain * linear_error / float(forward_speed_per_action),
+        -float(linear_action_limit),
+        float(linear_action_limit),
+    )
+
+    commanded_motion = torch.abs(commands[:, 0]) >= float(stationary_threshold)
+    drive_direction = torch.where(
+        commanded_motion,
+        torch.sign(commands[:, 0]),
+        torch.sign(measured_forward_velocity),
+    )
+    effective_speed = torch.maximum(
+        torch.abs(commands[:, 0]),
+        torch.abs(measured_forward_velocity),
+    )
+    yaw_gain = (
+        float(yaw_gain_intercept)
+        + float(yaw_gain_speed_slope) * effective_speed
+    )
+    yaw_error = commands[:, 1] - measured_yaw_rate
+    feedback[:, 1] = torch.clamp(
+        -drive_direction
+        * float(angular_feedback_gain)
+        * yaw_error
+        / yaw_gain,
+        -float(angular_action_limit),
+        float(angular_action_limit),
+    )
+    return feedback
+
+
+def velocity_error_integral_actions(
+    commands,
+    measured_forward_velocity,
+    error_integral,
+    forward_speed_per_action=0.40,
+    yaw_gain_intercept=0.0915,
+    yaw_gain_speed_slope=0.175,
+    linear_integral_gain=0.0,
+    angular_integral_gain=0.0,
+    linear_action_limit=0.0,
+    angular_action_limit=0.0,
+    stationary_threshold=0.02,
+):
+    """Convert bounded integrated ``(v, w)`` error into actuator correction."""
+    measured_forward_velocity = measured_forward_velocity.reshape(-1)
+    integral = torch.zeros_like(commands[:, :2])
+    integral[:, 0] = torch.clamp(
+        float(linear_integral_gain)
+        * error_integral[:, 0]
+        / float(forward_speed_per_action),
+        -float(linear_action_limit),
+        float(linear_action_limit),
+    )
+    commanded_motion = torch.abs(commands[:, 0]) >= float(stationary_threshold)
+    drive_direction = torch.where(
+        commanded_motion,
+        torch.sign(commands[:, 0]),
+        torch.sign(measured_forward_velocity),
+    )
+    effective_speed = torch.maximum(
+        torch.abs(commands[:, 0]),
+        torch.abs(measured_forward_velocity),
+    )
+    yaw_gain = (
+        float(yaw_gain_intercept)
+        + float(yaw_gain_speed_slope) * effective_speed
+    )
+    integral[:, 1] = torch.clamp(
+        -drive_direction
+        * float(angular_integral_gain)
+        * error_integral[:, 1]
+        / yaw_gain,
+        -float(angular_action_limit),
+        float(angular_action_limit),
+    )
+    return integral
+
+
+def velocity_error_derivative_actions(
+    commands,
+    measured_forward_velocity,
+    error_derivative,
+    forward_speed_per_action=0.40,
+    yaw_gain_intercept=0.0915,
+    yaw_gain_speed_slope=0.175,
+    linear_derivative_gain=0.0,
+    angular_derivative_gain=0.0,
+    linear_action_limit=0.0,
+    angular_action_limit=0.0,
+    stationary_threshold=0.02,
+):
+    """Convert filtered tracking-error derivatives into actuator correction."""
+    measured_forward_velocity = measured_forward_velocity.reshape(-1)
+    derivative = torch.zeros_like(commands[:, :2])
+    derivative[:, 0] = torch.clamp(
+        float(linear_derivative_gain)
+        * error_derivative[:, 0]
+        / float(forward_speed_per_action),
+        -float(linear_action_limit),
+        float(linear_action_limit),
+    )
+    commanded_motion = torch.abs(commands[:, 0]) >= float(stationary_threshold)
+    drive_direction = torch.where(
+        commanded_motion,
+        torch.sign(commands[:, 0]),
+        torch.sign(measured_forward_velocity),
+    )
+    effective_speed = torch.maximum(
+        torch.abs(commands[:, 0]),
+        torch.abs(measured_forward_velocity),
+    )
+    yaw_gain = (
+        float(yaw_gain_intercept)
+        + float(yaw_gain_speed_slope) * effective_speed
+    )
+    derivative[:, 1] = torch.clamp(
+        -drive_direction
+        * float(angular_derivative_gain)
+        * error_derivative[:, 1]
+        / yaw_gain,
+        -float(angular_action_limit),
+        float(angular_action_limit),
+    )
+    return derivative
+
+
+def velocity_rate_feedforward_actions(
+    commands,
+    command_rates,
+    measured_forward_velocity,
+    forward_speed_per_action=0.40,
+    yaw_gain_intercept=0.0915,
+    yaw_gain_speed_slope=0.175,
+    linear_preview_time=0.0,
+    angular_preview_time=0.0,
+    linear_action_limit=0.0,
+    angular_action_limit=0.0,
+    stationary_threshold=0.02,
+):
+    """Convert command derivatives into bounded actuator-space feedforward.
+
+    This channel is deliberately separate from command lead compensation.
+    Applying a future yaw command before the feasible-command projection can
+    distort the requested curvature.  Here ``dw/dt`` is converted directly to
+    the steering-action sign and scale required by the spherical robot.
+    """
+    measured_forward_velocity = measured_forward_velocity.reshape(-1)
+    feedforward = torch.zeros_like(commands[:, :2])
+    feedforward[:, 0] = torch.clamp(
+        float(linear_preview_time)
+        * command_rates[:, 0]
+        / float(forward_speed_per_action),
+        -float(linear_action_limit),
+        float(linear_action_limit),
+    )
+
+    commanded_motion = torch.abs(commands[:, 0]) >= float(stationary_threshold)
+    drive_direction = torch.where(
+        commanded_motion,
+        torch.sign(commands[:, 0]),
+        torch.sign(measured_forward_velocity),
+    )
+    effective_speed = torch.maximum(
+        torch.abs(commands[:, 0]),
+        torch.abs(measured_forward_velocity),
+    )
+    yaw_gain = (
+        float(yaw_gain_intercept)
+        + float(yaw_gain_speed_slope) * effective_speed
+    )
+    feedforward[:, 1] = torch.clamp(
+        -drive_direction
+        * float(angular_preview_time)
+        * command_rates[:, 1]
+        / yaw_gain,
+        -float(angular_action_limit),
+        float(angular_action_limit),
+    )
+    return feedforward
+
+
+def command_target_gap_mask(
+    target_commands,
+    governed_commands,
+    linear_gap_threshold,
+    angular_gap_threshold,
+):
+    """Identify causally smooth requests from the target/governor gap.
+
+    A feasible continuously changing target stays close to the governed command,
+    while an abrupt step remains far away until the acceleration-limited ramp has
+    finished.  This lets dynamic feedforward help smooth references without
+    injecting the same kick into step and reversal tests.
+    """
+    gap = torch.abs(target_commands[:, :2] - governed_commands[:, :2])
+    return (gap[:, 0] <= float(linear_gap_threshold)) & (
+        gap[:, 1] <= float(angular_gap_threshold)
+    )
+
+
+def error_aligned_residual_actions(
+    actions,
+    commands,
+    measured_forward_velocity,
+    measured_yaw_rate,
+    stationary_threshold=0.02,
+):
+    """Remove residual components that would increase instantaneous error.
+
+    This is an action-space safety projection, not a teacher action.  PPO still
+    chooses the correction magnitude, while the fixed controller remains the
+    fallback when a sampled residual points in the physically wrong direction.
+    """
+    filtered = actions.clone()
+    linear_error = commands[:, 0] - measured_forward_velocity.reshape(-1)
+    linear_aligned = filtered[:, 0] * linear_error > 0.0
+    filtered[:, 0] = torch.where(
+        linear_aligned, filtered[:, 0], torch.zeros_like(filtered[:, 0])
+    )
+
+    commanded_motion = torch.abs(commands[:, 0]) >= float(stationary_threshold)
+    drive_direction = torch.where(
+        commanded_motion,
+        torch.sign(commands[:, 0]),
+        torch.sign(measured_forward_velocity.reshape(-1)),
+    )
+    yaw_error = commands[:, 1] - measured_yaw_rate.reshape(-1)
+    desired_steering_sign = -drive_direction * yaw_error
+    angular_aligned = filtered[:, 1] * desired_steering_sign > 0.0
+    filtered[:, 1] = torch.where(
+        angular_aligned, filtered[:, 1], torch.zeros_like(filtered[:, 1])
+    )
+    return filtered
+
+
+def rate_limit_velocity_commands(
+    current_commands,
+    target_commands,
+    maximum_linear_acceleration,
+    maximum_yaw_acceleration,
+    dt,
+    maximum_forward_speed,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    stationary_threshold=0.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+    authority_forward_velocity=None,
+    authority_speed_preview_margin=0.0,
+):
+    """Advance raw targets by one physically feasible command-governor step."""
+    delta_limit = torch.as_tensor(
+        [
+            float(maximum_linear_acceleration) * float(dt),
+            float(maximum_yaw_acceleration) * float(dt),
+        ],
+        dtype=current_commands.dtype,
+        device=current_commands.device,
+    )
+    governed = current_commands + torch.maximum(
+        torch.minimum(target_commands - current_commands, delta_limit),
+        -delta_limit,
+    )
+    return project_velocity_commands(
+        governed,
+        maximum_forward_speed,
+        maximum_yaw_rate,
+        minimum_turn_radius,
+        envelope_fraction,
+        stationary_threshold=stationary_threshold,
+        turn_authority_start_speed=turn_authority_start_speed,
+        turn_authority_full_speed=turn_authority_full_speed,
+        authority_forward_velocity=authority_forward_velocity,
+        authority_speed_preview_margin=authority_speed_preview_margin,
+    )
+
+
+def reversal_brake_mask(
+    current_commands,
+    target_commands,
+    measured_forward_speed,
+    measured_yaw_rate,
+    linear_threshold,
+    yaw_threshold,
+    yaw_deceleration_ratio=None,
+    yaw_deceleration_delta=0.0,
+    linear_deceleration_ratio=None,
+    linear_deceleration_delta=0.0,
+    linear_deceleration_target_speed_max=None,
+    include_yaw=True,
+):
+    """Identify direction changes or strong speed reductions needing a stop.
+
+    The applied command is normally the best description of the current motion
+    direction.  Near zero command, however, the sphere may still carry linear
+    or yaw momentum, so the measured motion becomes authoritative.
+    """
+    linear_threshold = float(linear_threshold)
+    yaw_threshold = float(yaw_threshold)
+    source_v = torch.where(
+        torch.abs(measured_forward_speed) > torch.abs(current_commands[:, 0]),
+        measured_forward_speed,
+        current_commands[:, 0],
+    )
+    source_w = torch.where(
+        torch.abs(measured_yaw_rate) > torch.abs(current_commands[:, 1]),
+        measured_yaw_rate,
+        current_commands[:, 1],
+    )
+    reverse_v = (
+        (torch.abs(source_v) >= linear_threshold)
+        & (torch.abs(target_commands[:, 0]) >= linear_threshold)
+        & (source_v * target_commands[:, 0] < 0.0)
+    )
+    reverse_w = torch.zeros_like(reverse_v)
+    if include_yaw:
+        reverse_w = (
+            (torch.abs(source_w) >= yaw_threshold)
+            & (torch.abs(target_commands[:, 1]) >= yaw_threshold)
+            & (source_w * target_commands[:, 1] < 0.0)
+        )
+    brake_linear_reduction = torch.zeros_like(reverse_v)
+    if linear_deceleration_ratio is not None:
+        target_v = target_commands[:, 0]
+        same_linear_direction = source_v * target_v >= 0.0
+        brake_linear_reduction = (
+            same_linear_direction
+            & (torch.abs(source_v) >= linear_threshold)
+            & (
+                torch.abs(target_v)
+                < float(linear_deceleration_ratio) * torch.abs(source_v)
+            )
+            & (
+                torch.abs(target_v - source_v)
+                >= float(linear_deceleration_delta)
+            )
+        )
+        if linear_deceleration_target_speed_max is not None:
+            brake_linear_reduction &= torch.abs(target_v) <= float(
+                linear_deceleration_target_speed_max
+            )
+    brake_yaw_reduction = torch.zeros_like(reverse_w)
+    if include_yaw and yaw_deceleration_ratio is not None:
+        target_w = target_commands[:, 1]
+        same_direction = source_w * target_w >= 0.0
+        brake_yaw_reduction = (
+            same_direction
+            & (torch.abs(source_w) >= yaw_threshold)
+            & (
+                torch.abs(target_w)
+                < float(yaw_deceleration_ratio) * torch.abs(source_w)
+            )
+            & (
+                torch.abs(target_w - source_w)
+                >= float(yaw_deceleration_delta)
+            )
+        )
+    return reverse_v | reverse_w | brake_linear_reduction | brake_yaw_reduction
+
+
+def yaw_reversal_brake_mask(
+    current_commands,
+    target_commands,
+    measured_yaw_rate,
+    yaw_threshold,
+    yaw_deceleration_ratio=None,
+    yaw_deceleration_delta=0.0,
+):
+    """Detect yaw changes that should pass through straight rolling first.
+
+    Unlike a linear reversal, a spherical robot must retain translational
+    motion to preserve useful steering authority.  This mask therefore drives
+    only the governed yaw command to zero; it never requests an in-place turn.
+    """
+    yaw_threshold = float(yaw_threshold)
+    source_w = torch.where(
+        torch.abs(measured_yaw_rate) > torch.abs(current_commands[:, 1]),
+        measured_yaw_rate,
+        current_commands[:, 1],
+    )
+    target_w = target_commands[:, 1]
+    reverse_w = (
+        (torch.abs(source_w) >= yaw_threshold)
+        & (torch.abs(target_w) >= yaw_threshold)
+        & (source_w * target_w < 0.0)
+    )
+    brake_yaw_reduction = torch.zeros_like(reverse_w)
+    if yaw_deceleration_ratio is not None:
+        same_direction = source_w * target_w >= 0.0
+        brake_yaw_reduction = (
+            same_direction
+            & (torch.abs(source_w) >= yaw_threshold)
+            & (
+                torch.abs(target_w)
+                < float(yaw_deceleration_ratio) * torch.abs(source_w)
+            )
+            & (
+                torch.abs(target_w - source_w)
+                >= float(yaw_deceleration_delta)
+            )
+        )
+    return reverse_w | brake_yaw_reduction
+
+
+def command_request_jump_mask(
+    previous_targets,
+    new_targets,
+    minimum_linear_jump,
+    minimum_yaw_jump,
+):
+    """Return requests discontinuous enough to justify a full-stop brake."""
+    delta = torch.abs(new_targets - previous_targets)
+    return (delta[:, 0] >= float(minimum_linear_jump)) | (
+        delta[:, 1] >= float(minimum_yaw_jump)
+    )
+
+
+def tracking_integral_reset_mask(request_jump, smooth_profile):
+    """Reset PI memory only for genuinely discontinuous external requests.
+
+    A continuously updated trajectory changes numerically every policy step,
+    but those small changes are not command steps. Clearing the integral for
+    each such update disables integral feedback in deployment and evaluation.
+    """
+    return request_jump & ~smooth_profile
+
+
+def update_rate_gated_error_integral(
+    error_integral,
+    tracking_error,
+    command_rates,
+    dt,
+    leak_rate,
+    integral_limits,
+    command_rate_thresholds,
+):
+    """Apply leaky PI memory only while each command channel is steady."""
+    decay = max(0.0, 1.0 - max(0.0, float(leak_rate)) * float(dt))
+    updated = error_integral * decay + tracking_error * float(dt)
+    limits = torch.as_tensor(
+        integral_limits, dtype=updated.dtype, device=updated.device
+    )
+    thresholds = torch.as_tensor(
+        command_rate_thresholds, dtype=updated.dtype, device=updated.device
+    )
+    command_is_changing = torch.abs(command_rates) > thresholds
+    updated = torch.where(command_is_changing, torch.zeros_like(updated), updated)
+    return torch.maximum(torch.minimum(updated, limits), -limits)
+
+
+def smooth_feasible_velocity_profile(
+    phase,
+    speed_amplitude,
+    signed_curvature,
+    maximum_forward_speed,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    stationary_threshold=0.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+):
+    """Generate a smooth, zero-crossing-safe feasible ``[v, w]`` profile."""
+    velocity = speed_amplitude * torch.sin(phase)
+    yaw_rate = signed_curvature * velocity
+    return project_velocity_commands(
+        torch.stack((velocity, yaw_rate), dim=1),
+        maximum_forward_speed,
+        maximum_yaw_rate,
+        minimum_turn_radius,
+        envelope_fraction,
+        stationary_threshold=stationary_threshold,
+        turn_authority_start_speed=turn_authority_start_speed,
+        turn_authority_full_speed=turn_authority_full_speed,
+    )
+
+
+def independent_feasible_velocity_profile(
+    phase,
+    velocity_offset,
+    velocity_amplitude,
+    yaw_amplitude,
+    yaw_phase_offset,
+    yaw_frequency_ratio,
+    maximum_forward_speed,
+    maximum_yaw_rate,
+    minimum_turn_radius,
+    envelope_fraction=1.0,
+    stationary_threshold=0.0,
+    turn_authority_start_speed=0.0,
+    turn_authority_full_speed=0.0,
+):
+    """Generate independently phased smooth v/w commands, then project them.
+
+    Unlike the legacy constant-curvature profile ``w = curvature * v``, this
+    family includes constant-v/alternating-w motion and independent v/w phase
+    and frequency. Projection is deliberately the final operation so every
+    sample still obeys the spherical robot's nonholonomic feasible set.
+    """
+    velocity = velocity_offset + velocity_amplitude * torch.sin(phase)
+    yaw_rate = yaw_amplitude * torch.sin(
+        yaw_frequency_ratio * phase + yaw_phase_offset
+    )
+    return project_velocity_commands(
+        torch.stack((velocity, yaw_rate), dim=1),
+        maximum_forward_speed,
+        maximum_yaw_rate,
+        minimum_turn_radius,
+        envelope_fraction,
+        stationary_threshold=stationary_threshold,
+        turn_authority_start_speed=turn_authority_start_speed,
+        turn_authority_full_speed=turn_authority_full_speed,
+    )
+
 
 class RotunbotVel(LeggedRobot):
-    '''
-    Rotunbot is a class that represents a custom environment for a spherical robot.
+    """Track feasible body-forward speed and heading yaw-rate commands."""
 
-    加入延迟和更多随机噪声
-    随机延迟
-    关节参数噪声
-    质量、惯性矩阵、摩擦系数噪声
-
-    '''
-    cfg : RotunbotVelCfg
-
-    def __init__(self, cfg:RotunbotVelCfg , sim_params, physics_engine, sim_device, headless):
-        super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
-         # 添加历史状态存储
-        self.last_base_lin_vel = torch.zeros_like(self.base_lin_vel)
-        self.last_base_ang_vel = torch.zeros_like(self.base_ang_vel)
-        self.last_lagged_base_lin_vel = torch.zeros_like(self.base_lin_vel)  # 复制当前线速度
-        self.last_lagged_base_ang_vel = torch.zeros_like(self.base_ang_vel) # 复制当前角速度
-        self.last_lagged_dof_pos = torch.zeros_like(self.dof_pos)
-        self.last_lagged_dof_vel = torch.zeros_like(self.dof_vel)
-        # self.last_torques = torch.zeros((self.num_envs, self.num_actions), device=self.device)  # 存储上一时刻力矩
-        self.step_counter = 0
-        self.print_interval = 5  # 每50步打印一次
-        self.data_print = True
-
-        self.PID_FirstAxis = PIDController(35, 0, 0, self.num_envs)
-        self.PID_SecondAxis = PIDController(300, 20, 150,self.num_envs) #PIDController(200, 20, 120,self.num_envs)
-
-    def step(self, actions):
-        """ Apply actions, simulate, call self.post_physics_step()
-
-        Args:
-            actions (torch.Tensor): Tensor of shape (num_envs, num_actions_per_env)
-        """
-        #record last state
-        self.step_counter += 1
-    
-        clip_actions = self.cfg.normalization.clip_actions
-        self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
-        # step physics and render each frame
-        self.render()
-        for _ in range(self.cfg.control.decimation):
-            self.torques = self._compute_torques(self.actions).view(self.torques.shape)
-            self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
-            self.gym.simulate(self.sim)
-            if self.device == 'cpu':
-                self.gym.fetch_results(self.sim, True)
-            self.gym.refresh_dof_state_tensor(self.sim)
-            #加入延迟
-            #dof_lag
-            if self.cfg.domain_rand.add_dof_lag:
-                q = self.dof_pos
-                dq = self.dof_vel
-                self.dof_lag_buffer[:,:,1:] = self.dof_lag_buffer[:,:,:self.cfg.domain_rand.dof_lag_timesteps_range[1]].clone()
-                self.dof_lag_buffer[:,:,0] = torch.cat((q, dq), 1).clone()
-            if self.cfg.domain_rand.add_imu_lag:
-                self.gym.refresh_actor_root_state_tensor(self.sim)
-                self.base_quat[:] = self.root_states[:, 3:7]
-                self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-                self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
-                base_ret = Rotation.from_quat(self.base_quat.cpu().numpy())
-                self.base_euler_tensor = torch.as_tensor(base_ret.as_euler('xyz'),dtype=torch.float,device=self.device)
-                self.imu_lag_buffer[:,:,1:] = self.imu_lag_buffer[:,:,:self.cfg.domain_rand.imu_lag_timesteps_range[1]].clone()
-                self.imu_lag_buffer[:,:,0] = torch.cat((self.base_lin_vel, self.base_ang_vel, self.base_euler_tensor ), 1).clone()
-        
-        self.post_physics_step()
-        
-        # return clipped obs, clipped states (None), rewards, dones and infos
-        clip_obs = self.cfg.normalization.clip_observations
-        self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
-        if self.privileged_obs_buf is not None:
-            self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
-        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
-
-    def post_physics_step(self):
-        """ check terminations, compute observations and rewards
-            calls self._post_physics_step_callback() for common computations 
-            calls self._draw_debug_vis() if needed
-        """
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
-
-        self.episode_length_buf += 1
-        self.common_step_counter += 1
-
-        # prepare quantities
-        self.base_quat[:] = self.root_states[:, 3:7]
-        self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-        self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
-        self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
-
-        self._post_physics_step_callback()
-
-        # compute observations, rewards, resets, ...
-        self.check_termination()
-        self.compute_reward()
-        env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
-        self.reset_idx(env_ids)
-        self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
-
-        self.last_actions[:] = self.actions[:]
-        self.last_dof_pos[:] = self.dof_pos[:]
-        self.last_dof_vel[:] = self.dof_vel[:]
-        self.last_root_vel[:] = self.root_states[:, 7:13]
-        self.last_base_lin_vel = self.base_lin_vel.clone()  # 复制当前线速度
-        self.last_base_ang_vel = self.base_ang_vel.clone() # 复制当前角速度
-        self.last_lagged_base_lin_vel = self.lagged_base_lin_vel.clone()  # 复制当前线速度
-        self.last_lagged_base_ang_vel = self.lagged_base_ang_vel.clone() # 复制当前角速度
-        self.last_lagged_dof_pos = self.lagged_dof_pos.clone()
-        self.last_lagged_dof_vel = self.lagged_dof_vel.clone()
-
-        if self.viewer and self.enable_viewer_sync and self.debug_viz:
-            self._draw_debug_vis()
-
-    def compute_observations(self):
-        """ Computes observations
-        """
-         # 计算速度差 (当前速度 - 上一时刻速度)
-        lin_vel_diff = self.base_lin_vel - self.last_base_lin_vel  # 线速度差
-        ang_vel_diff = self.base_ang_vel - self.last_base_ang_vel # 角速度差
-        quat = self.base_quat.cpu().numpy()
-        # print(quat)
-
-        # 检查零范数四元数
-        # norms = np.linalg.norm(quat, axis=1)
-        # print(quat)
-        # if np.any(norms == 0):
-        #     print("Warning: Found zero norm quaternions. Replacing with default.")
-        #     quat[norms == 0] = [0, 0, 0, 1]  # 替换为单位四元数
-
-        # 归一化四元数
-        # quat = quat / np.linalg.norm(quat, axis=1, keepdims=True)
-
-        # 转换为旋转
-        base_ret = Rotation.from_quat(quat)
-        # base_ret = Rotation.from_quat(self.base_quat.cpu().numpy())
-        self.base_euler_tensor = torch.as_tensor(base_ret.as_euler('xyz'),dtype=torch.float,device=self.device)
-        privileged_obs_buf = torch.cat((
-            self.commands,  # 2 
-            self.base_euler_tensor * self.obs_scales.quat,  # 3
-            self.base_lin_vel * self.obs_scales.lin_vel,  # 3
-            self.base_ang_vel * self.obs_scales.ang_vel,  # 3
-            self.dof_pos  * self.obs_scales.dof_pos,  # 2
-            self.dof_vel * self.obs_scales.dof_vel,  # 2
-            self.actions,  # 2
-            self.env_frictions,  # 1
-            self.body_mass / 10.,  # 1 # sum of all fix link mass
-            self.total_mass / 10.  # 1 # sum of all fix link mass
-        ), dim=-1)
-
-        if self.cfg.domain_rand.add_dof_lag:
-            if self.cfg.domain_rand.randomize_dof_lag_timesteps_perstep:
-                self.dof_lag_timestep = torch.randint(self.cfg.domain_rand.dof_lag_timesteps_range[0], 
-                                                  self.cfg.domain_rand.dof_lag_timesteps_range[1]+1,(self.num_envs,),device=self.device)
-                cond = self.dof_lag_timestep > self.last_dof_lag_timestep + 1
-                self.dof_lag_timestep[cond] = self.last_dof_lag_timestep[cond] + 1
-                self.last_dof_lag_timestep = self.dof_lag_timestep.clone()
-            self.lagged_dof_pos = self.dof_lag_buffer[torch.arange(self.num_envs), :self.num_actions, self.dof_lag_timestep.long()]
-            self.lagged_dof_vel = self.dof_lag_buffer[torch.arange(self.num_envs), -self.num_actions:, self.dof_lag_timestep.long()]  
-        else:
-            self.lagged_dof_pos = self.dof_pos
-            self.lagged_dof_vel = self.dof_vel
-
-        if self.cfg.domain_rand.add_imu_lag:    
-            if self.cfg.domain_rand.randomize_imu_lag_timesteps_perstep:
-                self.imu_lag_timestep = torch.randint(self.cfg.domain_rand.imu_lag_timesteps_range[0], 
-                                                  self.cfg.domain_rand.imu_lag_timesteps_range[1]+1,(self.num_envs,),device=self.device)
-                cond = self.imu_lag_timestep > self.last_imu_lag_timestep + 1
-                self.imu_lag_timestep[cond] = self.last_imu_lag_timestep[cond] + 1
-                self.last_imu_lag_timestep = self.imu_lag_timestep.clone()
-            self.lagged_imu = self.imu_lag_buffer[torch.arange(self.num_envs), :, self.imu_lag_timestep.long()]
-            self.lagged_base_lin_vel = self.lagged_imu[:,:3].clone()
-            self.lagged_base_ang_vel = self.lagged_imu[:,3:6].clone()
-            self.lagged_base_euler_xyz = self.lagged_imu[:,-3:].clone()
-        # no imu lag
-        else:              
-            self.lagged_base_lin_vel = self.base_lin_vel[:,:3]
-            self.lagged_base_ang_vel = self.base_ang_vel[:,:3]
-            self.lagged_base_euler_xyz = self.base_euler_tensor[:,-3:]
-        '''
-        没加入延迟
-        self.obs_buf = torch.cat((  self.commands[:, :2],
-                                    # self.base_quat,
-                                    # self.root_states[:, 7:10],
-                                    # self.root_states[:, 10:13],
-                                    self.base_lin_vel, # 当前球坐标系线速度
-                                    self.base_ang_vel, # 当前球坐标系角速度
-                                    self.dof_pos[:,1].unsqueeze(1) ,
-                                    self.dof_vel,
-                                    self.actions,
-                                    self.last_base_lin_vel,         # 上一时刻线速度
-                                    self.last_base_ang_vel,         # 上一时刻角速度    
-                                    self.last_actions,              
-                                    self.last_dof_vel
-                                    # self.last_torques,              # [2] 上一时刻力矩
-                                    # self.last_dof_vel,
-                                    ),dim=-1)
-        加入延迟，加入电机状态
-        self.obs_buf = torch.cat((  self.commands[:, :2],    # 2
-                                    self.lagged_base_euler_xyz,  # 3
-                                    # self.root_states[:, 7:10],
-                                    # self.root_states[:, 10:13],
-                                    self.lagged_base_lin_vel, # 3当前球坐标系线速度
-                                    self.lagged_base_ang_vel, # 3当前球坐标系角速度
-                                    self.lagged_dof_pos[:,1].unsqueeze(1) ,
-                                    self.lagged_dof_vel,
-                                    self.actions,
-                                    self.last_lagged_base_lin_vel,         # 上一时刻线速度
-                                    self.last_lagged_base_ang_vel,         # 上一时刻角速度    
-                                    # lin_vel_diff,
-                                    # ang_vel_diff,  
-                                    self.last_actions,              
-                                    self.last_lagged_dof_vel
-                                    # self.last_torques,              # [2] 上一时刻力矩
-                                    # self.last_dof_vel,
-                                    ),dim=-1)
-        '''
-        
-        self.obs_buf = torch.cat((  self.commands[:, :2]* self.obs_scales.command,    # 2
-                                    self.lagged_base_euler_xyz*self.obs_scales.quat,  # 3
-                                    # self.root_states[:, 7:10],
-                                    # self.root_states[:, 10:13],
-                                    self.lagged_base_lin_vel*self.obs_scales.lin_vel, # 3当前球坐标系线速度
-                                    self.lagged_base_ang_vel*self.obs_scales.ang_vel, # 3当前球坐标系角速度
-                                    self.lagged_dof_pos[:,1].unsqueeze(1)*self.obs_scales.dof_pos ,
-                                    self.lagged_dof_vel[:,0].unsqueeze(1)*self.obs_scales.dof_vel,
-                                    self.actions,             # 2
-                                    # lin_vel_diff,
-                                    # ang_vel_diff,  
-                                    ),dim=-1)
-        # add perceptive inputs if not blind
-        if self.cfg.terrain.measure_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements
-            self.obs_buf = torch.cat((self.obs_buf, heights), dim=-1)
-        # add noise if needed
-        if self.add_noise:
-            self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
-    
-    def _compute_torques(self, actions):
-        """ Compute torques from actions.
-            Actions can be interpreted as position or velocity targets given to a PD controller, or directly as scaled torques.
-            [NOTE]: torques must have the same dimension as the number of DOFs, even if some DOFs are not actuated.
-
-        Args:
-            actions (torch.Tensor): Actions
-
-        Returns:
-            [torch.Tensor]: Torques sent to the simulation
-        """
-        #pd controller
-        actions_scaled = actions * self.cfg.control.action_scale
-        addition = actions * self.cfg.control.action_scale
-        control_type = self.cfg.control.control_type
-        if control_type=="P":
-            torques = self.p_gains*(actions_scaled + self.default_dof_pos - self.dof_pos) - self.d_gains*self.dof_vel
-        elif control_type=="V":
-            # torques = self.p_gains*(actions_scaled - self.dof_vel) - self.d_gains*(self.dof_vel - self.last_dof_vel)/self.sim_params.dt
-            torques = 5*(actions_scaled - self.dof_vel) - 0.5*(self.dof_vel - self.last_dof_vel)/self.sim_params.dt 
-            # print(torques)
-        elif control_type=="T":
-            torques = actions_scaled
-            # print(torques)
-        elif control_type=="R":
-            torques = actions.clone().to(self.device)
-            # actions_scaled[:,0] = torch.clip(actions[:,0] * self.cfg.control.first_actionScale, -6, 6)
-            # actions_scaled[:,1] = torch.clip(actions[:,1] * self.cfg.control.second_actionScale, -0.5236, 0.5236)
-            actions_scaled[:,0] = torch.clip(actions[:,0] * self.cfg.control.first_actionScale, -5, 5)
-            actions_scaled[:,1] = torch.clip(actions[:,1] * self.cfg.control.second_actionScale, -0.45, 0.45)
-            # actions_scaled[:,0] = 1
-            # actions_scaled[:,1] = 0.3
-            self.output_actions = actions_scaled
-            
-            # torques[:,0] =  25 * (actions_scaled[:,0] - self.dof_vel[:,0]) - 1 * (self.dof_vel[:,0] - self.last_dof_vel[:,0]) / self.dt
-            torques[:,0] =  35 * (actions_scaled[:,0] - self.dof_vel[:,0])
-            # torques[:,0] = self.PID_FirstAxis.compute(actions_scaled[:,0], self.dof_pos[:,1], self.sim_params.dt)
-            # torques[:,1] = 15 * ( actions_scaled[:,1]  - self.dof_pos[:,1]) - 5 * self.dof_vel[:,1]
-            torques[:,1] = 300 * ( actions_scaled[:,1]  - self.dof_pos[:,1]) - 150 * self.dof_vel[:,1]
-            # torques[:,1] = self.PID_SecondAxis.compute(actions_scaled[:,1], self.dof_pos[:,1], self.sim_params.dt)
-            torques[:,0] =  21.17 * (actions[:,0] - self.dof_vel[:,0]) - 0.97*(self.dof_vel[:,0] - self.last_dof_vel[:,0])/self.dt
-            torques[:,1] =  297.46 * (actions[:,1]  - self.dof_pos[:,1]) - 149.97 * self.dof_vel[:,1]
-            # torques[:,0] =  136.46 * (actions[:,0] - self.dof_vel[:,0]) - 162.73 *(self.dof_vel[:,0] - self.last_dof_vel[:,0])/self.dt
-            # torques[:,1] =  299.98 * (actions[:,1]  - self.dof_pos[:,1]) - 98.82 * self.dof_vel[:,1]
-        else:
-            raise NameError(f"Unknown controller type: {control_type}")
-        torques[:,0] = torch.clip(torques[:,0], -self.cfg.control.torque_limits_1, self.cfg.control.torque_limits_1)
-        torques[:,1] = torch.clip(torques[:,1], -self.cfg.control.torque_limits_2, self.cfg.control.torque_limits_2)
-        
-
-        if self.cfg.domain_rand.randomize_torque:
-            torques *= self.torque_multi
-        
-        return torques
-    
-    def _get_noise_scale_vec(self, cfg):
-        """ Sets a vector used to scale the noise added to the observations.
-            [NOTE]: Must be adapted when changing the observations structure
-
-        Args:
-            cfg (Dict): Environment config file
-
-        Returns:
-            [torch.Tensor]: Vector of scales used to multiply a uniform distribution in [-1, 1]
-        """
-        noise_vec = torch.zeros_like(self.obs_buf[0])
-        self.add_noise = self.cfg.noise.add_noise
-        noise_scales = self.cfg.noise.noise_scales
-        noise_level = self.cfg.noise.noise_level
-        noise_vec[:2] = 0. # commands
-        
-        noise_vec[2:5] = noise_scales.quat * noise_level * self.obs_scales.quat
-        noise_vec[5:8] = noise_scales.lin_vel * noise_level * self.obs_scales.lin_vel
-        noise_vec[8:11] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
-        noise_vec[11] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
-        noise_vec[12] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
-        noise_vec[13:15] = 0.
-
-        # noise_vec[2:5] = noise_scales.quat * noise_level
-        # noise_vec[5:8] = noise_scales.lin_vel * noise_level
-        # noise_vec[8:11] = noise_scales.ang_vel * noise_level
-        # noise_vec[11] = noise_scales.dof_pos * noise_level
-        # noise_vec[12:14] = noise_scales.dof_vel * noise_level
-        # noise_vec[14:16] = 0.
-
-        if self.cfg.terrain.measure_heights:
-            noise_vec[23:205] = noise_scales.height_measurements* noise_level * self.obs_scales.height_measurements
-        return noise_vec
-    
-    def _create_envs(self):
-        """ Creates environments:
-             1. loads the robot URDF/MJCF asset,
-             2. For each environment
-                2.1 creates the environment, 
-                2.2 calls DOF and Rigid shape properties callbacks,
-                2.3 create actor with these properties and add them to the env
-             3. Store indices of different bodies of the robot
-        """
-        asset_path = self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
-        asset_root = os.path.dirname(asset_path)
-        asset_file = os.path.basename(asset_path)
-
-        asset_options = gymapi.AssetOptions()
-        asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode
-        asset_options.collapse_fixed_joints = self.cfg.asset.collapse_fixed_joints
-        asset_options.replace_cylinder_with_capsule = self.cfg.asset.replace_cylinder_with_capsule
-        asset_options.flip_visual_attachments = self.cfg.asset.flip_visual_attachments
-        asset_options.fix_base_link = self.cfg.asset.fix_base_link
-        asset_options.density = self.cfg.asset.density
-        asset_options.angular_damping = self.cfg.asset.angular_damping
-        asset_options.linear_damping = self.cfg.asset.linear_damping
-        asset_options.max_angular_velocity = self.cfg.asset.max_angular_velocity
-        asset_options.max_linear_velocity = self.cfg.asset.max_linear_velocity
-        asset_options.armature = self.cfg.asset.armature
-        asset_options.thickness = self.cfg.asset.thickness
-        asset_options.disable_gravity = self.cfg.asset.disable_gravity
-
-        robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
-        self.num_dof = self.gym.get_asset_dof_count(robot_asset)
-        self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
-        dof_props_asset = self.gym.get_asset_dof_properties(robot_asset)
-        rigid_shape_props_asset = self.gym.get_asset_rigid_shape_properties(robot_asset)
-
-        # save body names from the asset
-        body_names = self.gym.get_asset_rigid_body_names(robot_asset)
-        self.dof_names = self.gym.get_asset_dof_names(robot_asset)
-        self.num_bodies = len(body_names)
-        self.num_dofs = len(self.dof_names)
-        feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
-        penalized_contact_names = []
-        for name in self.cfg.asset.penalize_contacts_on:
-            penalized_contact_names.extend([s for s in body_names if name in s])
-        termination_contact_names = []
-        for name in self.cfg.asset.terminate_after_contacts_on:
-            termination_contact_names.extend([s for s in body_names if name in s])
-
-        base_init_state_list = self.cfg.init_state.pos + self.cfg.init_state.rot + self.cfg.init_state.lin_vel + self.cfg.init_state.ang_vel
-        self.base_init_state = to_torch(base_init_state_list, device=self.device, requires_grad=False)
-        start_pose = gymapi.Transform()
-        start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
-
-        self.init_randomize_props()
-
-        self._get_env_origins()
-        env_lower = gymapi.Vec3(0., 0., 0.)
-        env_upper = gymapi.Vec3(0., 0., 0.)
-        self.actor_handles = []
-        self.envs = []
-        self.env_frictions = torch.zeros(self.num_envs, 1, dtype=torch.float32, device=self.device)
-
-        self.body_mass = torch.zeros(self.num_envs, 1, dtype=torch.float32, device=self.device, requires_grad=False)
-        self.init_body_mass = torch.zeros(self.num_envs, 1, dtype=torch.float32, device=self.device, requires_grad=False)
-        self.total_mass = torch.zeros(self.num_envs, 1, dtype=torch.float32, device=self.device, requires_grad=False)
-
-        self.randomize_rigid_body_props(torch.arange(self.num_envs, device=self.device))
-        self.randomize_dof_props(torch.arange(self.num_envs, device=self.device))
-        
-        for i in range(self.num_envs):
-            # create env instance
-            env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
-            pos = self.env_origins[i].clone()
-            pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1)
-            start_pose.p = gymapi.Vec3(*pos)
-                
-            rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
-            self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
-            actor_handle = self.gym.create_actor(env_handle, robot_asset, start_pose, self.cfg.asset.name, i, self.cfg.asset.self_collisions, 0)
-            dof_props = self._process_dof_props(dof_props_asset, i)
-            self.gym.set_actor_dof_properties(env_handle, actor_handle, dof_props)
-            body_props = self.gym.get_actor_rigid_body_properties(env_handle, actor_handle)
-            body_props = self._process_rigid_body_props(body_props, i)
-            self.gym.set_actor_rigid_body_properties(env_handle, actor_handle, body_props, recomputeInertia=True)
-            self.envs.append(env_handle)
-            self.actor_handles.append(actor_handle)
-
-        self._refresh_actor_dof_props(torch.arange(self.num_envs, device=self.device))
-       
-        self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
-        for i in range(len(feet_names)):
-            self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], feet_names[i])
-
-        self.penalised_contact_indices = torch.zeros(len(penalized_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
-        for i in range(len(penalized_contact_names)):
-            self.penalised_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], penalized_contact_names[i])
-
-        self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
-        for i in range(len(termination_contact_names)):
-            self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], termination_contact_names[i])
-
-
-    #------------- Callbacks --------------
-    def _process_rigid_shape_props(self, props, env_id):
-        """ Callback allowing to store/change/randomize the rigid shape properties of each environment.
-            Called During environment creation.
-            Base behavior: randomizes the friction of each environment
-
-        Args:
-            props (List[gymapi.RigidShapeProperties]): Properties of each shape of the asset
-            env_id (int): Environment id
-
-        Returns:
-            [List[gymapi.RigidShapeProperties]]: Modified rigid shape properties
-        """
-        if self.cfg.domain_rand.randomize_friction:
-            if env_id==0:
-                # prepare friction randomization
-                friction_range = self.cfg.domain_rand.friction_range
-                restitution_range = self.cfg.domain_rand.restitution_range
-                num_buckets = 64
-                bucket_ids = torch.randint(0, num_buckets, (self.num_envs, 1))
-                friction_buckets = torch_rand_float(friction_range[0], friction_range[1], (num_buckets,1), device='cpu')
-                restitution_buckets = torch_rand_float(restitution_range[0], restitution_range[1], (num_buckets,1), device='cpu')
-                self.friction_coeffs = friction_buckets[bucket_ids]
-                self.restitution_coeffs = restitution_buckets[bucket_ids]
-
-            for s in range(len(props)):
-                props[s].friction = self.friction_coeffs[env_id]
-                props[s].restitution = self.restitution_coeffs[env_id]
-
-            self.env_frictions[env_id] = self.friction_coeffs[env_id]
-
-        return props
+    cfg: RotunbotVelCfg
 
     def _process_dof_props(self, props, env_id):
+        # The Rotunbot URDF does not declare the effort drive used by the
+        # custom torque controller.  Without this override PhysX keeps the
+        # joint in its imported/default drive mode and ignores our torques.
         props["driveMode"].fill(gymapi.DOF_MODE_EFFORT)
         props["stiffness"].fill(0.0)
         props["damping"].fill(0.0)
-        return props
+        return super()._process_dof_props(props, env_id)
 
-    def _process_rigid_body_props(self, props, env_id):
-        # props[0].mass is sum mass of all fix link
-        # len(props) is revolute num + 1
-        # add rand payload on fix body
-        # input_solution = [33.1026,20.035 ,65.155, 0.2775, 2.9869, 0.1004, 0.2522, 0.2629, 0.4522,
-        # 2.9845, 2.9383, 0.2128, 1.3646, 1.6273, 2.9998, 0.9882]
-        # for i in range(len(props)):
-        #     props[i].mass = input_solution[i]  # m
-        #     props[i].inertia.x.x = input_solution[i * 3 + 3]  # Ixx
-        #     props[i].inertia.y.y = input_solution[i * 3 + 4]  # Iyy
-        #     props[i].inertia.z.z = input_solution[i * 3 + 5]  # Izz
-        
-        if self.cfg.domain_rand.randomize_base_mass:
-            self.init_body_mass[env_id] = props[0].mass
-            props[0].mass += self.payload_masses[env_id]
-        self.body_mass[env_id] = props[0].mass
-
-        # rand all link mass and recalculate total mass
-        if self.cfg.domain_rand.randomize_link_mass:
-            for i in range(1, len(props)):
-                props[i].mass *= self.link_masses[env_id, i-1]
-        for i in range(1, len(props)):    
-            self.total_mass[env_id] += props[i].mass
-
-        # rand fix body com
-        if self.cfg.domain_rand.randomize_com:
-             props[0].com = gymapi.Vec3(self.com_displacements[env_id, 0], self.com_displacements[env_id, 1],
-                                    self.com_displacements[env_id, 2])
-
-        # rand link com
-        if self.cfg.domain_rand.randomize_link_com:
-            for i in range(1, len(props)):
-                props[i].com = gymapi.Vec3(self.link_com_displacements[env_id, i-1, 0], self.link_com_displacements[env_id, i-1, 1],
-                                           self.link_com_displacements[env_id, i-1, 2])     
-        
-        # rand fix body inertia
-        if self.cfg.domain_rand.randomize_base_inertia:
-            props[0].inertia.x.x *= self.base_inertia_x[env_id]
-            props[0].inertia.y.y *= self.base_inertia_y[env_id]
-            props[0].inertia.z.z *= self.base_inertia_z[env_id]
-        
-        # rand link inertia
-        if self.cfg.domain_rand.randomize_link_inertia:
-            for i in range(1, len(props)):
-                props[i].inertia.x.x *= self.link_inertia_x[env_id, i-1]
-                props[i].inertia.y.y *= self.link_inertia_y[env_id, i-1]
-                props[i].inertia.z.z *= self.link_inertia_z[env_id, i-1]
-                
-        return props
-    
-    def _refresh_actor_dof_props(self, env_ids):
-        ''' Refresh the dof properties of the actor in the given environments, i.e.
-            dof friction, damping, armature
-        '''
-        for env_id in env_ids:
-            dof_props = self.gym.get_actor_dof_properties(self.envs[env_id], 0)
-
-            for i in range(self.num_dof):
-                if self.cfg.domain_rand.randomize_joint_friction:
-                    if self.cfg.domain_rand.randomize_joint_friction_each_joint:
-                        dof_props["friction"][i] *= self.joint_friction_coeffs[env_id, i]
-                    else:    
-                        dof_props["friction"][i] *= self.joint_friction_coeffs[env_id, 0]
-                
-                if self.cfg.domain_rand.randomize_joint_armature:
-                    if self.cfg.domain_rand.randomize_joint_armature_each_joint:
-                        dof_props["armature"][i] = self.joint_armatures[env_id, i]
-                    else:
-                        dof_props["armature"][i] = self.joint_armatures[env_id, 0]
-            self.gym.set_actor_dof_properties(self.envs[env_id], 0, dof_props)
-
-    #------------ randomization functions----------------
-    def randomize_rigid_body_props(self, env_ids):
-        ''' Randomise some of the rigid body properties of the actor in the given environments, i.e.
-            sample the mass, centre of mass position, friction and restitution.'''
-        if self.cfg.domain_rand.randomize_base_mass:
-            min_payload, max_payload = self.cfg.domain_rand.added_mass_range
-
-            self.payload_masses[env_ids] = torch_rand_float(min_payload, max_payload, (len(env_ids), 1), device=self.device)
-        
-        if self.cfg.domain_rand.randomize_link_mass:
-            min_link_mass, max_link_mass = self.cfg.domain_rand.added_link_mass_range
-
-            self.link_masses[env_ids] = torch_rand_float(min_link_mass, max_link_mass, (len(env_ids), self.num_bodies-1), device=self.device)
-
-        if self.cfg.domain_rand.randomize_com:
-            comx_displacement, comy_displacement, comz_displacement = self.cfg.domain_rand.com_displacement_range
-            self.com_displacements[env_ids, :] = torch.cat((torch_rand_float(comx_displacement[0], comx_displacement[1], (len(env_ids), 1), device=self.device),
-                                                            torch_rand_float(comy_displacement[0], comy_displacement[1], (len(env_ids), 1), device=self.device),
-                                                            torch_rand_float(comz_displacement[0], comz_displacement[1], (len(env_ids), 1), device=self.device)),
-                                                            dim=-1)
-        
-        if self.cfg.domain_rand.randomize_link_com:
-            comx_displacement, comy_displacement, comz_displacement = self.cfg.domain_rand.link_com_displacement_range
-            self.link_com_displacements[env_ids, :, :] = torch.cat((torch_rand_float(comx_displacement[0], comx_displacement[1], (len(env_ids), self.num_bodies-1, 1), device=self.device),
-                                                                    torch_rand_float(comy_displacement[0], comy_displacement[1], (len(env_ids), self.num_bodies-1, 1), device=self.device),
-                                                                    torch_rand_float(comz_displacement[0], comz_displacement[1], (len(env_ids), self.num_bodies-1, 1), device=self.device)),
-                                                                    dim=-1)
-        if self.cfg.domain_rand.randomize_base_inertia:
-            inertia_x, inertia_y, inertia_z = self.cfg.domain_rand.base_inertial_range
-            self.base_inertia_x[env_ids, :, :] = torch_rand_float(inertia_x[0], inertia_x[1], (len(env_ids), 1), device=self.device)
-            self.base_inertia_y[env_ids, :, :] = torch_rand_float(inertia_y[0], inertia_y[1], (len(env_ids), 1), device=self.device)
-            self.base_inertia_z[env_ids, :, :] = torch_rand_float(inertia_z[0], inertia_z[1], (len(env_ids), 1), device=self.device)
-            
-        if self.cfg.domain_rand.randomize_link_inertia:
-            inertia_x, inertia_y, inertia_z = self.cfg.domain_rand.link_inertial_range
-            self.link_inertia_x[env_ids, :, :] = torch_rand_float(inertia_x[0], inertia_x[1], (len(env_ids), self.num_bodies-1), device=self.device)
-            self.link_inertia_y[env_ids, :, :] = torch_rand_float(inertia_y[0], inertia_y[1], (len(env_ids), self.num_bodies-1), device=self.device)
-            self.link_inertia_z[env_ids, :, :] = torch_rand_float(inertia_z[0], inertia_z[1], (len(env_ids), self.num_bodies-1), device=self.device)
-    
-    def randomize_dof_props(self, env_ids):
-        # Randomise the motor strength:
-        # rand ouput torque
-        if self.cfg.domain_rand.randomize_torque:
-            motor_strength_ranges = self.cfg.domain_rand.torque_multiplier_range
-            self.torque_multi[env_ids] = torch_rand_float(motor_strength_ranges[0], motor_strength_ranges[1], (len(env_ids),self.num_actions), device=self.device)
-
-        # rand joint friction set in sim
-        if self.cfg.domain_rand.randomize_joint_friction:
-            if self.cfg.domain_rand.randomize_joint_friction_each_joint:
-                for i in range(self.num_dofs):
-                    range_key = f'joint_{i+1}_friction_range'
-                    friction_range = getattr(self.cfg.domain_rand, range_key)
-                    self.joint_friction_coeffs[env_ids, i] = torch_rand_float(friction_range[0], friction_range[1], (len(env_ids), 1), device=self.device).reshape(-1)
-            else:                      
-                joint_friction_range = self.cfg.domain_rand.joint_friction_range
-                self.joint_friction_coeffs[env_ids] = torch_rand_float(joint_friction_range[0], joint_friction_range[1], (len(env_ids), 1), device=self.device)
-        
-        if self.cfg.domain_rand.randomize_joint_armature:
-            if self.cfg.domain_rand.randomize_joint_armature_each_joint:
-                for i in range(self.num_dofs):
-                    range_key = f'joint_{i+1}_armature_range'
-                    armature_range = getattr(self.cfg.domain_rand, range_key)
-                    self.joint_armatures[env_ids, i] = torch_rand_float(armature_range[0], armature_range[1], (len(env_ids), 1), device=self.device).reshape(-1)
-            else:
-                joint_armature_range = self.cfg.domain_rand.joint_armature_range
-                self.joint_armatures[env_ids] = torch_rand_float(joint_armature_range[0], joint_armature_range[1], (len(env_ids), 1), device=self.device)
-            
-    def randomize_lag_props(self,env_ids): 
-        """ random add lag
-        """
-                      
-        if self.cfg.domain_rand.add_dof_lag:
-            self.dof_lag_buffer[env_ids, :, :] = 0.0
-            if self.cfg.domain_rand.randomize_dof_lag_timesteps:
-                self.dof_lag_timestep[env_ids] = torch.randint(self.cfg.domain_rand.dof_lag_timesteps_range[0],
-                                                        self.cfg.domain_rand.dof_lag_timesteps_range[1]+1, (len(env_ids),),device=self.device)
-                if self.cfg.domain_rand.randomize_dof_lag_timesteps_perstep:
-                    self.last_dof_lag_timestep[env_ids] = self.cfg.domain_rand.dof_lag_timesteps_range[1]
-            else:
-                self.dof_lag_timestep[env_ids] = self.cfg.domain_rand.dof_lag_timesteps_range[1]
- 
-        if self.cfg.domain_rand.add_imu_lag:                
-            self.imu_lag_buffer[env_ids, :, :] = 0.0   
-            if self.cfg.domain_rand.randomize_imu_lag_timesteps:
-                self.imu_lag_timestep[env_ids] = torch.randint(self.cfg.domain_rand.imu_lag_timesteps_range[0],
-                                                        self.cfg.domain_rand.imu_lag_timesteps_range[1]+1, (len(env_ids),),device=self.device)
-                if self.cfg.domain_rand.randomize_imu_lag_timesteps_perstep:
-                    self.last_imu_lag_timestep[env_ids] = self.cfg.domain_rand.imu_lag_timesteps_range[1]
-            else:
-                self.imu_lag_timestep[env_ids] = self.cfg.domain_rand.imu_lag_timesteps_range[1]
-    
-                      
-    
-    def init_randomize_props(self):
-        ''' Initialize torch tensors for random properties
-        '''
-        if self.cfg.domain_rand.randomize_base_mass:
-            self.payload_masses = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device,requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_com:
-            self.com_displacements = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device,
-                                        requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_base_inertia:
-            self.base_inertia_x = torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
-            self.base_inertia_y = torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
-            self.base_inertia_z = torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_link_mass:
-            self.link_masses = torch.ones(self.num_envs, self.num_bodies-1, dtype=torch.float, device=self.device,requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_link_com:
-            self.link_com_displacements = torch.zeros(self.num_envs, self.num_bodies-1, 3, dtype=torch.float, device=self.device, requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_link_inertia:
-            self.link_inertia_x = torch.ones(self.num_envs, self.num_bodies-1, dtype=torch.float, device=self.device, requires_grad=False)
-            self.link_inertia_y = torch.ones(self.num_envs, self.num_bodies-1, dtype=torch.float, device=self.device, requires_grad=False)
-            self.link_inertia_z = torch.ones(self.num_envs, self.num_bodies-1, dtype=torch.float, device=self.device, requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_friction:
-            self.friction = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device,requires_grad=False)     
-               
-        if self.cfg.domain_rand.randomize_joint_friction_each_joint:
-            self.joint_friction_coeffs = torch.ones(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device,requires_grad=False)
-        else:
-            self.joint_friction_coeffs = torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device,requires_grad=False)
-            
-        if self.cfg.domain_rand.randomize_joint_armature_each_joint:
-            self.joint_armatures = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device,requires_grad=False)  
-        else:
-            self.joint_armatures = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device,requires_grad=False)
-          
-        if self.cfg.domain_rand.randomize_torque:
-            self.torque_multi = torch.ones(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,requires_grad=False)
-            
-    def _resample_commands(self, env_ids):
-        """ Randommly select commands of some environments
-
-        """
-        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        # set small commands to zero
-        # self.commands[env_ids, 0] *= (torch.norm(self.commands[env_ids, 0], dim=1) > 0.2).unsqueeze(1)
-        for i in range(len(env_ids)):
-            if self.commands[env_ids[i], 0] <= 0.1 and self.commands[env_ids[i], 0] >= -0.1:
-                self.commands[env_ids[i], 0] = 0
-        yaw_limit = torch.abs(self.commands[env_ids, 0]/1.4)
-        for i in range(len(env_ids)):
-            if self.commands[env_ids[i], 1] > yaw_limit[i]:
-                self.commands[env_ids[i], 1] = yaw_limit[i]
-            if self.commands[env_ids[i], 1] < -yaw_limit[i]:
-                self.commands[env_ids[i], 1] = -yaw_limit[i]
-        self.commands[env_ids, 0] = -0.4
-        self.commands[env_ids, 1] = -0.2
-
-    
     def _init_buffers(self):
-        """ Initialize torch tensors which will contain simulation states and processed quantities
-        """
-        # get gym GPU state tensors
-        actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
-        dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
-        net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
-        self.gym.refresh_dof_state_tensor(self.sim)
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
+        super()._init_buffers()
+        self.upper_level_command_interval_steps = command_update_interval_steps(
+            self.dt,
+            getattr(
+                self.cfg.commands,
+                "upper_level_command_frequency_hz",
+                None,
+            ),
+        )
+        print(
+            "[RotunbotVel] timing: "
+            f"physics={1.0 / float(self.sim_params.dt):.1f} Hz, "
+            f"low_level={1.0 / float(self.dt):.1f} Hz, "
+            "upper_command="
+            f"{1.0 / (float(self.dt) * self.upper_level_command_interval_steps):.1f} Hz, "
+            f"hold={self.upper_level_command_interval_steps} low-level steps"
+        )
+        self.command_targets = self.commands[:, :2].clone()
+        self.command_brake_pending = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.command_yaw_brake_pending = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.command_rates = torch.zeros_like(self.command_targets)
+        # Optional causal rate observation for an exact sampled 5 Hz command:
+        # (new_request - old_request) / 0.2 s is held until the next upper tick.
+        # Legacy tasks retain the historical one-step finite difference.
+        self.held_upper_command_rates = torch.zeros_like(self.command_targets)
+        self.command_rate_hold_steps_remaining = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self.tracking_error_integral = torch.zeros_like(self.command_targets)
+        self.last_tracking_error = torch.zeros_like(self.command_targets)
+        self.tracking_error_derivative = torch.zeros_like(self.command_targets)
+        self.command_profile_is_smooth = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.command_profile_is_random_walk = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        # Separate the internal profile generator state from the controller's
+        # reference classification.  External evaluators can mark a supplied
+        # trajectory smooth without activating the built-in profile generator.
+        self.command_reference_is_smooth = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.command_profile_phase = torch.zeros(self.num_envs, device=self.device)
+        self.command_profile_period = torch.ones(self.num_envs, device=self.device)
+        self.command_profile_speed_amplitude = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.command_profile_signed_curvature = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.command_profile_is_independent = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.command_profile_velocity_offset = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.command_profile_velocity_amplitude = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.command_profile_yaw_amplitude = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.command_profile_yaw_phase_offset = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.command_profile_yaw_frequency_ratio = torch.ones(
+            self.num_envs, device=self.device
+        )
+        # Compatibility alias for reports produced before the v12 governor.
+        self.command_reversal_pending = self.command_brake_pending
+        self.requested_output_actions = torch.zeros(
+            self.num_envs,
+            self.num_actions,
+            device=self.device,
+        )
+        self.output_actions = torch.zeros_like(self.requested_output_actions)
+        self.last_output_actions = torch.zeros_like(self.requested_output_actions)
+        self.nominal_policy_actions = torch.zeros_like(self.requested_output_actions)
+        self.feedback_policy_actions = torch.zeros_like(self.requested_output_actions)
+        self.derivative_feedback_policy_actions = torch.zeros_like(
+            self.requested_output_actions
+        )
+        self.rate_feedforward_policy_actions = torch.zeros_like(
+            self.requested_output_actions
+        )
+        self.combined_policy_actions = torch.zeros_like(self.requested_output_actions)
+        self.applied_residual_actions = torch.zeros_like(self.requested_output_actions)
+        self.tracking_heading = yaw_from_quaternion(self.base_quat).clone()
+        self.tracking_lin_vel = torch.zeros_like(self.base_lin_vel)
+        self.tracking_ang_vel = torch.zeros_like(self.base_ang_vel)
+        self._update_tracking_motion(integrate_heading=False)
 
-        # create some wrapper tensors for different slices
-        self.root_states = gymtorch.wrap_tensor(actor_root_state)
-        self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
-        self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
-        self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
-        self.base_quat = self.root_states[:, 3:7]
+    def _update_tracking_motion(self, integrate_heading=True):
+        if integrate_heading:
+            self.tracking_heading.add_(self.root_states[:, 12] * float(self.dt))
+            self.tracking_heading.copy_(
+                torch.atan2(
+                    torch.sin(self.tracking_heading),
+                    torch.cos(self.tracking_heading),
+                )
+            )
+        self.tracking_lin_vel.copy_(
+            planar_velocity_in_heading_frame(
+                self.tracking_heading,
+                self.root_states[:, 7:10],
+            )
+        )
+        # Roll/pitch rates remain useful attitude feedback.  Heading rate is
+        # the gravity-aligned world-Z rate, not body Z after the base has rolled.
+        self.tracking_ang_vel.copy_(self.base_ang_vel)
+        self.tracking_ang_vel[:, 2].copy_(self.root_states[:, 12])
 
-        self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
+    def _post_physics_step_callback(self):
+        super()._post_physics_step_callback()
+        self._update_tracking_motion()
+        upper_command_tick = (
+            self.common_step_counter % self.upper_level_command_interval_steps
+            == 0
+        )
+        sine_profile = (
+            self.command_profile_is_smooth
+            & ~self.command_profile_is_random_walk
+        )
+        smooth_ids = sine_profile.nonzero(as_tuple=False).flatten()
+        if smooth_ids.numel() > 0:
+            next_phase = self.command_profile_phase[smooth_ids] + (
+                2.0
+                * torch.pi
+                * float(self.dt)
+                / self.command_profile_period[smooth_ids]
+            )
+            self.command_profile_phase[smooth_ids] = torch.remainder(
+                next_phase, 2.0 * torch.pi
+            )
+            # The profile represents the high-level navigation request.  Its
+            # phase evolves continuously, but the request is sampled and held
+            # at the configured SRU frequency.  The 50 Hz governor below still
+            # advances on every policy step.
+            if not upper_command_tick:
+                smooth_ids = smooth_ids[:0]
+        if smooth_ids.numel() > 0:
+            smooth_targets = smooth_feasible_velocity_profile(
+                self.command_profile_phase[smooth_ids],
+                self.command_profile_speed_amplitude[smooth_ids],
+                self.command_profile_signed_curvature[smooth_ids],
+                self.cfg.commands.max_forward_speed,
+                self.cfg.commands.max_yaw_rate,
+                self.cfg.commands.minimum_turn_radius,
+                self.cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    self.cfg.commands, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    self.cfg.commands, "turn_authority_full_speed", 0.0
+                ),
+            )
+            independent = self.command_profile_is_independent[smooth_ids]
+            if torch.any(independent):
+                independent_ids = smooth_ids[independent]
+                smooth_targets[independent] = independent_feasible_velocity_profile(
+                    self.command_profile_phase[independent_ids],
+                    self.command_profile_velocity_offset[independent_ids],
+                    self.command_profile_velocity_amplitude[independent_ids],
+                    self.command_profile_yaw_amplitude[independent_ids],
+                    self.command_profile_yaw_phase_offset[independent_ids],
+                    self.command_profile_yaw_frequency_ratio[independent_ids],
+                    self.cfg.commands.max_forward_speed,
+                    self.cfg.commands.max_yaw_rate,
+                    self.cfg.commands.minimum_turn_radius,
+                    self.cfg.commands.feasible_envelope_fraction,
+                    stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                    turn_authority_start_speed=getattr(
+                        self.cfg.commands, "turn_authority_start_speed", 0.0
+                    ),
+                    turn_authority_full_speed=getattr(
+                        self.cfg.commands, "turn_authority_full_speed", 0.0
+                    ),
+                )
+            self.set_command_targets(smooth_targets, smooth_ids)
+        random_walk_ids = self.command_profile_is_random_walk.nonzero(
+            as_tuple=False
+        ).flatten()
+        if not upper_command_tick:
+            random_walk_ids = random_walk_ids[:0]
+        if random_walk_ids.numel() > 0:
+            random_walk_targets = advance_correlated_velocity_commands(
+                self.command_targets[random_walk_ids],
+                self.cfg.commands.random_walk_linear_step,
+                self.cfg.commands.random_walk_yaw_step,
+                self.cfg.commands.random_walk_minimum_speed,
+                self.cfg.commands.max_forward_speed,
+                self.cfg.commands.max_yaw_rate,
+                self.cfg.commands.minimum_turn_radius,
+                self.cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    self.cfg.commands, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    self.cfg.commands, "turn_authority_full_speed", 0.0
+                ),
+            )
+            self.set_command_targets(random_walk_targets, random_walk_ids)
+        previous_commands = self.commands[:, :2].clone()
+        direct_tracking = bool(
+            getattr(self.cfg.commands, "direct_command_tracking", False)
+        )
+        if direct_tracking:
+            # Exact upper/lower-layer contract: the requested reachable command
+            # is the reference.  Mechanical inertia remains in the plant, but
+            # no hidden governor substitutes a different v/w target.
+            self.commands[:, :2].copy_(self.command_targets)
+            self.command_brake_pending.zero_()
+            self.command_yaw_brake_pending.zero_()
+        else:
+            effective_targets = self.command_targets.clone()
+            effective_targets[self.command_brake_pending] = 0.0
+            effective_targets[self.command_yaw_brake_pending, 1] = 0.0
+            governor_projection_max_forward_speed = getattr(
+                self.cfg.commands,
+                "governor_projection_max_forward_speed",
+                None,
+            )
+            if governor_projection_max_forward_speed is None:
+                governor_projection_max_forward_speed = (
+                    self.cfg.commands.max_forward_speed
+                )
+            self.commands[:, :2] = rate_limit_velocity_commands(
+                self.commands[:, :2],
+                effective_targets,
+                self.cfg.commands.maximum_linear_acceleration,
+                self.cfg.commands.maximum_yaw_acceleration,
+                self.dt,
+                governor_projection_max_forward_speed,
+                self.cfg.commands.max_yaw_rate,
+                self.cfg.commands.minimum_turn_radius,
+                self.cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    self.cfg.commands, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    self.cfg.commands, "turn_authority_full_speed", 0.0
+                ),
+                authority_forward_velocity=(
+                    self.tracking_lin_vel[:, 0]
+                    if bool(
+                        getattr(
+                            self.cfg.commands,
+                            "use_measured_turn_authority",
+                            False,
+                        )
+                    )
+                    else None
+                ),
+                authority_speed_preview_margin=float(
+                    getattr(
+                        self.cfg.commands,
+                        "turn_authority_speed_preview_margin",
+                        0.0,
+                    )
+                ),
+            )
+        self.command_rates.copy_(
+            (self.commands[:, :2] - previous_commands) / float(self.dt)
+        )
+        if direct_tracking and bool(
+            getattr(self.cfg.commands, "hold_upper_command_rate", False)
+        ):
+            active_rate = self.command_rate_hold_steps_remaining > 0
+            self.command_rate_hold_steps_remaining[active_rate] -= 1
+            active_rate = self.command_rate_hold_steps_remaining > 0
+            self.command_rates.zero_()
+            self.command_rates[active_rate] = self.held_upper_command_rates[
+                active_rate
+            ]
+        if not direct_tracking:
+            stopped = self.command_brake_pending & (
+                torch.abs(self.commands[:, 0])
+                <= float(self.cfg.commands.reversal_release_command_v)
+            ) & (
+                torch.abs(self.commands[:, 1])
+                <= float(self.cfg.commands.reversal_release_command_w)
+            ) & (
+                torch.abs(self.tracking_lin_vel[:, 0])
+                <= float(self.cfg.commands.reversal_release_measured_v)
+            ) & (
+                torch.abs(self.tracking_ang_vel[:, 2])
+                <= float(self.cfg.commands.reversal_release_measured_w)
+            )
+            self.command_brake_pending[stopped] = False
+            yaw_stopped = self.command_yaw_brake_pending & (
+                torch.abs(self.commands[:, 1])
+                <= float(self.cfg.commands.reversal_release_command_w)
+            ) & (
+                torch.abs(self.tracking_ang_vel[:, 2])
+                <= float(self.cfg.commands.reversal_release_measured_w)
+            )
+            self.command_yaw_brake_pending[yaw_stopped] = False
+        tracking_error = torch.stack(
+            (
+                self.commands[:, 0] - self.tracking_lin_vel[:, 0],
+                self.commands[:, 1] - self.tracking_ang_vel[:, 2],
+            ),
+            dim=1,
+        )
+        raw_error_derivative = (
+            tracking_error - self.last_tracking_error
+        ) / float(self.dt)
+        derivative_alpha = float(
+            self.cfg.control.error_derivative_filter_alpha
+        )
+        derivative_alpha = min(1.0, max(0.0, derivative_alpha))
+        self.tracking_error_derivative.mul_(1.0 - derivative_alpha).add_(
+            raw_error_derivative, alpha=derivative_alpha
+        )
+        self.last_tracking_error.copy_(tracking_error)
+        self.tracking_error_integral.copy_(
+            update_rate_gated_error_integral(
+                self.tracking_error_integral,
+                tracking_error,
+                self.command_rates,
+                self.dt,
+                self.cfg.control.integral_leak_rate,
+                [
+                    self.cfg.control.linear_error_integral_limit,
+                    self.cfg.control.angular_error_integral_limit,
+                ],
+                self.cfg.control.integral_command_rate_threshold,
+            )
+        )
+        if bool(
+            getattr(
+                self.cfg.control,
+                "disable_integral_for_explicit_smooth_profiles",
+                False,
+            )
+        ):
+            # A sinusoid has zero instantaneous rate at every extremum, and a
+            # feasibility-clipped sinusoid can have a long zero-rate plateau.
+            # Those points are not steady commands.  Accumulating PI memory
+            # there creates a cycle-to-cycle yaw bias and eventually reverses
+            # the response.  Keep PI only for genuine constant/step targets.
+            self.tracking_error_integral[self.command_reference_is_smooth] = 0.0
+        self.tracking_error_integral[self.command_brake_pending] = 0.0
+        self.tracking_error_derivative[self.command_brake_pending] = 0.0
+        self.tracking_error_integral[self.command_yaw_brake_pending, 1] = 0.0
+        self.tracking_error_derivative[self.command_yaw_brake_pending, 1] = 0.0
 
-        # initialize some data used later on
-        self.common_step_counter = 0
-        self.extras = {}
-        self.noise_scale_vec = self._get_noise_scale_vec(self.cfg)
-        self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat((self.num_envs, 1))
-        self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
-        self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.last_dof_vel = torch.zeros_like(self.dof_vel)
-        self.last_dof_pos = torch.zeros_like(self.dof_pos)
-        self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
-        self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, yaw vel, heading
-        self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
-        self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
-        self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
-        self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-        self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
-        self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
-        if self.cfg.terrain.measure_heights:
-            self.height_points = self._init_height_points()
-        self.measured_heights = 0
+    def set_command_targets(self, target_commands, env_ids=None):
+        """Set raw requests and latch a brake phase for genuine reversals."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        elif not torch.is_tensor(env_ids):
+            env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        else:
+            env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        if env_ids.numel() == 0:
+            return
 
-        # joint positions offsets and PD gains
-        self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
-        for i in range(self.num_dofs):
-            name = self.dof_names[i]
-            angle = self.cfg.init_state.default_joint_angles[name]
-            self.default_dof_pos[i] = angle
-            found = False
-            for dof_name in self.cfg.control.stiffness.keys():
-                if dof_name in name:
-                    self.p_gains[i] = self.cfg.control.stiffness[dof_name]
-                    self.d_gains[i] = self.cfg.control.damping[dof_name]
-                    found = True
-            if not found:
-                self.p_gains[i] = 0.
-                self.d_gains[i] = 0.
-                if self.cfg.control.control_type in ["P", "V"]:
-                    print(f"PD gain of joint {name} were not defined, setting them to zero")
-        self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
+        targets = target_commands.to(
+            device=self.device, dtype=self.command_targets.dtype
+        )
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(0).expand(env_ids.numel(), -1)
+        if targets.shape != (env_ids.numel(), 2):
+            raise ValueError(
+                "target_commands must have shape (len(env_ids), 2); "
+                f"received {tuple(targets.shape)}"
+            )
 
-        if self.cfg.domain_rand.add_dof_lag:
-            self.dof_lag_buffer = torch.zeros(self.num_envs,self.num_actions * 2,self.cfg.domain_rand.dof_lag_timesteps_range[1]+1,device=self.device)
-            if self.cfg.domain_rand.randomize_dof_lag_timesteps:
-                self.dof_lag_timestep = torch.randint(self.cfg.domain_rand.dof_lag_timesteps_range[0],
-                                                        self.cfg.domain_rand.dof_lag_timesteps_range[1]+1, (self.num_envs,),device=self.device)
-                if self.cfg.domain_rand.randomize_dof_lag_timesteps_perstep:
-                    self.last_dof_lag_timestep = torch.ones(self.num_envs,device=self.device,dtype=int) * self.cfg.domain_rand.dof_lag_timesteps_range[1]
-            else:
-                self.dof_lag_timestep = torch.ones(self.num_envs,device=self.device) * self.cfg.domain_rand.dof_lag_timesteps_range[1]
+        old_targets = self.command_targets[env_ids]
+        changed = torch.any(torch.abs(targets - old_targets) > 1.0e-6, dim=1)
+        if torch.any(changed):
+            changed_ids = env_ids[changed]
+            if bool(
+                getattr(self.cfg.commands, "hold_upper_command_rate", False)
+            ):
+                upper_period = float(self.dt) * float(
+                    self.upper_level_command_interval_steps
+                )
+                held_rate = (targets[changed] - old_targets[changed]) / max(
+                    upper_period, 1.0e-8
+                )
+                self.held_upper_command_rates[changed_ids] = held_rate
+                self.command_rate_hold_steps_remaining[changed_ids] = (
+                    self.upper_level_command_interval_steps
+                )
+                # External high-level callers set the request immediately
+                # before policy inference, so expose the causal slope in that
+                # first observation as well as during the following hold.
+                self.command_rates[changed_ids] = held_rate
+            yaw_only_braking = bool(
+                getattr(self.cfg.commands, "yaw_only_braking", False)
+            )
+            reversing = reversal_brake_mask(
+                self.commands[changed_ids, :2],
+                targets[changed],
+                self.tracking_lin_vel[changed_ids, 0],
+                self.tracking_ang_vel[changed_ids, 2],
+                self.cfg.commands.reversal_detection_v,
+                self.cfg.commands.reversal_detection_w,
+                yaw_deceleration_ratio=(
+                    self.cfg.commands.yaw_deceleration_brake_ratio
+                ),
+                yaw_deceleration_delta=(
+                    self.cfg.commands.yaw_deceleration_brake_delta
+                ),
+                linear_deceleration_ratio=getattr(
+                    self.cfg.commands, "linear_deceleration_brake_ratio", None
+                ),
+                linear_deceleration_delta=getattr(
+                    self.cfg.commands, "linear_deceleration_brake_delta", 0.0
+                ),
+                linear_deceleration_target_speed_max=getattr(
+                    self.cfg.commands,
+                    "linear_deceleration_target_speed_max",
+                    None,
+                ),
+                include_yaw=not yaw_only_braking,
+            )
+            yaw_braking = torch.zeros_like(reversing)
+            if yaw_only_braking:
+                yaw_braking = yaw_reversal_brake_mask(
+                    self.commands[changed_ids, :2],
+                    targets[changed],
+                    self.tracking_ang_vel[changed_ids, 2],
+                    self.cfg.commands.reversal_detection_w,
+                    yaw_deceleration_ratio=(
+                        self.cfg.commands.yaw_deceleration_brake_ratio
+                    ),
+                    yaw_deceleration_delta=(
+                        self.cfg.commands.yaw_deceleration_brake_delta
+                    ),
+                )
+            request_jump = command_request_jump_mask(
+                old_targets[changed],
+                targets[changed],
+                self.cfg.commands.reversal_minimum_request_jump_v,
+                self.cfg.commands.reversal_minimum_request_jump_w,
+            )
+            reversing &= request_jump
+            yaw_braking &= request_jump & ~reversing
+            self.command_brake_pending[changed_ids] = reversing
+            self.command_yaw_brake_pending[changed_ids] = yaw_braking
+            if hasattr(self, "tracking_error_integral"):
+                reset_integral = tracking_integral_reset_mask(
+                    request_jump,
+                    self.command_profile_is_smooth[changed_ids],
+                )
+                discontinuous_ids = changed_ids[reset_integral]
+                self.tracking_error_integral[discontinuous_ids] = 0.0
+        self.command_targets[env_ids] = targets
 
-        if self.cfg.domain_rand.add_imu_lag:
-            self.imu_lag_buffer = torch.zeros(self.num_envs, 9, self.cfg.domain_rand.imu_lag_timesteps_range[1]+1,device=self.device)
-            if self.cfg.domain_rand.randomize_imu_lag_timesteps:
-                self.imu_lag_timestep = torch.randint(self.cfg.domain_rand.imu_lag_timesteps_range[0],
-                                                        self.cfg.domain_rand.imu_lag_timesteps_range[1]+1, (self.num_envs,),device=self.device)
-                if self.cfg.domain_rand.randomize_imu_lag_timesteps_perstep:
-                    self.last_imu_lag_timestep = torch.ones(self.num_envs,device=self.device,dtype=int) * self.cfg.domain_rand.imu_lag_timesteps_range[1]
-            else:
-                self.imu_lag_timestep = torch.ones(self.num_envs,device=self.device) * self.cfg.domain_rand.imu_lag_timesteps_range[1]
-               
+    def _reset_root_states(self, env_ids):
+        super()._reset_root_states(env_ids)
+        if not bool(self.cfg.init_state.randomize_initial_velocity):
+            self.root_states[env_ids, 7:13] = 0.0
+            self.gym.set_actor_root_state_tensor(
+                self.sim,
+                gymtorch.unwrap_tensor(self.root_states),
+            )
+
+    def step(self, actions):
+        # Rate limits are defined per policy step, not per PhysX substep.
+        self.last_output_actions.copy_(self.output_actions)
+        return super().step(actions)
+
     def reset_idx(self, env_ids):
-        """ Reset some environments.
-            Calls self._reset_dofs(env_ids), self._reset_root_states(env_ids), and self._resample_commands(env_ids)
-            [Optional] calls self._update_terrain_curriculum(env_ids), self.update_command_curriculum(env_ids) and
-            Logs episode info
-            Resets some buffers
-
-        Args:
-            env_ids (list[int]): List of environment ids which must be reset
-        """
+        super().reset_idx(env_ids)
         if len(env_ids) == 0:
             return
-        # update curriculum
-        if self.cfg.terrain.curriculum:
-            self._update_terrain_curriculum(env_ids)
-        # avoid updating command curriculum at each step since the maximum command is common to all envs
-        if self.cfg.commands.curriculum and (self.common_step_counter % self.max_episode_length==0):
-            self.update_command_curriculum(env_ids)
-        
-        # reset robot states
-        self._reset_dofs(env_ids)
-        self._reset_root_states(env_ids)
+        self.requested_output_actions[env_ids] = 0.0
+        self.output_actions[env_ids] = 0.0
+        self.last_output_actions[env_ids] = 0.0
+        self.nominal_policy_actions[env_ids] = 0.0
+        self.feedback_policy_actions[env_ids] = 0.0
+        self.derivative_feedback_policy_actions[env_ids] = 0.0
+        self.rate_feedforward_policy_actions[env_ids] = 0.0
+        self.combined_policy_actions[env_ids] = 0.0
+        self.applied_residual_actions[env_ids] = 0.0
+        self.tracking_heading[env_ids] = yaw_from_quaternion(
+            self.root_states[env_ids, 3:7]
+        )
+        self.tracking_lin_vel[env_ids] = 0.0
+        self.tracking_ang_vel[env_ids] = 0.0
+        self.commands[env_ids, :2] = 0.0
+        self.command_rates[env_ids] = 0.0
+        self.held_upper_command_rates[env_ids] = 0.0
+        self.command_rate_hold_steps_remaining[env_ids] = 0
+        self.tracking_error_integral[env_ids] = 0.0
+        self.last_tracking_error[env_ids] = 0.0
+        self.tracking_error_derivative[env_ids] = 0.0
+        self.command_brake_pending[env_ids] = False
+        self.command_yaw_brake_pending[env_ids] = False
+        self.command_profile_is_random_walk[env_ids] = False
 
-        self._resample_commands(env_ids)
+    def _resample_commands(self, env_ids):
+        """Sample stop, straight, and feasible curved-motion commands."""
+        count = int(len(env_ids))
+        if count == 0:
+            return
 
-        self.randomize_dof_props(env_ids)
-        self._refresh_actor_dof_props(env_ids)
-        self.randomize_lag_props(env_ids)
+        cfg = self.cfg.commands
+        previous_commands = self.command_targets[env_ids].clone()
+        if self.common_step_counter < int(cfg.straight_only_policy_steps):
+            turn_fraction = 0.0
+            envelope_fraction = 0.0
+        elif self.common_step_counter < int(cfg.mixed_policy_steps):
+            turn_fraction = float(cfg.mixed_turn_fraction)
+            envelope_fraction = float(cfg.mixed_envelope_fraction)
+        else:
+            turn_fraction = float(cfg.turn_fraction)
+            envelope_fraction = float(cfg.feasible_envelope_fraction)
+        stop_fraction = float(cfg.stop_fraction)
+        straight_fraction = 1.0 - stop_fraction - turn_fraction
 
-        # reset buffers
-        self.last_actions[env_ids] = 0.
-        self.last_dof_vel[env_ids] = 0.
-        self.feet_air_time[env_ids] = 0.
-        self.episode_length_buf[env_ids] = 0
+        random_kind = torch.rand(count, device=self.device)
+        stop_end = stop_fraction
+        straight_end = stop_end + straight_fraction
+        stop_mask = random_kind < stop_end
+        straight_mask = (random_kind >= stop_end) & (random_kind < straight_end)
+        turn_mask = random_kind >= straight_end
 
-        self.last_base_lin_vel[env_ids] = 0
-        self.last_base_ang_vel[env_ids] = 0
+        maximum_speed = float(cfg.max_forward_speed)
+        velocity = (
+            2.0 * torch.rand(count, device=self.device) - 1.0
+        ) * maximum_speed
 
-        self.PID_FirstAxis.reset(env_ids)
-        self.PID_SecondAxis.reset(env_ids)
+        # A low-speed straight command is physically valid and must remain in
+        # the training distribution.  Only curved-motion samples need the
+        # configured minimum rolling speed; the dynamic yaw-authority envelope
+        # below then decides how much steering is actually attainable.
+        small_turn = turn_mask & (
+            torch.abs(velocity) < float(cfg.minimum_turn_speed)
+        )
+        moving_sign = torch.where(
+            velocity >= 0.0,
+            torch.ones_like(velocity),
+            -torch.ones_like(velocity),
+        )
+        velocity[small_turn] = (
+            moving_sign[small_turn] * float(cfg.minimum_turn_speed)
+        )
 
-        self.reset_buf[env_ids] = 1
+        # Regularly expose the policy to the boundary of the feasible set.
+        # Uniform sampling alone produces too few maximum-speed turns.
+        extreme_mask = turn_mask & (
+            torch.rand(count, device=self.device) < float(cfg.extreme_turn_fraction)
+        )
+        velocity[extreme_mask] = moving_sign[extreme_mask] * maximum_speed
 
-        # fill extras
-        self.extras["episode"] = {}
-        for key in self.episode_sums.keys():
-            self.extras["episode"]['rew_' + key] = torch.mean(self.episode_sums[key][env_ids]) / self.max_episode_length_s
-            self.episode_sums[key][env_ids] = 0.
-        # log additional curriculum info
-        if self.cfg.terrain.curriculum:
-            self.extras["episode"]["terrain_level"] = torch.mean(self.terrain_levels.float())
-        if self.cfg.commands.curriculum:
-            self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
-        # send timeout info to the algorithm
-        if self.cfg.env.send_timeouts:
-            self.extras["time_outs"] = self.time_out_buf
-    
+        yaw_limit = feasible_yaw_rate_limit(
+            velocity,
+            cfg.max_yaw_rate,
+            cfg.minimum_turn_radius,
+            envelope_fraction,
+            getattr(cfg, "turn_authority_start_speed", 0.0),
+            getattr(cfg, "turn_authority_full_speed", 0.0),
+        )
+        steering_magnitude = float(cfg.minimum_turn_command_fraction) + (
+            1.0 - float(cfg.minimum_turn_command_fraction)
+        ) * torch.rand_like(yaw_limit)
+        steering_magnitude[extreme_mask] = 1.0
+        steering_sign = torch.where(
+            torch.rand_like(yaw_limit) < 0.5,
+            -torch.ones_like(yaw_limit),
+            torch.ones_like(yaw_limit),
+        )
+        steering = steering_sign * steering_magnitude
+        yaw_rate = torch.where(
+            turn_mask,
+            steering * yaw_limit,
+            torch.zeros_like(velocity),
+        )
 
-    #------------ reward functions----------------
+        velocity[stop_mask] = 0.0
+        yaw_rate[stop_mask | straight_mask] = 0.0
+        sampled = torch.stack((velocity, yaw_rate), dim=-1)
+        projected = project_velocity_commands(
+            sampled,
+            cfg.max_forward_speed,
+            cfg.max_yaw_rate,
+            cfg.minimum_turn_radius,
+            envelope_fraction,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            turn_authority_start_speed=getattr(
+                cfg, "turn_authority_start_speed", 0.0
+            ),
+            turn_authority_full_speed=getattr(
+                cfg, "turn_authority_full_speed", 0.0
+            ),
+        )
+        # Dynamic tracking requires deliberate sign reversals.  Yaw-only
+        # transitions are sampled separately because keeping v while flipping
+        # w is the dominant navigation maneuver and has different spherical-
+        # robot dynamics from reversing both channels together.
+        previous_moving = torch.abs(previous_commands[:, 0]) >= float(
+            cfg.minimum_turn_speed
+        )
+        previous_turning = torch.abs(previous_commands[:, 1]) >= float(
+            cfg.reversal_detection_w
+        )
+        yaw_only_mask = previous_moving & previous_turning & (
+            torch.rand(count, device=self.device)
+            < float(getattr(cfg, "yaw_only_transition_fraction", 0.0))
+        )
+        if torch.any(yaw_only_mask):
+            yaw_only_targets = previous_commands[yaw_only_mask].clone()
+            yaw_only_targets[:, 1] *= -1.0
+            projected[yaw_only_mask] = project_velocity_commands(
+                yaw_only_targets,
+                cfg.max_forward_speed,
+                cfg.max_yaw_rate,
+                cfg.minimum_turn_radius,
+                envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    cfg, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    cfg, "turn_authority_full_speed", 0.0
+                ),
+            )
+
+        opposite_mask = previous_moving & ~yaw_only_mask & (
+            torch.rand(count, device=self.device)
+            < float(cfg.opposite_transition_fraction)
+        )
+        projected[opposite_mask] = project_velocity_commands(
+            -previous_commands[opposite_mask],
+            cfg.max_forward_speed,
+            cfg.max_yaw_rate,
+            cfg.minimum_turn_radius,
+            envelope_fraction,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            turn_authority_start_speed=getattr(
+                cfg, "turn_authority_start_speed", 0.0
+            ),
+            turn_authority_full_speed=getattr(
+                cfg, "turn_authority_full_speed", 0.0
+            ),
+        )
+        profile_mask = torch.rand(count, device=self.device) < float(
+            cfg.smooth_profile_fraction
+        )
+        random_walk_mask = profile_mask & (
+            torch.rand(count, device=self.device)
+            < float(getattr(cfg, "random_walk_profile_fraction", 0.0))
+        )
+        smooth_mask = profile_mask & ~random_walk_mask
+        self.command_profile_is_independent[env_ids] = False
+        self.command_profile_is_smooth[env_ids] = profile_mask
+        self.command_profile_is_random_walk[env_ids] = random_walk_mask
+        self.command_reference_is_smooth[env_ids] = profile_mask
+        if torch.any(random_walk_mask):
+            random_walk_initial = projected[random_walk_mask].clone()
+            zero_or_slow = torch.abs(random_walk_initial[:, 0]) < float(
+                cfg.random_walk_minimum_speed
+            )
+            if torch.any(zero_or_slow):
+                random_sign = torch.where(
+                    torch.rand(
+                        int(zero_or_slow.sum().item()), device=self.device
+                    ) < 0.5,
+                    -torch.ones(
+                        int(zero_or_slow.sum().item()), device=self.device
+                    ),
+                    torch.ones(
+                        int(zero_or_slow.sum().item()), device=self.device
+                    ),
+                )
+                random_walk_initial[zero_or_slow, 0] = (
+                    random_sign * float(cfg.random_walk_minimum_speed)
+                )
+            random_walk_initial = project_velocity_commands(
+                random_walk_initial,
+                cfg.max_forward_speed,
+                cfg.max_yaw_rate,
+                cfg.minimum_turn_radius,
+                cfg.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    cfg, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    cfg, "turn_authority_full_speed", 0.0
+                ),
+            )
+            projected[random_walk_mask] = random_walk_initial
+        if torch.any(smooth_mask):
+            smooth_ids = env_ids[smooth_mask]
+            smooth_count = int(smooth_ids.numel())
+            phase = 2.0 * torch.pi * torch.rand(smooth_count, device=self.device)
+            period = float(cfg.smooth_profile_period_min_s) + (
+                float(cfg.smooth_profile_period_max_s)
+                - float(cfg.smooth_profile_period_min_s)
+            ) * torch.rand(smooth_count, device=self.device)
+            speed_amplitude = float(cfg.smooth_profile_speed_amplitude_min) + (
+                float(cfg.smooth_profile_speed_amplitude_max)
+                - float(cfg.smooth_profile_speed_amplitude_min)
+            ) * torch.rand(smooth_count, device=self.device)
+            maximum_profile_yaw = torch.minimum(
+                torch.full_like(speed_amplitude, float(cfg.max_yaw_rate)),
+                speed_amplitude / float(cfg.minimum_turn_radius),
+            ) * float(cfg.feasible_envelope_fraction)
+            yaw_fraction = float(cfg.smooth_profile_yaw_fraction_min) + (
+                float(cfg.smooth_profile_yaw_fraction_max)
+                - float(cfg.smooth_profile_yaw_fraction_min)
+            ) * torch.rand(smooth_count, device=self.device)
+            curvature_sign = torch.where(
+                torch.rand(smooth_count, device=self.device) < 0.5,
+                -torch.ones(smooth_count, device=self.device),
+                torch.ones(smooth_count, device=self.device),
+            )
+            signed_curvature = (
+                curvature_sign
+                * yaw_fraction
+                * maximum_profile_yaw
+                / torch.clamp(speed_amplitude, min=1.0e-6)
+            )
+            self.command_profile_phase[smooth_ids] = phase
+            self.command_profile_period[smooth_ids] = period
+            self.command_profile_speed_amplitude[smooth_ids] = speed_amplitude
+            self.command_profile_signed_curvature[smooth_ids] = signed_curvature
+            smooth_targets = smooth_feasible_velocity_profile(
+                phase,
+                speed_amplitude,
+                signed_curvature,
+                cfg.max_forward_speed,
+                cfg.max_yaw_rate,
+                cfg.minimum_turn_radius,
+                cfg.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    cfg, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    cfg, "turn_authority_full_speed", 0.0
+                ),
+            )
+            independent_fraction = float(
+                getattr(cfg, "independent_smooth_profile_fraction", 0.0)
+            )
+            independent_local = (
+                torch.rand(smooth_count, device=self.device) < independent_fraction
+            )
+            self.command_profile_is_independent[smooth_ids] = independent_local
+            if torch.any(independent_local):
+                independent_ids = smooth_ids[independent_local]
+                independent_count = int(independent_ids.numel())
+                fixed_velocity = (
+                    torch.rand(independent_count, device=self.device)
+                    < float(cfg.independent_fixed_velocity_fraction)
+                )
+                speed_magnitude = float(cfg.independent_profile_minimum_speed) + (
+                    float(cfg.max_forward_speed)
+                    - float(cfg.independent_profile_minimum_speed)
+                ) * torch.rand(independent_count, device=self.device)
+                speed_sign = torch.where(
+                    torch.rand(independent_count, device=self.device) < 0.5,
+                    -torch.ones(independent_count, device=self.device),
+                    torch.ones(independent_count, device=self.device),
+                )
+                velocity_offset = torch.where(
+                    fixed_velocity,
+                    speed_sign * speed_magnitude,
+                    torch.zeros_like(speed_magnitude),
+                )
+                velocity_amplitude = torch.where(
+                    fixed_velocity,
+                    torch.zeros_like(speed_magnitude),
+                    speed_magnitude,
+                )
+                maximum_profile_yaw = feasible_yaw_rate_limit(
+                    speed_magnitude,
+                    cfg.max_yaw_rate,
+                    cfg.minimum_turn_radius,
+                    cfg.feasible_envelope_fraction,
+                    getattr(cfg, "turn_authority_start_speed", 0.0),
+                    getattr(cfg, "turn_authority_full_speed", 0.0),
+                )
+                yaw_fraction = float(cfg.independent_profile_yaw_fraction_min) + (
+                    float(cfg.independent_profile_yaw_fraction_max)
+                    - float(cfg.independent_profile_yaw_fraction_min)
+                ) * torch.rand(independent_count, device=self.device)
+                yaw_amplitude = yaw_fraction * maximum_profile_yaw
+                yaw_phase_offset = (
+                    2.0 * torch.pi * torch.rand(independent_count, device=self.device)
+                )
+                frequency_choices = torch.as_tensor(
+                    cfg.independent_profile_yaw_frequency_ratios,
+                    dtype=phase.dtype,
+                    device=self.device,
+                )
+                frequency_index = torch.randint(
+                    frequency_choices.numel(),
+                    (independent_count,),
+                    device=self.device,
+                )
+                yaw_frequency_ratio = frequency_choices[frequency_index]
+                self.command_profile_velocity_offset[independent_ids] = velocity_offset
+                self.command_profile_velocity_amplitude[
+                    independent_ids
+                ] = velocity_amplitude
+                self.command_profile_yaw_amplitude[independent_ids] = yaw_amplitude
+                self.command_profile_yaw_phase_offset[
+                    independent_ids
+                ] = yaw_phase_offset
+                self.command_profile_yaw_frequency_ratio[
+                    independent_ids
+                ] = yaw_frequency_ratio
+                smooth_targets[independent_local] = independent_feasible_velocity_profile(
+                    phase[independent_local],
+                    velocity_offset,
+                    velocity_amplitude,
+                    yaw_amplitude,
+                    yaw_phase_offset,
+                    yaw_frequency_ratio,
+                    cfg.max_forward_speed,
+                    cfg.max_yaw_rate,
+                    cfg.minimum_turn_radius,
+                    cfg.feasible_envelope_fraction,
+                    stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                    turn_authority_start_speed=getattr(
+                        cfg, "turn_authority_start_speed", 0.0
+                    ),
+                    turn_authority_full_speed=getattr(
+                        cfg, "turn_authority_full_speed", 0.0
+                    ),
+                )
+            projected[smooth_mask] = smooth_targets
+        self.set_command_targets(projected, env_ids)
+
+    def compute_observations(self):
+        cfg = self.cfg
+        command_scale = torch.as_tensor(
+            [
+                1.0 / float(cfg.commands.max_forward_speed),
+                1.0 / float(cfg.commands.max_yaw_rate),
+            ],
+            device=self.device,
+        )
+        components = [self.commands[:, :2] * command_scale]
+        if bool(getattr(cfg.commands, "observe_command_rates", False)):
+            rate_scale = torch.as_tensor(
+                [
+                    1.0 / float(cfg.commands.maximum_linear_acceleration),
+                    1.0 / float(cfg.commands.maximum_yaw_acceleration),
+                ],
+                device=self.device,
+            )
+            components.append(self.command_rates * rate_scale)
+        if bool(
+            getattr(cfg.commands, "observe_preview_tracking_errors", False)
+        ):
+            preview_commands = lead_compensated_velocity_commands(
+                self.commands,
+                self.command_rates,
+                cfg.control.residual_alignment_linear_preview_time,
+                cfg.control.residual_alignment_angular_preview_time,
+                cfg.commands.max_forward_speed,
+                cfg.commands.max_yaw_rate,
+                cfg.commands.minimum_turn_radius,
+                cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    cfg.commands, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    cfg.commands, "turn_authority_full_speed", 0.0
+                ),
+            )
+            measured_commands = torch.stack(
+                (self.tracking_lin_vel[:, 0], self.tracking_ang_vel[:, 2]),
+                dim=1,
+            )
+            components.append((preview_commands - measured_commands) * command_scale)
+        if bool(
+            getattr(cfg.commands, "observe_tracking_error_integrals", False)
+        ):
+            integral_scale = torch.as_tensor(
+                [
+                    1.0 / float(cfg.control.linear_error_integral_limit),
+                    1.0 / float(cfg.control.angular_error_integral_limit),
+                ],
+                device=self.device,
+            )
+            components.append(self.tracking_error_integral * integral_scale)
+        if bool(
+            getattr(cfg.commands, "observe_tracking_error_derivatives", False)
+        ):
+            derivative_scale = torch.as_tensor(
+                [
+                    1.0 / float(cfg.commands.maximum_linear_acceleration),
+                    1.0 / float(cfg.commands.maximum_yaw_acceleration),
+                ],
+                device=self.device,
+            )
+            components.append(self.tracking_error_derivative * derivative_scale)
+        components.extend(
+            (
+                self.tracking_lin_vel * self.obs_scales.lin_vel,
+                self.tracking_ang_vel * self.obs_scales.ang_vel,
+                self.projected_gravity,
+                self.dof_pos[:, 1:2] * self.obs_scales.dof_pos,
+                self.dof_vel * self.obs_scales.dof_vel,
+                self.actions,
+            )
+        )
+        self.obs_buf = torch.cat(components, dim=-1)
+        if self.add_noise:
+            self.obs_buf += (
+                2.0 * torch.rand_like(self.obs_buf) - 1.0
+            ) * self.noise_scale_vec
+
+    def _get_noise_scale_vec(self, cfg):
+        noise = torch.zeros_like(self.obs_buf[0])
+        self.add_noise = bool(cfg.noise.add_noise)
+        if not self.add_noise:
+            return noise
+        level = float(cfg.noise.noise_level)
+        scales = cfg.noise.noise_scales
+        state_offset = 2
+        if bool(getattr(cfg.commands, "observe_command_rates", False)):
+            state_offset += 2
+        if bool(
+            getattr(cfg.commands, "observe_preview_tracking_errors", False)
+        ):
+            state_offset += 2
+        if bool(
+            getattr(cfg.commands, "observe_tracking_error_integrals", False)
+        ):
+            state_offset += 2
+        if bool(
+            getattr(cfg.commands, "observe_tracking_error_derivatives", False)
+        ):
+            state_offset += 2
+        noise[state_offset : state_offset + 3] = (
+            scales.lin_vel * level * self.obs_scales.lin_vel
+        )
+        noise[state_offset + 3 : state_offset + 6] = (
+            scales.ang_vel * level * self.obs_scales.ang_vel
+        )
+        noise[state_offset + 6 : state_offset + 9] = scales.gravity * level
+        noise[state_offset + 9] = (
+            scales.dof_pos * level * self.obs_scales.dof_pos
+        )
+        noise[state_offset + 10 : state_offset + 12] = (
+            scales.dof_vel * level * self.obs_scales.dof_vel
+        )
+        return noise
+
+    def _compute_torques(self, actions):
+        cfg = self.cfg.control
+        lead_projection_max_forward_speed = getattr(
+            cfg,
+            "lead_projection_max_forward_speed",
+            None,
+        )
+        if lead_projection_max_forward_speed is None:
+            lead_projection_max_forward_speed = self.cfg.commands.max_forward_speed
+        lead_projection_max_forward_speed = float(
+            lead_projection_max_forward_speed
+        )
+        gap_thresholds = getattr(
+            cfg,
+            "rate_feedforward_target_gap_threshold",
+            [float("inf"), float("inf")],
+        )
+        smooth_tracking_enabled = command_target_gap_mask(
+            self.command_targets,
+            self.commands,
+            gap_thresholds[0],
+            gap_thresholds[1],
+        )
+        if bool(
+            getattr(
+                cfg,
+                "require_explicit_smooth_profile_for_phase_lead",
+                False,
+            )
+        ):
+            smooth_tracking_enabled &= self.command_reference_is_smooth
+        smooth_feedback_enabled = smooth_tracking_enabled & (
+            torch.abs(self.command_rates[:, 1])
+            > float(cfg.smooth_angular_feedback_minimum_command_rate)
+        )
+        nominal_commands = lead_compensated_velocity_commands(
+            self.commands,
+            self.command_rates,
+            cfg.linear_command_lead_time,
+            cfg.angular_command_lead_time,
+            lead_projection_max_forward_speed,
+            self.cfg.commands.max_yaw_rate,
+            self.cfg.commands.minimum_turn_radius,
+            self.cfg.commands.feasible_envelope_fraction,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            turn_authority_start_speed=getattr(
+                self.cfg.commands, "turn_authority_start_speed", 0.0
+            ),
+            turn_authority_full_speed=getattr(
+                self.cfg.commands, "turn_authority_full_speed", 0.0
+            ),
+        )
+        smooth_linear_lead_time = float(
+            getattr(cfg, "smooth_linear_command_lead_time", 0.0)
+        )
+        smooth_angular_lead_time = float(
+            getattr(cfg, "smooth_angular_command_lead_time", 0.0)
+        )
+        if smooth_linear_lead_time > 0.0 or smooth_angular_lead_time > 0.0:
+            smooth_nominal_commands = lead_compensated_velocity_commands(
+                self.commands,
+                self.command_rates,
+                (
+                    smooth_linear_lead_time
+                    if smooth_linear_lead_time > 0.0
+                    else cfg.linear_command_lead_time
+                ),
+                (
+                    smooth_angular_lead_time
+                    if smooth_angular_lead_time > 0.0
+                    else cfg.angular_command_lead_time
+                ),
+                lead_projection_max_forward_speed,
+                self.cfg.commands.max_yaw_rate,
+                self.cfg.commands.minimum_turn_radius,
+                self.cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    self.cfg.commands, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    self.cfg.commands, "turn_authority_full_speed", 0.0
+                ),
+            )
+            smooth_angular_command_gain = float(
+                getattr(cfg, "smooth_angular_command_gain", 1.0)
+            )
+            smooth_nominal_commands[:, 1].mul_(smooth_angular_command_gain)
+            # A bounded smooth profile can contain zero-rate plateaus after
+            # feasible-set projection.  Selecting this branch from the
+            # instantaneous rate switched the angular gain from 0.70 to 1.00
+            # at every plateau edge and excited a large wrong-sign yaw
+            # oscillation.  The target-gap/explicit-profile mask already
+            # separates smooth references from steps, so retain the smooth
+            # controller continuously, including extrema and flat tops.
+            smooth_lead_enabled = smooth_tracking_enabled
+            nominal_commands = torch.where(
+                smooth_lead_enabled.unsqueeze(1),
+                smooth_nominal_commands,
+                nominal_commands,
+            )
+        nominal = nominal_actuator_actions(
+            nominal_commands,
+            forward_speed_per_action=cfg.nominal_forward_speed_per_action,
+            yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
+            yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+        )
+        linear_feedback_gain = cfg.linear_feedback_gain
+        low_speed_linear_feedback_gain = getattr(
+            cfg, "low_speed_linear_feedback_gain", None
+        )
+        if low_speed_linear_feedback_gain is not None:
+            linear_feedback_gain = speed_scheduled_value(
+                self.commands[:, 0],
+                low_speed_linear_feedback_gain,
+                cfg.linear_feedback_gain,
+                getattr(cfg, "linear_feedback_transition_start_speed", 0.04),
+                getattr(cfg, "linear_feedback_transition_full_speed", 0.08),
+            )
+        feedback = velocity_error_feedback_actions(
+            self.commands,
+            self.tracking_lin_vel[:, 0],
+            self.tracking_ang_vel[:, 2],
+            forward_speed_per_action=cfg.nominal_forward_speed_per_action,
+            yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
+            yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+            linear_feedback_gain=linear_feedback_gain,
+            angular_feedback_gain=cfg.angular_feedback_gain,
+            linear_action_limit=cfg.linear_feedback_action_limit,
+            angular_action_limit=cfg.angular_feedback_action_limit,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+        )
+        smooth_feedback = velocity_error_feedback_actions(
+            self.commands,
+            self.tracking_lin_vel[:, 0],
+            self.tracking_ang_vel[:, 2],
+            forward_speed_per_action=cfg.nominal_forward_speed_per_action,
+            yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
+            yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+            linear_feedback_gain=0.0,
+            angular_feedback_gain=cfg.smooth_angular_feedback_gain,
+            linear_action_limit=0.0,
+            angular_action_limit=cfg.smooth_angular_feedback_action_limit,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+        )
+        feedback += smooth_feedback * smooth_feedback_enabled.unsqueeze(1)
+        derivative_feedback = velocity_error_derivative_actions(
+            self.commands,
+            self.tracking_lin_vel[:, 0],
+            self.tracking_error_derivative,
+            forward_speed_per_action=cfg.nominal_forward_speed_per_action,
+            yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
+            yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+            linear_derivative_gain=cfg.linear_derivative_gain,
+            angular_derivative_gain=cfg.angular_derivative_gain,
+            linear_action_limit=cfg.linear_derivative_action_limit,
+            angular_action_limit=cfg.angular_derivative_action_limit,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+        )
+        rate_feedforward = velocity_rate_feedforward_actions(
+            self.commands,
+            self.command_rates,
+            self.tracking_lin_vel[:, 0],
+            forward_speed_per_action=cfg.nominal_forward_speed_per_action,
+            yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
+            yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+            linear_preview_time=cfg.linear_rate_feedforward_time,
+            angular_preview_time=cfg.angular_rate_feedforward_time,
+            linear_action_limit=cfg.linear_rate_feedforward_action_limit,
+            angular_action_limit=cfg.angular_rate_feedforward_action_limit,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+        )
+        rate_feedforward *= smooth_tracking_enabled.unsqueeze(1)
+        integral_feedback = velocity_error_integral_actions(
+            self.commands,
+            self.tracking_lin_vel[:, 0],
+            self.tracking_error_integral,
+            forward_speed_per_action=cfg.nominal_forward_speed_per_action,
+            yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
+            yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+            linear_integral_gain=cfg.linear_integral_gain,
+            angular_integral_gain=cfg.angular_integral_gain,
+            linear_action_limit=cfg.linear_integral_action_limit,
+            angular_action_limit=cfg.angular_integral_action_limit,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+        )
+        residual_actions = actions
+        if bool(getattr(cfg, "residual_error_alignment_filter", False)):
+            alignment_commands = self.commands
+            linear_preview = float(
+                getattr(cfg, "residual_alignment_linear_preview_time", 0.0)
+            )
+            angular_preview = float(
+                getattr(cfg, "residual_alignment_angular_preview_time", 0.0)
+            )
+            if linear_preview > 0.0 or angular_preview > 0.0:
+                alignment_commands = lead_compensated_velocity_commands(
+                    self.commands,
+                    self.command_rates,
+                    linear_preview,
+                    angular_preview,
+                    lead_projection_max_forward_speed,
+                    self.cfg.commands.max_yaw_rate,
+                    self.cfg.commands.minimum_turn_radius,
+                    self.cfg.commands.feasible_envelope_fraction,
+                    stationary_threshold=(
+                        self.cfg.rewards.stationary_command_threshold
+                    ),
+                    turn_authority_start_speed=getattr(
+                        self.cfg.commands, "turn_authority_start_speed", 0.0
+                    ),
+                    turn_authority_full_speed=getattr(
+                        self.cfg.commands, "turn_authority_full_speed", 0.0
+                    ),
+                )
+            residual_actions = error_aligned_residual_actions(
+                residual_actions,
+                alignment_commands,
+                self.tracking_lin_vel[:, 0],
+                self.tracking_ang_vel[:, 2],
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            )
+        if bool(getattr(cfg, "disable_residual_during_braking", False)):
+            residual_actions = residual_actions.clone()
+            any_braking = (
+                self.command_brake_pending | self.command_yaw_brake_pending
+            )
+            residual_actions[any_braking] = 0.0
+        residual_scale = torch.as_tensor(
+            cfg.residual_action_scale,
+            dtype=actions.dtype,
+            device=actions.device,
+        )
+        combined_actions = torch.clamp(
+            nominal
+            + feedback
+            + derivative_feedback
+            + rate_feedforward
+            + integral_feedback
+            + residual_scale * residual_actions,
+            -1.0,
+            1.0,
+        )
+        self.nominal_policy_actions.copy_(nominal)
+        self.feedback_policy_actions.copy_(feedback)
+        self.derivative_feedback_policy_actions.copy_(derivative_feedback)
+        self.rate_feedforward_policy_actions.copy_(rate_feedforward)
+        self.applied_residual_actions.copy_(residual_actions)
+        self.combined_policy_actions.copy_(combined_actions)
+
+        requested = torch.empty_like(actions)
+        requested[:, 0] = torch.clamp(
+            combined_actions[:, 0] * float(cfg.joint1_velocity_scale),
+            -float(cfg.joint1_velocity_limit),
+            float(cfg.joint1_velocity_limit),
+        )
+        requested[:, 1] = torch.clamp(
+            combined_actions[:, 1] * float(cfg.joint2_position_scale),
+            -float(cfg.joint2_position_limit),
+            float(cfg.joint2_position_limit),
+        )
+        self.requested_output_actions.copy_(requested)
+
+        targets = requested
+        if bool(cfg.set_target_rate_limit):
+            target_delta = requested - self.last_output_actions
+            limits = torch.as_tensor(
+                [
+                    float(cfg.joint1_target_rate_limit),
+                    float(cfg.joint2_target_rate_limit),
+                ],
+                device=self.device,
+            )
+            targets = self.last_output_actions + torch.maximum(
+                torch.minimum(target_delta, limits),
+                -limits,
+            )
+        self.output_actions.copy_(targets)
+
+        torques = torch.empty_like(actions)
+        torques[:, 0] = float(cfg.joint1_velocity_kp) * (
+            targets[:, 0] - self.dof_vel[:, 0]
+        )
+        torques[:, 1] = (
+            float(cfg.joint2_position_kp)
+            * (targets[:, 1] - self.dof_pos[:, 1])
+            - float(cfg.joint2_velocity_kd) * self.dof_vel[:, 1]
+        )
+        torques[:, 0] = torch.clamp(
+            torques[:, 0],
+            -float(cfg.joint1_torque_limit),
+            float(cfg.joint1_torque_limit),
+        )
+        torques[:, 1] = torch.clamp(
+            torques[:, 1],
+            -float(cfg.joint2_torque_limit),
+            float(cfg.joint2_torque_limit),
+        )
+        return torques
+
     def _reward_tracking_lin_vel(self):
-        # Tracking of linear velocity commands (xy axes)
-        # if self.step_counter % self.print_interval == 0:
-        #     print(f"给定线速度: {self.commands[0, 0]:.4f}")  # 只打印第一项
-        #     print(f"实际线速度y: {self.base_lin_vel[0, 1]:.4f}")  # 只打印第一项
-        #     print(f"实际线速度x: {self.base_lin_vel[0, 0]:.4f}")  # 只打印第一项       
-        # lin_vel_error = torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0]) + torch.square(self.base_lin_vel[:, 1])
-        # return torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma)
-        e = 1e-3
-        lin_vel_error = torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0])/(abs(self.commands[:, 0])+e) + torch.square(self.base_lin_vel[:, 1])
-        if self.step_counter % self.print_interval == 0 and self.data_print:
-            print(f"给定线速度: {self.commands[0, 0]:.4f}")  # 只打印第一项
-            print(f"实际线速度y: {self.base_lin_vel[0, 1]:.4f}")  # 只打印第一项
-            print(f"实际线速度x: {self.base_lin_vel[0, 0]:.4f}")  # 只打印第一项
-            print(f"输出力矩: {self.torques[0, 0]:.4f}, {self.torques[0, 1]:.4f}")  
-            print(f"输出: {self.output_actions[0, 0]:.4f}, {self.output_actions[0, 1]:.4f}")
-            # print(f"输出: {self.output_actions[0, 0]:.4f}, {self.output_actions[0, 1]:.4f}")  
-        return torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma)
-        # return 1
-    
+        error = self.commands[:, 0] - self.tracking_lin_vel[:, 0]
+        sigma = float(self.cfg.rewards.linear_tracking_sigma)
+        return torch.exp(-torch.abs(error) / sigma)
+
+    def _angular_reward_target(self):
+        """Return current yaw target, with causal preview for smooth profiles."""
+        target = self.commands[:, 1]
+        preview_time = float(
+            getattr(self.cfg.rewards, "smooth_angular_reward_preview_time", 0.0)
+        )
+        if preview_time <= 0.0:
+            return target
+        smooth = self.command_profile_is_smooth
+        if not torch.any(smooth):
+            return target
+        preview_commands = lead_compensated_velocity_commands(
+            self.commands,
+            self.command_rates,
+            0.0,
+            preview_time,
+            self.cfg.commands.max_forward_speed,
+            self.cfg.commands.max_yaw_rate,
+            self.cfg.commands.minimum_turn_radius,
+            self.cfg.commands.feasible_envelope_fraction,
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            turn_authority_start_speed=getattr(
+                self.cfg.commands, "turn_authority_start_speed", 0.0
+            ),
+            turn_authority_full_speed=getattr(
+                self.cfg.commands, "turn_authority_full_speed", 0.0
+            ),
+        )
+        return torch.where(smooth, preview_commands[:, 1], target)
+
     def _reward_tracking_ang_vel(self):
-        # Tracking of angular velocity commands (yaw) 
-        # if self.step_counter % self.print_interval == 0:
-        #     print(f"给定角速度: {self.commands[0, 1]:.4f}")  # 只打印第一项
-        #     print(f"实际角速度: {self.base_ang_vel[0, 2]:.4f}")  # 只打印第一项
-        #     print('**********************')
-        # ang_vel_error = torch.square(self.commands[:, 1] - self.base_ang_vel[:, 2])
-        # return torch.exp(-ang_vel_error/self.cfg.rewards.tracking_sigma)
-        e = 1e-3
-        if self.step_counter % self.print_interval == 0 and self.data_print:
-            print(f"给定角速度: {self.commands[0, 1]:.4f}")  # 只打印第一项
-            print(f"实际角速度: {self.base_ang_vel[0, 2]:.4f}")  # 只打印第一项
-            print('**********************')
-        ang_vel_error = torch.square((self.commands[:, 1] - self.base_ang_vel[:, 2])/(abs(self.commands[:, 1])+e))
-        return torch.exp(-ang_vel_error/self.cfg.rewards.tracking_sigma)
-        # return 1
-    
+        error = self._angular_reward_target() - self.tracking_ang_vel[:, 2]
+        sigma = float(self.cfg.rewards.angular_tracking_sigma)
+        return torch.exp(-torch.abs(error) / sigma)
+
+    def _reward_curvature_tracking(self):
+        """Reward matching the requested v/w direction without division."""
+        maximum_v = max(float(self.cfg.commands.max_forward_speed), 1.0e-6)
+        maximum_w = max(float(self.cfg.commands.max_yaw_rate), 1.0e-6)
+        requested_v = self.commands[:, 0] / maximum_v
+        requested_w = self.commands[:, 1] / maximum_w
+        measured_v = self.tracking_lin_vel[:, 0] / maximum_v
+        measured_w = self.tracking_ang_vel[:, 2] / maximum_w
+        requested_norm = torch.sqrt(requested_v.square() + requested_w.square())
+        perpendicular_error = torch.abs(
+            measured_v * requested_w - measured_w * requested_v
+        ) / torch.clamp(requested_norm, min=1.0e-6)
+        valid_turn = (
+            torch.abs(self.commands[:, 0])
+            >= float(self.cfg.commands.minimum_turn_speed)
+        ) & (
+            torch.abs(self.commands[:, 1])
+            >= float(self.cfg.rewards.turning_command_threshold)
+        )
+        sigma = float(self.cfg.rewards.curvature_tracking_sigma)
+        return valid_turn.float() * torch.exp(-perpendicular_error / sigma)
+
+    def _reward_angular_tracking_error(self):
+        """Non-saturating angular-error signal for large and small yaw errors."""
+        error = self._angular_reward_target() - self.tracking_ang_vel[:, 2]
+        sigma = float(self.cfg.rewards.angular_tracking_sigma)
+        return torch.abs(error) / sigma
+
+    def _reward_angular_acceleration_error(self):
+        """Match yaw acceleration on smooth references to reduce phase lag."""
+        smooth = self.command_profile_is_smooth.float()
+        sigma = float(self.cfg.rewards.angular_acceleration_error_sigma)
+        normalized_error = torch.abs(self.tracking_error_derivative[:, 1]) / sigma
+        return smooth * torch.clamp(normalized_error, max=5.0)
+
+    def _reward_straight_yaw(self):
+        """Suppress learned yaw bias whenever the requested path is straight."""
+        straight = torch.abs(self.commands[:, 1]) < float(
+            self.cfg.rewards.turning_command_threshold
+        )
+        sigma = float(self.cfg.rewards.angular_tracking_sigma)
+        return straight.float() * torch.square(self.tracking_ang_vel[:, 2] / sigma)
+
+    def _reward_lateral_velocity(self):
+        return torch.square(self.tracking_lin_vel[:, 1])
+
+    def _reward_stationary_yaw(self):
+        stationary = (
+            torch.abs(self.commands[:, 0])
+            < float(self.cfg.rewards.stationary_command_threshold)
+        )
+        return stationary.float() * torch.square(self.tracking_ang_vel[:, 2])
+
+    def _reward_yaw_direction(self):
+        command = self.commands[:, 1]
+        turning = torch.abs(command) > float(
+            self.cfg.rewards.turning_command_threshold
+        )
+        signed_rate = torch.sign(command) * self.tracking_ang_vel[:, 2]
+        return turning.float() * torch.tanh(signed_rate / 0.02)
+
+    def _reward_yaw_wrong_direction(self):
+        """Penalize opposite yaw without rewarding same-direction overshoot."""
+        command = self.commands[:, 1]
+        turning = torch.abs(command) > float(
+            self.cfg.rewards.turning_command_threshold
+        )
+        signed_rate = torch.sign(command) * self.tracking_ang_vel[:, 2]
+        opposite = torch.clamp(-signed_rate / 0.02, min=0.0, max=5.0)
+        return turning.float() * opposite
+
+    def _reward_linear_wrong_direction(self):
+        """Penalize governed forward-speed sign errors during reversals."""
+        command = self.commands[:, 0]
+        moving = torch.abs(command) > float(
+            self.cfg.rewards.stationary_command_threshold
+        )
+        signed_speed = torch.sign(command) * self.tracking_lin_vel[:, 0]
+        opposite = torch.clamp(-signed_speed / 0.04, min=0.0, max=5.0)
+        return moving.float() * opposite
+
+    def _reward_action_saturation(self):
+        excess = torch.clamp(
+            torch.abs(self.combined_policy_actions) - 0.90,
+            min=0.0,
+        )
+        return torch.sum(torch.square(excess / 0.10), dim=1)
+
+    def _reward_residual_action(self):
+        return torch.sum(torch.square(self.actions), dim=1)

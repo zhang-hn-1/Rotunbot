@@ -121,6 +121,19 @@ class LeggedRobotCfg(BaseConfig):
         armature = 0.
         thickness = 0.01
 
+        # Optional contact-conditioned damping about the world up axis.  It is
+        # disabled for generic robots and only enabled by the V49 Rotunbot
+        # release configuration.
+        contact_yaw_damping = False
+        contact_yaw_damping_body = ""
+        contact_yaw_damping_viscous = 0.0
+        contact_yaw_damping_coulomb = 0.0
+        contact_yaw_damping_transition = 0.02
+        contact_yaw_damping_max_torque = 0.0
+        contact_yaw_damping_force_threshold = 10.0
+        contact_yaw_damping_speed_scale = 0.10
+        contact_yaw_damping_speed_exponent = 4.0
+
     class domain_rand:
         randomize_friction = True
         friction_range = [0.5, 1.25]
