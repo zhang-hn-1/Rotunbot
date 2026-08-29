@@ -209,6 +209,38 @@ def _set_initial_pose(env, pose):
     env.projected_gravity[:] = quat_rotate_inverse(
         env.base_quat, env.gravity_vec
     )
+    # BaseTask.reset() performs one zero-action step after reset_idx().  That
+    # compatibility step can repopulate command/profile state from the base
+    # sampler before this evaluator installs its first explicit target.  Clear
+    # those runtime histories again at the episode boundary so the first
+    # observation is independent of the previous episode's run order.
+    for name in (
+        "command_targets", "commands", "command_rates", "held_upper_command_rates",
+        "tracking_error_integral", "last_tracking_error", "tracking_error_derivative",
+        "requested_output_actions", "output_actions", "last_output_actions", "actions",
+        "last_actions", "nominal_policy_actions", "feedback_policy_actions",
+        "derivative_feedback_policy_actions", "rate_feedforward_policy_actions",
+        "combined_policy_actions", "applied_residual_actions", "tracking_lin_vel",
+        "tracking_ang_vel", "command_profile_phase", "command_profile_speed_amplitude",
+        "command_profile_signed_curvature", "command_profile_velocity_offset",
+        "command_profile_velocity_amplitude", "command_profile_yaw_amplitude",
+        "command_profile_yaw_phase_offset",
+    ):
+        value = getattr(env, name, None)
+        if value is not None:
+            value.zero_()
+    if hasattr(env, "command_profile_period"):
+        env.command_profile_period.fill_(1.0)
+    if hasattr(env, "command_profile_yaw_frequency_ratio"):
+        env.command_profile_yaw_frequency_ratio.fill_(1.0)
+    for name in (
+        "command_brake_pending", "command_yaw_brake_pending",
+        "command_profile_is_smooth", "command_profile_is_random_walk",
+        "command_profile_is_independent", "command_reference_is_smooth",
+    ):
+        value = getattr(env, name, None)
+        if value is not None:
+            value.zero_()
     env.compute_observations()
 
 

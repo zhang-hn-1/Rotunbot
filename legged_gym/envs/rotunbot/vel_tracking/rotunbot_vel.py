@@ -1329,6 +1329,12 @@ class RotunbotVel(LeggedRobot):
         self.requested_output_actions[env_ids] = 0.0
         self.output_actions[env_ids] = 0.0
         self.last_output_actions[env_ids] = 0.0
+        # ``LeggedRobot.reset_idx`` clears last_actions but leaves the current
+        # action tensor intact.  V49 includes the current action in its
+        # observation, so carry-over here contaminates the first post-reset
+        # policy input.  This is reset hygiene only; the control law is
+        # unchanged.
+        self.actions[env_ids] = 0.0
         self.nominal_policy_actions[env_ids] = 0.0
         self.feedback_policy_actions[env_ids] = 0.0
         self.derivative_feedback_policy_actions[env_ids] = 0.0
@@ -1349,7 +1355,19 @@ class RotunbotVel(LeggedRobot):
         self.tracking_error_derivative[env_ids] = 0.0
         self.command_brake_pending[env_ids] = False
         self.command_yaw_brake_pending[env_ids] = False
+        self.command_profile_is_smooth[env_ids] = False
         self.command_profile_is_random_walk[env_ids] = False
+        self.command_profile_is_independent[env_ids] = False
+        self.command_reference_is_smooth[env_ids] = False
+        self.command_profile_phase[env_ids] = 0.0
+        self.command_profile_period[env_ids] = 1.0
+        self.command_profile_speed_amplitude[env_ids] = 0.0
+        self.command_profile_signed_curvature[env_ids] = 0.0
+        self.command_profile_velocity_offset[env_ids] = 0.0
+        self.command_profile_velocity_amplitude[env_ids] = 0.0
+        self.command_profile_yaw_amplitude[env_ids] = 0.0
+        self.command_profile_yaw_phase_offset[env_ids] = 0.0
+        self.command_profile_yaw_frequency_ratio[env_ids] = 1.0
 
     def _resample_commands(self, env_ids):
         """Sample stop, straight, and feasible curved-motion commands."""
