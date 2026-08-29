@@ -82,9 +82,11 @@ Transition nominal 的全局 mean reversal completion time 为 3.187 s，P95 为
 
 `/home/jason/SphericalRobot_LeggedGym-master-sru/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_local_p2p/Aug24_18-18-41_/model_3051.pt`
 
-使用现有 `evaluate_gate0b_local_waypoint.py`，设置 `GATE0B_TASK=rotunbot_local_p2p`，40 个 episode；地图为 plane、无障碍、关闭摩擦/质量随机化，waypoint 距离 0.5--2.0 m、到达半径 0.35 m、episode 上限 6 s。该 Local P2P policy 直接输出 actuator action，未调用 `RotunbotVel.set_command_targets()`，因此本次 Transition Manager 不会激活；把它强行改成 velocity task 会同时改变 policy 输入/任务，不是隔离的 manager 对照。
+使用现有 `evaluate_gate0b_local_waypoint.py`，设置 `GATE0B_TASK=rotunbot_local_p2p`，40 个 episode；地图为 plane、无障碍、关闭摩擦/质量随机化，waypoint 到达半径 0.35 m、episode 上限 6 s。该 Local P2P policy 直接输出 actuator action，未调用 `RotunbotVel.set_command_targets()`，因此本次 Transition Manager 不会激活；把它强行改成 velocity task 会同时改变 policy 输入/任务，不是隔离的 manager 对照。
 
-实测 frozen P2P：success rate `30.0%`（12/40），timeout rate `70.0%`，divergence rate `40.0%`，near-miss rate `30.0%`，mean episode length `260.6 steps`。由于 manager activation count 为 0，该闭环的 Transition 对照为 N/A；该既有 P2P gate 仍未达到 95% 通过门槛，不能用它宣称 P2P PASS。
+模型 `model_3051.pt` 对应的配置仍是 Local P2P Stage A：距离 `[1,3] m`、相对方位 `[-60,+60]°`。因此按 Stage A 分布对齐测试得到 success rate `42.5%`（17/40），divergence `12.5%`，near-miss `45.0%`，mean episode length `257.1 steps`；日志为 `logs/frozen_local_p2p_gate0b_stage_a.log`。按更宽的距离 `[0.5,2] m`、全 `[-180,+180]°` 分布测试得到 `30.0%`（12/40），这属于超出该 checkpoint 已确认训练分布的 OOD 结果，不能作为 Stage-A 原位能力的替代值。两种协议都未达到 95% Gate0B 门槛。
+
+该结果不能直接与 `V49_FINAL_MODEL_TRAINING_CODE_TESTS_20260827` 中的成功率比较：V49 的 `policy_eva.py` 加载的是独立的 TorchScript 导航策略 `policy_nav_9_3.pt`，使用 512 个环境、30 s 时限，并且 `success_buf` 只检查目标距离 `<0.3 m`，计算出的 `stop_vel` 没有进入成功条件；V49 冻结发布模型 `model_frozen.pt` 的正式评估则是 `rotunbot_vel_sru50_v49` 的 `(v,omega)` 速度跟踪指标，不是 P2P SR。V49 的导航评估和本节的 `model_3051.pt` 既不是同一个 checkpoint，也不是同一条控制接口。
 
 ## 8. 验收判定
 

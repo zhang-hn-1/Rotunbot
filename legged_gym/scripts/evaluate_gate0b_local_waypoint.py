@@ -1,6 +1,7 @@
 """Gate0B: short-range local-waypoint tracking with a frozen P2P policy."""
 
 import os
+import math
 from pathlib import Path
 
 import isaacgym  # noqa: F401
@@ -14,9 +15,11 @@ CHECKPOINT = (
     "/home/jason/SphericalRobot_LeggedGym-master-new-map/logs/"
     "rotunbot_target_repro/Aug11_16-44-07_/model_2050.pt"
 )
-WAYPOINT_RADIUS = 0.35
-MIN_WAYPOINT_DISTANCE = 0.5
-MAX_WAYPOINT_DISTANCE = 2.0
+WAYPOINT_RADIUS = float(os.environ.get("GATE0B_WAYPOINT_RADIUS", "0.35"))
+MIN_WAYPOINT_DISTANCE = float(os.environ.get("GATE0B_MIN_DISTANCE", "0.5"))
+MAX_WAYPOINT_DISTANCE = float(os.environ.get("GATE0B_MAX_DISTANCE", "2.0"))
+MIN_WAYPOINT_BEARING_DEG = float(os.environ.get("GATE0B_MIN_BEARING_DEG", "-180"))
+MAX_WAYPOINT_BEARING_DEG = float(os.environ.get("GATE0B_MAX_BEARING_DEG", "180"))
 
 
 def _yaw_from_quaternion(quat):
@@ -60,7 +63,9 @@ def evaluate(args):
         distance = torch.rand((), device=env.device) * (
             MAX_WAYPOINT_DISTANCE - MIN_WAYPOINT_DISTANCE
         ) + MIN_WAYPOINT_DISTANCE
-        angle = torch.rand((), device=env.device) * (2.0 * torch.pi) - torch.pi
+        angle = torch.rand((), device=env.device) * math.radians(
+            MAX_WAYPOINT_BEARING_DEG - MIN_WAYPOINT_BEARING_DEG
+        ) + math.radians(MIN_WAYPOINT_BEARING_DEG)
         local_delta = torch.stack((distance * torch.cos(angle), distance * torch.sin(angle)))
         world_delta = torch.stack(
             (
