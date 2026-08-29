@@ -13,9 +13,31 @@ from legged_gym.navigation.v62_corridor_controller import (
     PoseBasedCorridorController,
 )
 from legged_gym.navigation.v62_corridor_task import make_wall_segments
+from legged_gym.scripts.evaluate_v62_corridor import _configure_env
 
 
 class V62CorridorControllerTests(unittest.TestCase):
+    def test_external_s0_evaluator_disables_internal_command_profiles(self):
+        scenario = make_straight_scenario(2.0, 5.0, 1)
+        cfg = type("Cfg", (), {})()
+        cfg.env = type("Env", (), {})()
+        cfg.noise = type("Noise", (), {})()
+        cfg.domain_rand = type("DomainRand", (), {})()
+        cfg.init_state = type("InitState", (), {})()
+        cfg.commands = type("Commands", (), {})()
+        cfg.noise.add_noise = True
+        cfg.domain_rand.randomize_friction = True
+        cfg.domain_rand.randomize_base_mass = True
+        cfg.domain_rand.push_robots = True
+        cfg.init_state.randomize_initial_velocity = True
+        cfg.commands.target_curriculum = True
+        cfg.commands.resampling_time = 1.0
+        cfg.commands.upper_level_command_frequency_hz = None
+        _configure_env(cfg, scenario)
+        self.assertEqual(cfg.commands.smooth_profile_fraction, 0.0)
+        self.assertEqual(cfg.commands.random_walk_profile_fraction, 0.0)
+        self.assertEqual(cfg.commands.independent_smooth_profile_fraction, 0.0)
+
     def test_wall_segments_coalesce_straight_and_facet_turn(self):
         straight = make_straight_scenario(2.0, 5.0, 1)
         self.assertEqual(len(make_wall_segments(straight.centerline)), 1)
