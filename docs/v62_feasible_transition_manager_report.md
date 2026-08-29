@@ -78,13 +78,13 @@ Transition nominal 的全局 mean reversal completion time 为 3.187 s，P95 为
 
 ## 7. Frozen Local P2P 闭环
 
-当前项目中查到的冻结 checkpoint 为：
+当前项目中查到的、与 Local P2P task 匹配的冻结 checkpoint 为：
 
-`/home/jason/SphericalRobot_LeggedGym-master-sru/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_local_goal_p2p/Aug25_13-33-03_/model_500.pt`
+`/home/jason/SphericalRobot_LeggedGym-master-sru/SphericalRobot_LeggedGym-master-new-map/logs/rotunbot_local_p2p/Aug24_18-18-41_/model_3051.pt`
 
-使用现有 `evaluate_local_goal_p2p.py`、stage C、seed 17、40 个固定网格 episode。该 Local Goal/P2P policy 直接输出 actuator action，未调用 `RotunbotVel.set_command_targets()`，因此本次 Transition Manager 不会激活；把它强行改成 velocity task 会同时改变 policy 输入/任务，不是隔离的 manager 对照。
+使用现有 `evaluate_gate0b_local_waypoint.py`，设置 `GATE0B_TASK=rotunbot_local_p2p`，40 个 episode；地图为 plane、无障碍、关闭摩擦/质量随机化，waypoint 距离 0.5--2.0 m、到达半径 0.35 m、episode 上限 6 s。该 Local P2P policy 直接输出 actuator action，未调用 `RotunbotVel.set_command_targets()`，因此本次 Transition Manager 不会激活；把它强行改成 velocity task 会同时改变 policy 输入/任务，不是隔离的 manager 对照。
 
-实测 frozen P2P：success rate `7.5%`，timeout rate `92.5%`，divergence rate `57.5%`，near-miss rate `35.0%`，mean final distance `1.565 m`，median `1.312 m`，P90 `2.944 m`，mean episode length `285.3 steps`。由于 manager activation count 为 0，该闭环的 Transition 对照为 N/A，而不是声称一次未发生的控制链改动改善了 P2P；因此该既有 P2P gate 本身失败，不能用它宣称 P2P PASS。
+实测 frozen P2P：success rate `30.0%`（12/40），timeout rate `70.0%`，divergence rate `40.0%`，near-miss rate `30.0%`，mean episode length `260.6 steps`。由于 manager activation count 为 0，该闭环的 Transition 对照为 N/A；该既有 P2P gate 仍未达到 95% 通过门槛，不能用它宣称 P2P PASS。
 
 ## 8. 验收判定
 
@@ -104,7 +104,7 @@ Transition nominal 的全局 mean reversal completion time 为 3.187 s，P95 为
 - `logs/v62_transition_nominal_final/structured_random_summary.json`
 - `logs/v62_baseline_standard/structured_random_summary.json`
 - `logs/v62_transition_standard/structured_random_summary.json`
-- `logs/frozen_local_goal_p2p_eval.json`
+- `logs/frozen_local_p2p_gate0b_correct_task.log`
 
 运行 log：
 
@@ -112,6 +112,6 @@ Transition nominal 的全局 mean reversal completion time 为 3.187 s，P95 为
 - `logs/v62_transition_nominal_final.log`
 - `logs/v62_baseline_standard.log`
 - `logs/v62_transition_standard.log`
-- `logs/frozen_local_goal_p2p_eval.log`
+- `logs/frozen_local_p2p_gate0b_correct_task.log`
 
 上述 logs/、CSV、NPZ、TensorBoard/cache 均不纳入 Git commit。

@@ -30,7 +30,7 @@ def evaluate(args):
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Gate0B checkpoint does not exist: {checkpoint_path}")
 
-    args.task = "rotunbot_target_repro"
+    args.task = os.environ.get("GATE0B_TASK", "rotunbot_target_repro")
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
     env_cfg.env.num_envs = 1
     env_cfg.noise.add_noise = False
