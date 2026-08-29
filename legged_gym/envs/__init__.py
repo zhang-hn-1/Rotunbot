@@ -45,6 +45,10 @@ from .rotunbot.vel_tracking.rotunbot_vel_config import RotunbotVelCfg , Rotunbot
 from .rotunbot.vel_tracking.rotunbot_vel_config import (
     RotunbotVelSRU50V49IntegrationCfg,
     RotunbotVelSRU50V49IntegrationCfgPPO,
+    RotunbotVelSRU50SafeYawResidualV62Cfg,
+    RotunbotVelSRU50SafeYawResidualV62CfgPPO,
+    RotunbotVelSRU50SafeYawResidualV62TransitionCfg,
+    RotunbotVelSRU50SafeYawResidualV62TransitionCfgPPO,
 )
 from .rotunbot.trajectory_tracking.rotunbot_tra import RotunbotTrajectory
 from .rotunbot.trajectory_tracking.rotunbot_tra_config import RotunbotTrajectoryCfg, RotunbotTrajectoryCfgPPO
@@ -84,6 +88,18 @@ task_registry.register( "a1", LeggedRobot, A1RoughCfg(), A1RoughCfgPPO() )
 task_registry.register( "cassie", Cassie, CassieRoughCfg(), CassieRoughCfgPPO() )
 task_registry.register( "rotunbot", Rotunbot, RotunbotRoughCfg(), RotunbotRoughCfgPPO() )
 task_registry.register( "rotunbot_vel", RotunbotVel, RotunbotVelCfg(), RotunbotVelCfgPPO() )
+task_registry.register(
+    "rotunbot_vel_sru50_v62_safe_yaw_residual",
+    RotunbotVel,
+    RotunbotVelSRU50SafeYawResidualV62Cfg(),
+    RotunbotVelSRU50SafeYawResidualV62CfgPPO(),
+)
+task_registry.register(
+    "rotunbot_vel_sru50_v62_feasible_transition_manager",
+    RotunbotVel,
+    RotunbotVelSRU50SafeYawResidualV62TransitionCfg(),
+    RotunbotVelSRU50SafeYawResidualV62TransitionCfgPPO(),
+)
 task_registry.register( "rotunbot_tra", RotunbotTrajectory, RotunbotTrajectoryCfg(), RotunbotTrajectoryCfgPPO() )
 task_registry.register( "rotunbot_wheel", RotunbotWheel, RotunbotWheelCfg(), RotunbotWheelCfgPPO() )
 task_registry.register( "rotunbot_target", RotunbotTarget, RotunbotTargetCfg(), RotunbotTargetCfgPPO() )

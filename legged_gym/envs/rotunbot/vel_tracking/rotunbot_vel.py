@@ -6,6 +6,10 @@ from isaacgym import gymapi, gymtorch
 from legged_gym.envs.base.legged_robot import LeggedRobot
 
 from .rotunbot_vel_config import RotunbotVelCfg
+from .feasible_transition_manager import (
+    FeasibleVelocityTransitionManager,
+    TransitionState,
+)
 
 
 def command_update_interval_steps(policy_dt, command_frequency_hz):
@@ -115,6 +119,289 @@ def speed_scheduled_value(
     ) * fraction
 
 
+def piecewise_linear_schedule(value, breakpoints, scheduled_values):
+    """Linearly interpolate a tensor over a small monotone calibration table."""
+    if breakpoints is None or scheduled_values is None:
+        raise ValueError("breakpoints and scheduled_values must both be provided")
+    if len(breakpoints) != len(scheduled_values) or len(breakpoints) < 2:
+        raise ValueError("piecewise schedules need equally sized tables of length >= 2")
+    points = [float(item) for item in breakpoints]
+    values = [float(item) for item in scheduled_values]
+    if any(right <= left for left, right in zip(points[:-1], points[1:])):
+        raise ValueError("piecewise schedule breakpoints must be strictly increasing")
+
+    query = torch.clamp(value, points[0], points[-1])
+    result = torch.full_like(query, values[0])
+    for index in range(len(points) - 1):
+        left = points[index]
+        right = points[index + 1]
+        fraction = torch.clamp((query - left) / (right - left), 0.0, 1.0)
+        segment = values[index] + (values[index + 1] - values[index]) * fraction
+        result = torch.where(query >= left, segment, result)
+    return result
+
+
+def canonical_drive_direction(commanded_forward_velocity, measured_forward_velocity,
+                              stationary_threshold=0.02):
+    """Return a stable +/-1 drive sign for forward/reverse policy symmetry."""
+    commanded = commanded_forward_velocity.reshape(-1)
+    measured = measured_forward_velocity.reshape(-1)
+    moving_command = torch.abs(commanded) >= float(stationary_threshold)
+    direction = torch.where(moving_command, torch.sign(commanded), torch.sign(measured))
+    return torch.where(direction == 0.0, torch.ones_like(direction), direction)
+
+
+def canonicalize_velocity_policy_observations(
+    observations,
+    drive_direction,
+    observe_command_rates=False,
+    observe_preview_tracking_errors=False,
+    observe_tracking_error_integrals=False,
+    observe_tracking_error_derivatives=False,
+):
+    """Map reverse-driving observations into the equivalent forward problem.
+
+    The command-like two-channel blocks are [v, w], so both entries change sign
+    under the canonical map.  Body-forward velocity, body yaw rate, and joint-1
+    velocity change sign as well.  Steering state and the actor's previous
+    canonical residual are invariant.  This removes a learned forward/reverse
+    asymmetry without changing the physical nominal controller.
+    """
+    canonical = observations.clone()
+    sign = drive_direction.reshape(-1, 1).to(
+        device=canonical.device, dtype=canonical.dtype
+    )
+    cursor = 0
+    canonical[:, cursor : cursor + 2] *= sign
+    cursor += 2
+    optional_blocks = (
+        observe_command_rates,
+        observe_preview_tracking_errors,
+        observe_tracking_error_integrals,
+        observe_tracking_error_derivatives,
+    )
+    for enabled in optional_blocks:
+        if enabled:
+            canonical[:, cursor : cursor + 2] *= sign
+            cursor += 2
+
+    # tracking_lin_vel [x, y, z]
+    canonical[:, cursor] *= sign[:, 0]
+    cursor += 3
+    # tracking_ang_vel [x, y, z]
+    canonical[:, cursor + 2] *= sign[:, 0]
+    cursor += 3
+    # projected gravity [3] and steering position [1] are invariant.
+    cursor += 4
+    # dof_vel [joint1, joint2]
+    canonical[:, cursor] *= sign[:, 0]
+    return canonical
+
+
+def map_canonical_residual_actions(actions, drive_direction):
+    """Map canonical residuals back to physical forward/reverse actuator signs."""
+    mapped = actions.clone()
+    mapped[:, 0] *= drive_direction.to(
+        device=mapped.device, dtype=mapped.dtype
+    ).reshape(-1)
+    return mapped
+
+
+def rate_aligned_angular_residual_actions(
+    actions,
+    commands,
+    command_rates,
+    measured_forward_velocity,
+    smooth_mask,
+    stationary_threshold=0.02,
+    minimum_angular_command_rate=1.0e-4,
+    zero_angular_when_inactive=False,
+    measured_yaw_rate=None,
+    error_align_when_inactive=False,
+    inactive_error_full_scale=None,
+):
+    """Constrain smooth yaw residuals to the physically correct lead sign.
+
+    For this sphere, positive steering action creates negative yaw while driving
+    forward and positive yaw while driving backward.  Therefore a residual that
+    anticipates ``dw/dt`` must have sign ``-sign(v) * sign(dw/dt)``.  PPO still
+    chooses the nonlinear magnitude from state, error and command-rate inputs;
+    the filter removes only the sign ambiguity that produced the measured V55
+    wrong-way phase compensation.
+    """
+    filtered = actions.clone()
+    drive_direction = canonical_drive_direction(
+        commands[:, 0], measured_forward_velocity, stationary_threshold
+    )
+    angular_rate = command_rates[:, 1]
+    active = smooth_mask.reshape(-1).bool() & (
+        torch.abs(angular_rate) >= float(minimum_angular_command_rate)
+    )
+    desired_sign = -drive_direction * torch.sign(angular_rate)
+    aligned = desired_sign * torch.abs(filtered[:, 1])
+    if bool(error_align_when_inactive):
+        if measured_yaw_rate is None:
+            raise ValueError(
+                "measured_yaw_rate is required when error_align_when_inactive=True"
+            )
+        yaw_error = commands[:, 1] - measured_yaw_rate.reshape(-1)
+        error_sign = -drive_direction * torch.sign(yaw_error)
+        error_aligned = error_sign * torch.abs(filtered[:, 1])
+        if inactive_error_full_scale is not None:
+            full_scale = max(float(inactive_error_full_scale), 1.0e-8)
+            error_gate = torch.clamp(torch.abs(yaw_error) / full_scale, 0.0, 1.0)
+            error_aligned *= error_gate
+        filtered[:, 1] = torch.where(active, aligned, error_aligned)
+    elif bool(zero_angular_when_inactive):
+        filtered[:, 1] = torch.where(
+            active, aligned, torch.zeros_like(filtered[:, 1])
+        )
+    else:
+        filtered[:, 1] = torch.where(active, aligned, filtered[:, 1])
+    return filtered
+
+
+def update_persistent_yaw_error_gate(
+    yaw_error,
+    previous_error_sign,
+    persistent_time,
+    cooldown_time,
+    active,
+    dt,
+    activation_error,
+    release_error,
+    full_scale_error,
+    activation_time,
+    sign_flip_cooldown,
+    sign_epsilon=1.0e-4,
+):
+    """Advance a hysteretic safety gate for the learned yaw residual.
+
+    The learned residual is useful for sustained model mismatch, but it must not
+    chase ordinary zero crossings.  A correction is therefore admitted only
+    after a same-sign yaw error persists.  Crossing zero disables it immediately
+    and starts a short cooldown.  The returned continuous gate ramps with error
+    magnitude so activation cannot inject the full residual in one step.
+    """
+    dt = float(dt)
+    activation_error = float(activation_error)
+    release_error = float(release_error)
+    full_scale_error = float(full_scale_error)
+    activation_time = float(activation_time)
+    sign_flip_cooldown = float(sign_flip_cooldown)
+    sign_epsilon = float(sign_epsilon)
+    if dt <= 0.0:
+        raise ValueError("dt must be positive")
+    if not 0.0 <= release_error < activation_error < full_scale_error:
+        raise ValueError(
+            "expected 0 <= release_error < activation_error < full_scale_error"
+        )
+    if activation_time < 0.0 or sign_flip_cooldown < 0.0:
+        raise ValueError("gate times must be non-negative")
+
+    yaw_error = yaw_error.reshape(-1)
+    error_magnitude = torch.abs(yaw_error)
+    current_sign = torch.sign(yaw_error)
+    sign_is_valid = error_magnitude >= sign_epsilon
+    sign_flip = (
+        sign_is_valid
+        & (previous_error_sign != 0.0)
+        & (current_sign != previous_error_sign)
+    )
+
+    next_cooldown = torch.clamp(cooldown_time - dt, min=0.0)
+    next_cooldown = torch.where(
+        sign_flip,
+        torch.full_like(next_cooldown, sign_flip_cooldown),
+        next_cooldown,
+    )
+    eligible = (
+        (error_magnitude >= activation_error)
+        & (next_cooldown <= 0.0)
+        & ~sign_flip
+    )
+    next_persistent_time = torch.where(
+        eligible,
+        persistent_time + dt,
+        torch.zeros_like(persistent_time),
+    )
+    remain_active = (
+        active
+        & (error_magnitude > release_error)
+        & (next_cooldown <= 0.0)
+        & ~sign_flip
+    )
+    become_active = eligible & (
+        next_persistent_time >= max(activation_time - 0.5 * dt, 0.0)
+    )
+    next_active = remain_active | become_active
+
+    magnitude_gate = torch.clamp(
+        (error_magnitude - release_error)
+        / max(full_scale_error - release_error, 1.0e-8),
+        0.0,
+        1.0,
+    )
+    gate = next_active.to(dtype=yaw_error.dtype) * magnitude_gate
+    next_error_sign = torch.where(
+        sign_is_valid,
+        current_sign,
+        torch.where(
+            error_magnitude <= release_error,
+            torch.zeros_like(previous_error_sign),
+            previous_error_sign,
+        ),
+    )
+    return (
+        next_error_sign,
+        next_persistent_time,
+        next_cooldown,
+        next_active,
+        gate,
+    )
+
+
+def persistent_error_gated_angular_residual_actions(
+    actions,
+    yaw_error,
+    drive_direction,
+    gate,
+    force_error_alignment=True,
+):
+    """Apply a yaw gate and force the residual to reduce current yaw error."""
+    filtered = actions.clone()
+    if bool(force_error_alignment):
+        desired_steering_sign = (
+            -drive_direction.reshape(-1).to(filtered.dtype)
+            * torch.sign(yaw_error.reshape(-1))
+        )
+        filtered[:, 1] = desired_steering_sign * torch.abs(filtered[:, 1])
+    filtered[:, 1] *= gate.reshape(-1).to(filtered.dtype)
+    return filtered
+
+
+def blend_yaw_residual_gate_with_command_rate(
+    error_gate,
+    angular_command_rate,
+    bypass_start_rate,
+    bypass_full_rate,
+):
+    """Blend from the steady-error gate to full residual during yaw transients."""
+    bypass_start_rate = float(bypass_start_rate)
+    bypass_full_rate = float(bypass_full_rate)
+    if bypass_full_rate <= bypass_start_rate:
+        return error_gate
+    if bypass_start_rate < 0.0:
+        raise ValueError("bypass_start_rate must be non-negative")
+    rate_gate = torch.clamp(
+        (torch.abs(angular_command_rate.reshape(-1)) - bypass_start_rate)
+        / (bypass_full_rate - bypass_start_rate),
+        0.0,
+        1.0,
+    )
+    return torch.maximum(error_gate, rate_gate.to(error_gate.dtype))
+
+
 def project_velocity_commands(
     commands,
     maximum_forward_speed,
@@ -126,14 +413,38 @@ def project_velocity_commands(
     turn_authority_full_speed=0.0,
     authority_forward_velocity=None,
     authority_speed_preview_margin=0.0,
+    preserve_curvature_when_saturating=False,
+    curvature_fraction_breakpoints=None,
+    curvature_max_speed_values=None,
 ):
-    """Project [v, w] commands into the Rotunbot feasible command set."""
+    """Project [v, w] commands into the Rotunbot feasible command set.
+
+    When ``preserve_curvature_when_saturating`` is enabled, rectangular speed
+    and yaw-rate limits are applied with one common scale factor.  Therefore a
+    feasible requested ratio ``w / v`` is retained by slowing the robot down
+    instead of clipping only one channel.  The minimum-turn-radius bound is
+    still authoritative: an impossible curvature is clipped to the measured
+    physical boundary, and a zero-speed request can never become in-place yaw.
+    """
     projected = commands.clone()
-    projected[:, 0] = torch.clamp(
-        projected[:, 0],
-        -float(maximum_forward_speed),
-        float(maximum_forward_speed),
-    )
+    if preserve_curvature_when_saturating:
+        epsilon = torch.finfo(projected.dtype).eps
+        linear_scale = float(maximum_forward_speed) / torch.clamp(
+            torch.abs(projected[:, 0]), min=epsilon
+        )
+        yaw_scale = float(maximum_yaw_rate) / torch.clamp(
+            torch.abs(projected[:, 1]), min=epsilon
+        )
+        common_scale = torch.minimum(
+            torch.ones_like(linear_scale), torch.minimum(linear_scale, yaw_scale)
+        )
+        projected[:, :2] *= common_scale.unsqueeze(1)
+    else:
+        projected[:, 0] = torch.clamp(
+            projected[:, 0],
+            -float(maximum_forward_speed),
+            float(maximum_forward_speed),
+        )
     authority_velocity = projected[:, 0]
     if authority_forward_velocity is not None:
         measured_authority = torch.abs(
@@ -159,6 +470,29 @@ def project_velocity_commands(
         torch.minimum(projected[:, 1], yaw_limit),
         -yaw_limit,
     )
+    if (
+        curvature_fraction_breakpoints is not None
+        and curvature_max_speed_values is not None
+    ):
+        epsilon = torch.finfo(projected.dtype).eps
+        curvature_fraction = torch.clamp(
+            torch.abs(projected[:, 1])
+            * float(minimum_turn_radius)
+            / torch.clamp(torch.abs(projected[:, 0]), min=epsilon),
+            0.0,
+            1.0,
+        )
+        stable_speed_limit = piecewise_linear_schedule(
+            curvature_fraction,
+            curvature_fraction_breakpoints,
+            curvature_max_speed_values,
+        )
+        stable_scale = torch.minimum(
+            torch.ones_like(stable_speed_limit),
+            stable_speed_limit
+            / torch.clamp(torch.abs(projected[:, 0]), min=epsilon),
+        )
+        projected[:, :2] *= stable_scale.unsqueeze(1)
     if stationary_threshold > 0.0:
         stationary = torch.abs(projected[:, 0]) < float(stationary_threshold)
         projected[stationary, 1] = 0.0
@@ -220,6 +554,13 @@ def nominal_actuator_actions(
     forward_speed_per_action=0.40,
     yaw_gain_intercept=0.0915,
     yaw_gain_speed_slope=0.175,
+    drive_speed_breakpoints=None,
+    drive_action_values=None,
+    steering_speed_breakpoints=None,
+    steering_half_fraction_scales=None,
+    steering_full_fraction_scales=None,
+    maximum_yaw_rate=0.10,
+    minimum_turn_radius=2.0,
 ):
     """Map feasible ``[v, w]`` commands to normalized Rotunbot actions.
 
@@ -228,11 +569,21 @@ def nominal_actuator_actions(
     residual around it.
     """
     actions = torch.zeros_like(commands[:, :2])
-    actions[:, 0] = torch.clamp(
-        commands[:, 0] / float(forward_speed_per_action),
-        -1.0,
-        1.0,
-    )
+    if drive_speed_breakpoints is None or drive_action_values is None:
+        actions[:, 0] = torch.clamp(
+            commands[:, 0] / float(forward_speed_per_action),
+            -1.0,
+            1.0,
+        )
+    else:
+        drive_magnitude = piecewise_linear_schedule(
+            torch.abs(commands[:, 0]),
+            drive_speed_breakpoints,
+            drive_action_values,
+        )
+        actions[:, 0] = torch.clamp(
+            torch.sign(commands[:, 0]) * drive_magnitude, -1.0, 1.0
+        )
     yaw_gain = float(yaw_gain_intercept) + float(yaw_gain_speed_slope) * torch.abs(
         commands[:, 0]
     )
@@ -243,6 +594,35 @@ def nominal_actuator_actions(
         -1.0,
         1.0,
     )
+    steering_tables = (
+        steering_speed_breakpoints,
+        steering_half_fraction_scales,
+        steering_full_fraction_scales,
+    )
+    if all(table is not None for table in steering_tables):
+        speed = torch.abs(commands[:, 0])
+        yaw_limit = torch.minimum(
+            torch.full_like(speed, float(maximum_yaw_rate)),
+            speed / max(float(minimum_turn_radius), 1.0e-8),
+        )
+        yaw_fraction = torch.where(
+            yaw_limit > 1.0e-8,
+            torch.clamp(torch.abs(commands[:, 1]) / yaw_limit, 0.0, 1.0),
+            torch.zeros_like(yaw_limit),
+        )
+        half_scale = piecewise_linear_schedule(
+            speed,
+            steering_speed_breakpoints,
+            steering_half_fraction_scales,
+        )
+        full_scale = piecewise_linear_schedule(
+            speed,
+            steering_speed_breakpoints,
+            steering_full_fraction_scales,
+        )
+        upper_fraction = torch.clamp((yaw_fraction - 0.5) / 0.5, 0.0, 1.0)
+        steering_scale = half_scale + (full_scale - half_scale) * upper_fraction
+        actions[:, 1] = torch.clamp(actions[:, 1] * steering_scale, -1.0, 1.0)
     return actions
 
 
@@ -293,6 +673,8 @@ def velocity_error_feedback_actions(
     linear_action_limit=0.0,
     angular_action_limit=0.15,
     stationary_threshold=0.02,
+    wrong_direction_angular_feedback_gain=None,
+    wrong_direction_command_threshold=0.01,
 ):
     """Convert measured ``(v, w)`` error into bounded actuator corrections.
 
@@ -336,9 +718,32 @@ def velocity_error_feedback_actions(
         + float(yaw_gain_speed_slope) * effective_speed
     )
     yaw_error = commands[:, 1] - measured_yaw_rate
+    angular_gain = torch.as_tensor(
+        angular_feedback_gain,
+        dtype=commands.dtype,
+        device=commands.device,
+    )
+    if wrong_direction_angular_feedback_gain is not None:
+        meaningful_command = (
+            torch.abs(commands[:, 1])
+            >= float(wrong_direction_command_threshold)
+        )
+        wrong_direction = meaningful_command & (
+            commands[:, 1] * measured_yaw_rate < 0.0
+        )
+        wrong_direction_gain = torch.as_tensor(
+            wrong_direction_angular_feedback_gain,
+            dtype=commands.dtype,
+            device=commands.device,
+        )
+        angular_gain = torch.where(
+            wrong_direction,
+            wrong_direction_gain,
+            angular_gain,
+        )
     feedback[:, 1] = torch.clamp(
         -drive_direction
-        * float(angular_feedback_gain)
+        * angular_gain
         * yaw_error
         / yaw_gain,
         -float(angular_action_limit),
@@ -866,9 +1271,71 @@ class RotunbotVel(LeggedRobot):
             f"hold={self.upper_level_command_interval_steps} low-level steps"
         )
         self.command_targets = self.commands[:, :2].clone()
-        # The dynamic governor is an explicitly attached upper-layer object.
-        # Leaving it unset preserves the Stage1.2 command path exactly.
-        self.dynamic_governor = None
+        self.applied_feasible_command = self.commands[:, :2].clone()
+        self.feasible_transition_manager = None
+        self.transition_state = torch.full(
+            (self.num_envs,), TransitionState.TRACK, dtype=torch.long, device=self.device
+        )
+        self.transition_anchor_command = torch.zeros_like(self.command_targets)
+        self.transition_latest_target = torch.zeros_like(self.command_targets)
+        self.transition_progress = torch.zeros(
+            self.num_envs, dtype=self.command_targets.dtype, device=self.device
+        )
+        self.transition_settle_counter = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self.transition_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        if bool(
+            getattr(
+                self.cfg.commands,
+                "feasible_transition_manager_enabled",
+                False,
+            )
+        ):
+            self.feasible_transition_manager = FeasibleVelocityTransitionManager(
+                num_envs=self.num_envs,
+                device=self.device,
+                dtype=self.command_targets.dtype,
+                dt=self.dt,
+                maximum_linear_acceleration=self.cfg.commands.maximum_linear_acceleration,
+                maximum_yaw_acceleration=self.cfg.commands.maximum_yaw_acceleration,
+                maximum_forward_speed=self.cfg.commands.governor_projection_max_forward_speed,
+                maximum_yaw_rate=self.cfg.commands.max_yaw_rate,
+                minimum_turn_radius=self.cfg.commands.minimum_turn_radius,
+                envelope_fraction=self.cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                reversal_detection_v=self.cfg.commands.reversal_detection_v,
+                reversal_detection_w=self.cfg.commands.reversal_detection_w,
+                reversal_minimum_request_jump_v=self.cfg.commands.reversal_minimum_request_jump_v,
+                reversal_minimum_request_jump_w=self.cfg.commands.reversal_minimum_request_jump_w,
+                settle_v_threshold=self.cfg.commands.transition_settle_v_threshold,
+                settle_w_threshold=self.cfg.commands.transition_settle_w_threshold,
+                settle_time=self.cfg.commands.transition_settle_time,
+                curvature_fraction_breakpoints=getattr(
+                    self.cfg.commands,
+                    "stable_curvature_fraction_breakpoints",
+                    None,
+                ),
+                curvature_max_speed_values=getattr(
+                    self.cfg.commands,
+                    "stable_curvature_max_speed_values",
+                    None,
+                ),
+            )
+            self.transition_state = self.feasible_transition_manager.transition_state
+            self.transition_anchor_command = (
+                self.feasible_transition_manager.transition_anchor_command
+            )
+            self.transition_latest_target = (
+                self.feasible_transition_manager.transition_latest_target
+            )
+            self.transition_progress = self.feasible_transition_manager.transition_progress
+            self.transition_settle_counter = (
+                self.feasible_transition_manager.transition_settle_counter
+            )
+            self.transition_active = self.feasible_transition_manager.transition_active
         self.command_brake_pending = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
@@ -886,6 +1353,21 @@ class RotunbotVel(LeggedRobot):
         self.tracking_error_integral = torch.zeros_like(self.command_targets)
         self.last_tracking_error = torch.zeros_like(self.command_targets)
         self.tracking_error_derivative = torch.zeros_like(self.command_targets)
+        self.residual_yaw_error_sign = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.residual_yaw_error_persistent_time = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.residual_yaw_error_cooldown_time = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.residual_yaw_error_gate_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.residual_yaw_error_gate = torch.zeros(
+            self.num_envs, device=self.device
+        )
         self.command_profile_is_smooth = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
@@ -1064,13 +1546,25 @@ class RotunbotVel(LeggedRobot):
         direct_tracking = bool(
             getattr(self.cfg.commands, "direct_command_tracking", False)
         )
-        if direct_tracking:
+        if self.feasible_transition_manager is not None:
+            self.commands[:, :2] = self.feasible_transition_manager.advance(
+                self.commands[:, :2],
+                self.tracking_lin_vel[:, 0],
+                self.tracking_ang_vel[:, 2],
+            )[0]
+            self.applied_feasible_command.copy_(self.commands[:, :2])
+            self.command_brake_pending.copy_(
+                self.transition_state == TransitionState.BRAKE_TO_ORIGIN
+            )
+            self.command_yaw_brake_pending.zero_()
+        elif direct_tracking:
             # Exact upper/lower-layer contract: the requested reachable command
             # is the reference.  Mechanical inertia remains in the plant, but
             # no hidden governor substitutes a different v/w target.
             self.commands[:, :2].copy_(self.command_targets)
             self.command_brake_pending.zero_()
             self.command_yaw_brake_pending.zero_()
+            self.applied_feasible_command.copy_(self.commands[:, :2])
         else:
             effective_targets = self.command_targets.clone()
             effective_targets[self.command_brake_pending] = 0.0
@@ -1120,6 +1614,7 @@ class RotunbotVel(LeggedRobot):
                     )
                 ),
             )
+            self.applied_feasible_command.copy_(self.commands[:, :2])
         self.command_rates.copy_(
             (self.commands[:, :2] - previous_commands) / float(self.dt)
         )
@@ -1228,8 +1723,77 @@ class RotunbotVel(LeggedRobot):
                 f"received {tuple(targets.shape)}"
             )
 
+        if bool(
+            getattr(
+                self.cfg.commands,
+                "project_external_commands_to_feasible_domain",
+                False,
+            )
+        ):
+            targets = project_velocity_commands(
+                targets,
+                self.cfg.commands.max_forward_speed,
+                self.cfg.commands.max_yaw_rate,
+                self.cfg.commands.minimum_turn_radius,
+                self.cfg.commands.feasible_envelope_fraction,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                turn_authority_start_speed=getattr(
+                    self.cfg.commands, "turn_authority_start_speed", 0.0
+                ),
+                turn_authority_full_speed=getattr(
+                    self.cfg.commands, "turn_authority_full_speed", 0.0
+                ),
+                preserve_curvature_when_saturating=bool(
+                    getattr(
+                        self.cfg.commands,
+                        "preserve_curvature_when_saturating",
+                        False,
+                    )
+                ),
+                curvature_fraction_breakpoints=getattr(
+                    self.cfg.commands,
+                    "stable_curvature_fraction_breakpoints",
+                    None,
+                ),
+                curvature_max_speed_values=getattr(
+                    self.cfg.commands,
+                    "stable_curvature_max_speed_values",
+                    None,
+                ),
+            )
+
         old_targets = self.command_targets[env_ids]
         changed = torch.any(torch.abs(targets - old_targets) > 1.0e-6, dim=1)
+        if self.feasible_transition_manager is not None:
+            if torch.any(changed) and bool(
+                getattr(self.cfg.commands, "hold_upper_command_rate", False)
+            ):
+                changed_ids = env_ids[changed]
+                upper_period = float(self.dt) * float(
+                    self.upper_level_command_interval_steps
+                )
+                held_rate = (targets[changed] - old_targets[changed]) / max(
+                    upper_period, 1.0e-8
+                )
+                self.held_upper_command_rates[changed_ids] = held_rate
+                self.command_rate_hold_steps_remaining[changed_ids] = (
+                    self.upper_level_command_interval_steps
+                )
+                self.command_rates[changed_ids] = held_rate
+            self.feasible_transition_manager.update_target(
+                targets,
+                self.commands[env_ids, :2],
+                self.tracking_lin_vel[env_ids, 0],
+                self.tracking_ang_vel[env_ids, 2],
+                env_ids=env_ids,
+            )
+            self.command_targets[env_ids] = targets
+            self.command_brake_pending.copy_(
+                self.transition_state == TransitionState.BRAKE_TO_ORIGIN
+            )
+            self.command_yaw_brake_pending.zero_()
+            return
+
         if torch.any(changed):
             changed_ids = env_ids[changed]
             if bool(
@@ -1311,66 +1875,6 @@ class RotunbotVel(LeggedRobot):
                 self.tracking_error_integral[discontinuous_ids] = 0.0
         self.command_targets[env_ids] = targets
 
-    def set_governed_command_targets(self, target_commands, governor, env_ids=None):
-        """Apply the opt-in reachable governor before normal command latching.
-
-        The method deliberately leaves ``set_command_targets`` untouched.  A
-        caller must attach a governor explicitly and enable the config switch;
-        otherwise this is exactly the existing raw-target operation.
-        """
-        if not bool(getattr(self.cfg.commands, "dynamic_governor_enabled", False)):
-            return self.set_command_targets(target_commands, env_ids)
-        if governor is None:
-            raise ValueError("dynamic governor is enabled but no governor is attached")
-        if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self.device)
-        elif not torch.is_tensor(env_ids):
-            env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
-        else:
-            env_ids = env_ids.to(device=self.device, dtype=torch.long)
-        targets = target_commands.to(device=self.device, dtype=self.command_targets.dtype)
-        if targets.ndim == 1:
-            targets = targets.unsqueeze(0).expand(env_ids.numel(), -1)
-        if targets.shape != (env_ids.numel(), 2):
-            raise ValueError(
-                "target_commands must have shape (len(env_ids), 2); "
-                f"received {tuple(targets.shape)}"
-            )
-        from legged_gym.navigation.v49_dynamic_reachability import ReachabilityState
-
-        selected = []
-        decisions = []
-        for row, env_id in enumerate(env_ids.detach().cpu().tolist()):
-            state = ReachabilityState(
-                current_forward_velocity=float(self.tracking_lin_vel[env_id, 0]),
-                current_yaw_rate=float(self.tracking_ang_vel[env_id, 2]),
-                previous_command=tuple(self.command_targets[env_id].detach().cpu().tolist()),
-            )
-            decision = governor.select_command(
-                state,
-                tuple(targets[row].detach().cpu().tolist()),
-                state.previous_command,
-            )
-            selected.append(decision.command)
-            decisions.append(decision)
-        selected_tensor = torch.as_tensor(
-            selected, dtype=self.command_targets.dtype, device=self.device
-        )
-        # Keep the existing geometric hard guard as the final runtime boundary.
-        cfg = self.cfg.commands
-        selected_tensor = project_velocity_commands(
-            selected_tensor,
-            cfg.max_forward_speed,
-            cfg.max_yaw_rate,
-            cfg.minimum_turn_radius,
-            getattr(cfg, "feasible_envelope_fraction", 1.0),
-            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
-            turn_authority_start_speed=getattr(cfg, "turn_authority_start_speed", 0.0),
-            turn_authority_full_speed=getattr(cfg, "turn_authority_full_speed", 0.0),
-        )
-        self.set_command_targets(selected_tensor, env_ids)
-        return decisions
-
     def _reset_root_states(self, env_ids):
         super()._reset_root_states(env_ids)
         if not bool(self.cfg.init_state.randomize_initial_velocity):
@@ -1383,6 +1887,42 @@ class RotunbotVel(LeggedRobot):
     def step(self, actions):
         # Rate limits are defined per policy step, not per PhysX substep.
         self.last_output_actions.copy_(self.output_actions)
+        cfg = self.cfg.control
+        if bool(getattr(cfg, "residual_persistent_yaw_error_gate", False)):
+            yaw_error = self.commands[:, 1] - self.tracking_ang_vel[:, 2]
+            (
+                next_sign,
+                next_persistent_time,
+                next_cooldown,
+                next_active,
+                next_gate,
+            ) = update_persistent_yaw_error_gate(
+                yaw_error,
+                self.residual_yaw_error_sign,
+                self.residual_yaw_error_persistent_time,
+                self.residual_yaw_error_cooldown_time,
+                self.residual_yaw_error_gate_active,
+                self.dt,
+                getattr(cfg, "residual_yaw_gate_activation_error", 0.010),
+                getattr(cfg, "residual_yaw_gate_release_error", 0.004),
+                getattr(cfg, "residual_yaw_gate_full_scale_error", 0.025),
+                getattr(cfg, "residual_yaw_gate_activation_time", 0.20),
+                getattr(cfg, "residual_yaw_gate_sign_flip_cooldown", 0.40),
+                getattr(cfg, "residual_yaw_gate_sign_epsilon", 1.0e-4),
+            )
+            self.residual_yaw_error_sign.copy_(next_sign)
+            self.residual_yaw_error_persistent_time.copy_(next_persistent_time)
+            self.residual_yaw_error_cooldown_time.copy_(next_cooldown)
+            self.residual_yaw_error_gate_active.copy_(next_active)
+            next_gate = blend_yaw_residual_gate_with_command_rate(
+                next_gate,
+                self.command_rates[:, 1],
+                getattr(cfg, "residual_yaw_gate_rate_bypass_start", float("inf")),
+                getattr(cfg, "residual_yaw_gate_rate_bypass_full", float("inf")),
+            )
+            self.residual_yaw_error_gate.copy_(next_gate)
+        else:
+            self.residual_yaw_error_gate.fill_(1.0)
         return super().step(actions)
 
     def reset_idx(self, env_ids):
@@ -1392,12 +1932,6 @@ class RotunbotVel(LeggedRobot):
         self.requested_output_actions[env_ids] = 0.0
         self.output_actions[env_ids] = 0.0
         self.last_output_actions[env_ids] = 0.0
-        # ``LeggedRobot.reset_idx`` clears last_actions but leaves the current
-        # action tensor intact.  V49 includes the current action in its
-        # observation, so carry-over here contaminates the first post-reset
-        # policy input.  This is reset hygiene only; the control law is
-        # unchanged.
-        self.actions[env_ids] = 0.0
         self.nominal_policy_actions[env_ids] = 0.0
         self.feedback_policy_actions[env_ids] = 0.0
         self.derivative_feedback_policy_actions[env_ids] = 0.0
@@ -1410,27 +1944,23 @@ class RotunbotVel(LeggedRobot):
         self.tracking_lin_vel[env_ids] = 0.0
         self.tracking_ang_vel[env_ids] = 0.0
         self.commands[env_ids, :2] = 0.0
+        self.applied_feasible_command[env_ids] = 0.0
         self.command_rates[env_ids] = 0.0
         self.held_upper_command_rates[env_ids] = 0.0
         self.command_rate_hold_steps_remaining[env_ids] = 0
         self.tracking_error_integral[env_ids] = 0.0
         self.last_tracking_error[env_ids] = 0.0
         self.tracking_error_derivative[env_ids] = 0.0
+        self.residual_yaw_error_sign[env_ids] = 0.0
+        self.residual_yaw_error_persistent_time[env_ids] = 0.0
+        self.residual_yaw_error_cooldown_time[env_ids] = 0.0
+        self.residual_yaw_error_gate_active[env_ids] = False
+        self.residual_yaw_error_gate[env_ids] = 0.0
         self.command_brake_pending[env_ids] = False
         self.command_yaw_brake_pending[env_ids] = False
-        self.command_profile_is_smooth[env_ids] = False
         self.command_profile_is_random_walk[env_ids] = False
-        self.command_profile_is_independent[env_ids] = False
-        self.command_reference_is_smooth[env_ids] = False
-        self.command_profile_phase[env_ids] = 0.0
-        self.command_profile_period[env_ids] = 1.0
-        self.command_profile_speed_amplitude[env_ids] = 0.0
-        self.command_profile_signed_curvature[env_ids] = 0.0
-        self.command_profile_velocity_offset[env_ids] = 0.0
-        self.command_profile_velocity_amplitude[env_ids] = 0.0
-        self.command_profile_yaw_amplitude[env_ids] = 0.0
-        self.command_profile_yaw_phase_offset[env_ids] = 0.0
-        self.command_profile_yaw_frequency_ratio[env_ids] = 1.0
+        if self.feasible_transition_manager is not None:
+            self.feasible_transition_manager.reset(env_ids)
 
     def _resample_commands(self, env_ids):
         """Sample stop, straight, and feasible curved-motion commands."""
@@ -1846,6 +2376,34 @@ class RotunbotVel(LeggedRobot):
             )
         )
         self.obs_buf = torch.cat(components, dim=-1)
+        if bool(
+            getattr(
+                cfg.control,
+                "canonicalize_policy_for_drive_reversal",
+                False,
+            )
+        ):
+            drive_direction = canonical_drive_direction(
+                self.commands[:, 0],
+                self.tracking_lin_vel[:, 0],
+                cfg.rewards.stationary_command_threshold,
+            )
+            self.obs_buf = canonicalize_velocity_policy_observations(
+                self.obs_buf,
+                drive_direction,
+                observe_command_rates=bool(
+                    getattr(cfg.commands, "observe_command_rates", False)
+                ),
+                observe_preview_tracking_errors=bool(
+                    getattr(cfg.commands, "observe_preview_tracking_errors", False)
+                ),
+                observe_tracking_error_integrals=bool(
+                    getattr(cfg.commands, "observe_tracking_error_integrals", False)
+                ),
+                observe_tracking_error_derivatives=bool(
+                    getattr(cfg.commands, "observe_tracking_error_derivatives", False)
+                ),
+            )
         if self.add_noise:
             self.obs_buf += (
                 2.0 * torch.rand_like(self.obs_buf) - 1.0
@@ -1994,6 +2552,23 @@ class RotunbotVel(LeggedRobot):
             forward_speed_per_action=cfg.nominal_forward_speed_per_action,
             yaw_gain_intercept=cfg.nominal_yaw_gain_intercept,
             yaw_gain_speed_slope=cfg.nominal_yaw_gain_speed_slope,
+            drive_speed_breakpoints=getattr(
+                cfg, "nominal_drive_speed_breakpoints", None
+            ),
+            drive_action_values=getattr(
+                cfg, "nominal_drive_action_values", None
+            ),
+            steering_speed_breakpoints=getattr(
+                cfg, "nominal_steering_speed_breakpoints", None
+            ),
+            steering_half_fraction_scales=getattr(
+                cfg, "nominal_steering_half_fraction_scales", None
+            ),
+            steering_full_fraction_scales=getattr(
+                cfg, "nominal_steering_full_fraction_scales", None
+            ),
+            maximum_yaw_rate=self.cfg.commands.max_yaw_rate,
+            minimum_turn_radius=self.cfg.commands.minimum_turn_radius,
         )
         linear_feedback_gain = cfg.linear_feedback_gain
         low_speed_linear_feedback_gain = getattr(
@@ -2019,6 +2594,12 @@ class RotunbotVel(LeggedRobot):
             linear_action_limit=cfg.linear_feedback_action_limit,
             angular_action_limit=cfg.angular_feedback_action_limit,
             stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            wrong_direction_angular_feedback_gain=getattr(
+                cfg, "wrong_direction_angular_feedback_gain", None
+            ),
+            wrong_direction_command_threshold=getattr(
+                cfg, "wrong_direction_command_threshold", 0.01
+            ),
         )
         smooth_feedback = velocity_error_feedback_actions(
             self.commands,
@@ -2075,6 +2656,49 @@ class RotunbotVel(LeggedRobot):
             stationary_threshold=self.cfg.rewards.stationary_command_threshold,
         )
         residual_actions = actions
+        if bool(
+            getattr(cfg, "canonicalize_policy_for_drive_reversal", False)
+        ):
+            residual_actions = map_canonical_residual_actions(
+                residual_actions,
+                canonical_drive_direction(
+                    self.commands[:, 0],
+                    self.tracking_lin_vel[:, 0],
+                    self.cfg.rewards.stationary_command_threshold,
+                ),
+            )
+        if bool(getattr(cfg, "residual_rate_alignment_filter", False)):
+            residual_actions = rate_aligned_angular_residual_actions(
+                residual_actions,
+                self.commands,
+                self.command_rates,
+                self.tracking_lin_vel[:, 0],
+                self.command_reference_is_smooth,
+                stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+                minimum_angular_command_rate=float(
+                    getattr(
+                        cfg,
+                        "residual_rate_alignment_minimum_command_rate",
+                        1.0e-4,
+                    )
+                ),
+                zero_angular_when_inactive=bool(
+                    getattr(cfg, "residual_rate_alignment_zero_inactive", False)
+                ),
+                measured_yaw_rate=self.tracking_ang_vel[:, 2],
+                error_align_when_inactive=bool(
+                    getattr(
+                        cfg,
+                        "residual_rate_alignment_error_when_inactive",
+                        False,
+                    )
+                ),
+                inactive_error_full_scale=getattr(
+                    cfg,
+                    "residual_inactive_error_full_scale",
+                    None,
+                ),
+            )
         if bool(getattr(cfg, "residual_error_alignment_filter", False)):
             alignment_commands = self.commands
             linear_preview = float(
@@ -2116,6 +2740,20 @@ class RotunbotVel(LeggedRobot):
                 self.command_brake_pending | self.command_yaw_brake_pending
             )
             residual_actions[any_braking] = 0.0
+        if bool(getattr(cfg, "residual_persistent_yaw_error_gate", False)):
+            residual_actions = persistent_error_gated_angular_residual_actions(
+                residual_actions,
+                self.commands[:, 1] - self.tracking_ang_vel[:, 2],
+                canonical_drive_direction(
+                    self.commands[:, 0],
+                    self.tracking_lin_vel[:, 0],
+                    self.cfg.rewards.stationary_command_threshold,
+                ),
+                self.residual_yaw_error_gate,
+                force_error_alignment=bool(
+                    getattr(cfg, "residual_yaw_gate_force_error_alignment", True)
+                ),
+            )
         residual_scale = torch.as_tensor(
             cfg.residual_action_scale,
             dtype=actions.dtype,

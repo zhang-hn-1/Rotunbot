@@ -82,6 +82,10 @@ class RotunbotVelCfg(LeggedRobotCfg):
         linear_feedback_transition_start_speed = 0.04
         linear_feedback_transition_full_speed = 0.08
         angular_feedback_gain = 0.20
+        # Optional stronger feedback only while a meaningful yaw command and
+        # measured yaw have opposite signs.  None preserves legacy behavior.
+        wrong_direction_angular_feedback_gain = None
+        wrong_direction_command_threshold = 0.01
         linear_feedback_action_limit = 0.0
         angular_feedback_action_limit = 0.15
         # Optional extra P feedback restricted by the causal target-gap mask.
@@ -126,6 +130,18 @@ class RotunbotVelCfg(LeggedRobotCfg):
         residual_action_scale = [0.05, 0.10]
         residual_error_alignment_filter = False
         disable_residual_during_braking = False
+        # Optional stateful safety shell around the learned yaw residual.
+        # Disabled by default so historical tasks remain behavior-compatible.
+        residual_persistent_yaw_error_gate = False
+        residual_yaw_gate_activation_error = 0.010
+        residual_yaw_gate_release_error = 0.004
+        residual_yaw_gate_full_scale_error = 0.025
+        residual_yaw_gate_activation_time = 0.20
+        residual_yaw_gate_sign_flip_cooldown = 0.40
+        residual_yaw_gate_sign_epsilon = 1.0e-4
+        residual_yaw_gate_force_error_alignment = True
+        residual_yaw_gate_rate_bypass_start = float("inf")
+        residual_yaw_gate_rate_bypass_full = float("inf")
         # A residual safety projection normally checks the instantaneous
         # tracking error.  Non-zero preview times instead check the error to a
         # bounded future command, allowing a rate-aware policy to compensate
@@ -175,10 +191,12 @@ class RotunbotVelCfg(LeggedRobotCfg):
         # stop/restart phase may replace it.  The upper layer is responsible for
         # sending commands inside the measured reachable set.
         direct_command_tracking = False
-        # Stage1.4 is opt-in.  The default command path and all legacy tasks
-        # remain unchanged when this switch is false.
-        dynamic_governor_enabled = False
-        dynamic_governor_model_path = ""
+        # Optional command-space transition manager.  Historical tasks keep
+        # the V62 governor path unless an experiment config opts in.
+        feasible_transition_manager_enabled = False
+        transition_settle_v_threshold = 0.01
+        transition_settle_w_threshold = 0.005
+        transition_settle_time = 0.10
         # Optionally cap steering authority using achieved rolling speed rather
         # than only the requested speed.  This prevents a high-level command
         # from requesting full yaw while the sphere is still accelerating from
@@ -1503,12 +1521,580 @@ class RotunbotVelSRU50ReleaseV49CfgPPO(
 
 
 class RotunbotVelSRU50V49IntegrationCfg(RotunbotVelSRU50ReleaseV49Cfg):
-    """Isolated evaluation task for the frozen V49 low-level controller."""
+    """Compatibility task retained for the frozen navigation integration."""
 
     class asset(RotunbotVelSRU50ReleaseV49Cfg.asset):
         file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/Rotunbot/urdf/Rotunbot_test2.urdf"
 
 
-class RotunbotVelSRU50V49IntegrationCfgPPO(RotunbotVelSRU50ReleaseV49CfgPPO):
+class RotunbotVelSRU50V49IntegrationCfgPPO(
+    RotunbotVelSRU50ReleaseV49CfgPPO
+):
     class runner(RotunbotVelSRU50ReleaseV49CfgPPO.runner):
         experiment_name = "rotunbot_vel_sru50_v49_integration"
+
+
+class RotunbotVelSRU50ThirtyDegreeV50TrainCfg(
+    RotunbotVelSRU50DirectDynamicV48Cfg
+):
+    """v50 training task with the URDF's full +/-30 degree steering range."""
+
+    class control(RotunbotVelSRU50DirectDynamicV48Cfg.control):
+        # The URDF joint limit is +/-0.5236 rad.  Scale and clamp must change
+        # together so normalized action +/-1 reaches the physical limit.
+        joint2_position_scale = 0.5235987755982988
+        joint2_position_limit = 0.5235987755982988
+
+    class normalization(RotunbotVelSRU50DirectDynamicV48Cfg.normalization):
+        class obs_scales(
+            RotunbotVelSRU50DirectDynamicV48Cfg.normalization.obs_scales
+        ):
+            # Preserve the normalized [-1, 1] joint-position observation at
+            # the new physical limit instead of silently enlarging its scale.
+            dof_pos = 1.0 / 0.5235987755982988
+
+
+class RotunbotVelSRU50ThirtyDegreeV50TrainCfgPPO(
+    RotunbotVelSRU50DirectDynamicV48CfgPPO
+):
+    class runner(RotunbotVelSRU50DirectDynamicV48CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v50_30deg"
+        max_iterations = 1500
+        save_interval = 25
+
+
+class RotunbotVelSRU50ThirtyDegreeV50ReleaseCfg(
+    RotunbotVelSRU50ThirtyDegreeV50TrainCfg
+):
+    """Validated v50 release candidate using the full +/-30 degree range."""
+
+    class control(RotunbotVelSRU50ThirtyDegreeV50TrainCfg.control):
+        # V50 30-degree checkpoint-500 held-out sweep selected the middle of
+        # the robust plateau: P=0.20 keeps random-command tail error below the
+        # release limit, while FF=0.85 provides useful sine-lag margin.  Lower
+        # P approached the step-error limit; higher P reduced random margin.
+        angular_feedback_gain = 0.20
+        angular_feedback_action_limit = 0.30
+        angular_rate_feedforward_time = 0.85
+        angular_rate_feedforward_action_limit = 0.12
+
+    class commands(RotunbotVelSRU50ThirtyDegreeV50TrainCfg.commands):
+        # Long 250+250-step scans at P=0.20: slope 0.30 failed and 0.29
+        # passed with effectively no yaw-MAE margin.  Freeze the next tested
+        # non-extreme grid point, 0.28 rad/m: radius = 0.85 / 0.28.
+        minimum_turn_radius = 3.035714285714286
+
+
+class RotunbotVelSRU50ThirtyDegreeV50ReleaseCfgPPO(
+    RotunbotVelSRU50ThirtyDegreeV50TrainCfgPPO
+):
+    class runner(RotunbotVelSRU50ThirtyDegreeV50TrainCfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v50_30deg_release"
+        max_iterations = 1500
+        save_interval = 25
+
+
+class RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg(
+    RotunbotVelSRU50ThirtyDegreeV50TrainCfg
+):
+    """v51: 30-degree steering with actuator-space invariants recalibrated."""
+
+    class control(RotunbotVelSRU50ThirtyDegreeV50TrainCfg.control):
+        # A normalized steering action now maps to 0.5236 rather than 0.45 rad.
+        # Scale the inverse yaw gain by the same ratio so its physical joint
+        # target is unchanged for the same requested (v, w).  Conversely scale
+        # normalized residual authority down to preserve its physical angle.
+        nominal_yaw_gain_intercept = 0.1687151610261185
+        nominal_yaw_gain_speed_slope = 0.0
+        residual_action_scale = [0.08, 0.25783100780887047]
+
+
+class RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO(
+    RotunbotVelSRU50ThirtyDegreeV50TrainCfgPPO
+):
+    class runner(RotunbotVelSRU50ThirtyDegreeV50TrainCfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v51_30deg_calibrated"
+        max_iterations = 1500
+        save_interval = 25
+
+
+class RotunbotVelSRU50ThirtyDegreeCalibratedV51ReleaseCfg(
+    RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg
+):
+    """Validated v51 release with calibrated full +/-30 degree steering."""
+
+    class control(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.control):
+        # Held-out sweeps showed P>=0.30 can excite wrong-sign yaw rebound.
+        # P=0.25 plus bounded PI removes the constant-command bias without
+        # changing sine/random profiles: inherited protection disables the
+        # integral for explicit smooth profiles and resets it on command jumps.
+        angular_feedback_gain = 0.25
+        angular_feedback_action_limit = 0.30
+        angular_integral_gain = 0.40
+        angular_integral_action_limit = 0.08
+        angular_rate_feedforward_time = 0.60
+        angular_rate_feedforward_action_limit = 0.12
+
+    class commands(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.commands):
+        # A 250+250-step scan passed all 41 grid points at slope 0.27 but
+        # retained only 4.15e-5 rad/s of yaw-MAE margin.  Freeze one measured
+        # grid step inside that boundary: 0.85 / radius = 0.26 rad/m.
+        minimum_turn_radius = 3.269230769230769
+
+
+class RotunbotVelSRU50ThirtyDegreeCalibratedV51ReleaseCfgPPO(
+    RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO
+):
+    class runner(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v51_30deg_calibrated_release"
+        max_iterations = 1500
+        save_interval = 25
+
+
+class RotunbotVelSRU50ReachableCurvatureV52Cfg(
+    RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg
+):
+    """V52: measured 0.25 m/s domain with curvature-preserving SRU input."""
+
+    class control(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.control):
+        # The 30-degree open-loop scan shows that the residual must cover both
+        # the strong low-speed steering response and the high-speed saturation
+        # region.  Keep the calibrated inverse as a stable baseline and give PPO
+        # enough bounded authority to identify that speed dependence.
+        residual_action_scale = [0.10, 0.35]
+        angular_feedback_gain = 0.30
+        angular_feedback_action_limit = 0.35
+        angular_rate_feedforward_time = 0.55
+        angular_rate_feedforward_action_limit = 0.15
+
+    class commands(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.commands):
+        # Measured open-loop points with the existing contact-yaw model:
+        #   action0=0.625, steer=0   -> v ~= 0.250 m/s
+        #   action0=0.500, steer=1   -> radius ~= 1.18 m
+        #   action0=0.625, steer=1   -> radius ~= 2.02 m
+        # The commanded domain is deliberately smaller than the plant boundary.
+        max_forward_speed = 0.25
+        max_yaw_rate = 0.10
+        minimum_turn_radius = 2.0
+        feasible_envelope_fraction = 1.0
+        minimum_turn_speed = 0.03
+        turn_authority_start_speed = 0.0
+        turn_authority_full_speed = 0.0
+
+        # The deployment port accepts raw SRU outputs.  Preserve w/v whenever
+        # only magnitude limits are exceeded; clip curvature only when the
+        # requested radius itself is physically impossible.
+        project_external_commands_to_feasible_domain = True
+        preserve_curvature_when_saturating = True
+        direct_command_tracking = True
+        hold_upper_command_rate = True
+        upper_level_command_frequency_hz = 5.0
+
+        # Train on broad but temporally correlated 5 Hz commands.  Abrupt full
+        # reversals remain a minority because they are recovery cases rather
+        # than the normal output of a navigation policy.
+        resampling_time = 5.0
+        smooth_profile_fraction = 0.85
+        random_walk_profile_fraction = 0.50
+        random_walk_linear_step = 0.015
+        random_walk_yaw_step = 0.008
+        random_walk_minimum_speed = 0.03
+        smooth_profile_speed_amplitude_min = 0.03
+        smooth_profile_speed_amplitude_max = 0.25
+        independent_profile_minimum_speed = 0.03
+        extreme_turn_fraction = 0.25
+        opposite_transition_fraction = 0.08
+        yaw_only_transition_fraction = 0.25
+
+        class ranges(
+            RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.commands.ranges
+        ):
+            lin_vel_x = [-0.25, 0.25]
+            ang_vel_yaw = [-0.10, 0.10]
+
+    class rewards(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.rewards):
+        curvature_tracking_sigma = 0.06
+
+        class scales(
+            RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfg.rewards.scales
+        ):
+            # v and w remain primary; curvature is an auxiliary trajectory term.
+            tracking_lin_vel = 16.0
+            tracking_ang_vel = 44.0
+            curvature_tracking = 6.0
+            angular_tracking_error = -7.0
+            linear_wrong_direction = -6.0
+            yaw_wrong_direction = -10.0
+            action_rate = -0.001
+            residual_action = -0.03
+
+
+class RotunbotVelSRU50ReachableCurvatureV52CfgPPO(
+    RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO
+):
+    class policy(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO.policy):
+        init_noise_std = 0.08
+
+    class algorithm(
+        RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO.algorithm
+    ):
+        learning_rate = 8.0e-5
+        entropy_coef = 0.0001
+
+    class runner(RotunbotVelSRU50ThirtyDegreeCalibratedV51TrainCfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v52_reachable_curvature"
+        max_iterations = 2000
+        save_interval = 25
+
+
+class RotunbotVelSRU50SymmetricBoundedV53Cfg(
+    RotunbotVelSRU50ReachableCurvatureV52Cfg
+):
+    """V53: symmetric small PPO correction around a tuned deterministic base."""
+
+    class control(RotunbotVelSRU50ReachableCurvatureV52Cfg.control):
+        # Held-out zero-residual sweep on the broad 0.04--0.25 m/s 5 Hz random
+        # family selected the low-gain basin.  Larger P/FF monotonically worsened
+        # yaw MAE, p95, direction accuracy, and curvature error.
+        angular_feedback_gain = 0.20
+        angular_feedback_action_limit = 0.25
+        angular_rate_feedforward_time = 0.35
+        angular_rate_feedforward_action_limit = 0.12
+
+        # V52's [0.10, 0.35] residual let both independent seeds overwrite a
+        # better deterministic controller.  V53 restricts PPO to fine correction
+        # and canonicalizes reverse motion so one MLP cannot learn two conflicting
+        # forward/reverse actuator conventions.
+        residual_action_scale = [0.02, 0.08]
+        canonicalize_policy_for_drive_reversal = True
+
+    class rewards(RotunbotVelSRU50ReachableCurvatureV52Cfg.rewards):
+        class scales(RotunbotVelSRU50ReachableCurvatureV52Cfg.rewards.scales):
+            residual_action = -0.50
+
+
+class RotunbotVelSRU50SymmetricBoundedV53CfgPPO(
+    RotunbotVelSRU50ReachableCurvatureV52CfgPPO
+):
+    class policy(RotunbotVelSRU50ReachableCurvatureV52CfgPPO.policy):
+        init_noise_std = 0.05
+
+    class algorithm(RotunbotVelSRU50ReachableCurvatureV52CfgPPO.algorithm):
+        learning_rate = 5.0e-5
+        entropy_coef = 0.0
+
+    class runner(RotunbotVelSRU50ReachableCurvatureV52CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v53_symmetric_bounded"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50CurvatureGovernorV54Cfg(
+    RotunbotVelSRU50SymmetricBoundedV53Cfg
+):
+    """V54: preserve the SRU request while tracking a dynamic reachable reference.
+
+    A static ``(v, w)`` pair can lie inside the measured envelope and still be
+    unreachable in one 200 ms upper-level interval.  V54 therefore exposes the
+    raw SRU target through ``command_targets`` and advances the low-level
+    reference at measured acceleration limits.  Evaluation reports both arrays;
+    the governor is never a hidden replacement for the navigation command.
+    """
+
+    class control(RotunbotVelSRU50SymmetricBoundedV53Cfg.control):
+        # The governed command changes continuously at 50 Hz, so only modest
+        # feedback/feedforward is required.  PPO retains fine nonlinear
+        # authority but cannot erase the validated deterministic controller.
+        angular_feedback_gain = 0.15
+        angular_feedback_action_limit = 0.20
+        angular_rate_feedforward_time = 0.20
+        angular_rate_feedforward_action_limit = 0.10
+        residual_action_scale = [0.01, 0.04]
+
+    class commands(RotunbotVelSRU50SymmetricBoundedV53Cfg.commands):
+        direct_command_tracking = False
+        maximum_linear_acceleration = 0.10
+        # Broad 0.04--0.25 m/s held-out scans found 0.0070 rad/s^2 to be the
+        # fastest boundary that satisfies yaw MAE, p95, direction, and
+        # curvature criteria without excessive request/reference distortion.
+        maximum_yaw_acceleration = 0.0070
+        # The release evaluator uses the governed mechanically reachable
+        # reference for low-level tracking metrics while retaining raw-request
+        # gaps and traces as first-class diagnostics.
+        release_evaluate_applied_commands = True
+
+    class rewards(RotunbotVelSRU50SymmetricBoundedV53Cfg.rewards):
+        class scales(RotunbotVelSRU50SymmetricBoundedV53Cfg.rewards.scales):
+            tracking_ang_vel = 52.0
+            angular_tracking_error = -9.0
+            yaw_wrong_direction = -14.0
+            residual_action = -1.0
+
+
+class RotunbotVelSRU50CurvatureGovernorV54CfgPPO(
+    RotunbotVelSRU50SymmetricBoundedV53CfgPPO
+):
+    class policy(RotunbotVelSRU50SymmetricBoundedV53CfgPPO.policy):
+        init_noise_std = 0.035
+
+    class algorithm(RotunbotVelSRU50SymmetricBoundedV53CfgPPO.algorithm):
+        learning_rate = 4.0e-5
+        entropy_coef = 0.0
+
+    class runner(RotunbotVelSRU50SymmetricBoundedV53CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v54_curvature_governor"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50PhasePreviewV55Cfg(
+    RotunbotVelSRU50CurvatureGovernorV54Cfg
+):
+    """V55: teach the residual to compensate measured yaw phase lag.
+
+    V54 PPO checkpoints changed random-command error slightly but left the
+    16-second sine response at 0.88--0.92 s lag and about 0.80 amplitude for
+    two independent seeds.  The policy already observes command rate and error
+    derivatives; V55 gives those signals a causal objective by previewing only
+    the smooth yaw reward.  Current-command curvature and direction penalties
+    remain active, so preview cannot redefine the SRU command contract.
+    """
+
+    class control(RotunbotVelSRU50CurvatureGovernorV54Cfg.control):
+        residual_action_scale = [0.01, 0.10]
+
+    class rewards(RotunbotVelSRU50CurvatureGovernorV54Cfg.rewards):
+        smooth_angular_reward_preview_time = 0.40
+
+        class scales(RotunbotVelSRU50CurvatureGovernorV54Cfg.rewards.scales):
+            angular_acceleration_error = -4.0
+            residual_action = -0.10
+
+
+class RotunbotVelSRU50PhasePreviewV55CfgPPO(
+    RotunbotVelSRU50CurvatureGovernorV54CfgPPO
+):
+    class policy(RotunbotVelSRU50CurvatureGovernorV54CfgPPO.policy):
+        init_noise_std = 0.06
+
+    class algorithm(RotunbotVelSRU50CurvatureGovernorV54CfgPPO.algorithm):
+        learning_rate = 8.0e-5
+        entropy_coef = 1.0e-4
+
+    class runner(RotunbotVelSRU50CurvatureGovernorV54CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v55_phase_preview_040"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50PhasePreviewV56Cfg(RotunbotVelSRU50PhasePreviewV55Cfg):
+    """V56 comparison arm with a longer, still causal smooth-yaw preview."""
+
+    class rewards(RotunbotVelSRU50PhasePreviewV55Cfg.rewards):
+        smooth_angular_reward_preview_time = 0.65
+
+
+class RotunbotVelSRU50PhasePreviewV56CfgPPO(
+    RotunbotVelSRU50PhasePreviewV55CfgPPO
+):
+    class runner(RotunbotVelSRU50PhasePreviewV55CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v56_phase_preview_065"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50RateAlignedV57Cfg(RotunbotVelSRU50PhasePreviewV55Cfg):
+    """V57: PPO learns yaw lead magnitude while mechanics fixes its sign."""
+
+    class control(RotunbotVelSRU50PhasePreviewV55Cfg.control):
+        residual_rate_alignment_filter = True
+        residual_rate_alignment_minimum_command_rate = 1.0e-4
+        residual_rate_alignment_zero_inactive = True
+        residual_action_scale = [0.01, 0.10]
+
+
+class RotunbotVelSRU50RateAlignedV57CfgPPO(
+    RotunbotVelSRU50PhasePreviewV55CfgPPO
+):
+    class runner(RotunbotVelSRU50PhasePreviewV55CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v57_rate_aligned_010"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50RateAlignedV58Cfg(RotunbotVelSRU50RateAlignedV57Cfg):
+    """V58 comparison arm with greater bounded yaw-lead authority."""
+
+    class control(RotunbotVelSRU50RateAlignedV57Cfg.control):
+        residual_action_scale = [0.01, 0.15]
+
+
+class RotunbotVelSRU50RateAlignedV58CfgPPO(
+    RotunbotVelSRU50RateAlignedV57CfgPPO
+):
+    class runner(RotunbotVelSRU50RateAlignedV57CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v58_rate_aligned_015"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50CalibratedMapV59Cfg(RotunbotVelSRU50RateAlignedV57Cfg):
+    """V59: two-dimensional steady inverse map plus V57 dynamic yaw lead.
+
+    The table is identified from symmetric constant-command scans. It corrects
+    the plant's low-speed steering dead zone, mid-speed over-response, and the
+    nonlinear drive loss above 0.20 m/s without changing the SRU command or the
+    R>=2 m feasibility projection.
+    """
+
+    class control(RotunbotVelSRU50RateAlignedV57Cfg.control):
+        # V57 inherited the old 0.20 m/s projection headroom from V29.  Leaving
+        # that value in place silently clips a 0.25 m/s SRU command before the
+        # calibrated inverse map is evaluated, making the final table entry
+        # unreachable.  V59 identifies and controls the full 0.25 m/s domain.
+        lead_projection_max_forward_speed = 0.25
+        nominal_drive_speed_breakpoints = [0.0, 0.04, 0.06, 0.10, 0.15, 0.20, 0.25]
+        nominal_drive_action_values = [0.0, 0.10, 0.15, 0.25, 0.375, 0.50, 0.71]
+        nominal_steering_speed_breakpoints = [
+            0.0, 0.04, 0.06, 0.10, 0.15, 0.20, 0.25
+        ]
+        # Scales multiply the legacy constant-yaw-gain inverse. The half/full
+        # tables capture the measured high-speed steering nonlinearity.
+        nominal_steering_half_fraction_scales = [
+            2.90, 2.90, 2.00, 1.30, 0.86, 0.79, 0.91
+        ]
+        nominal_steering_full_fraction_scales = [
+            2.90, 2.90, 2.00, 1.30, 0.86, 0.98, 1.10
+        ]
+        # Do not let PPO alter the calibrated steady linear channel.
+        residual_action_scale = [0.0, 0.10]
+
+
+class RotunbotVelSRU50CalibratedMapV59CfgPPO(
+    RotunbotVelSRU50RateAlignedV57CfgPPO
+):
+    class runner(RotunbotVelSRU50RateAlignedV57CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v59_calibrated_map"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50HybridResidualV60Cfg(RotunbotVelSRU50CalibratedMapV59Cfg):
+    """V60: calibrated full-speed map with safe dynamic and steady residuals.
+
+    V57 deliberately disabled the learned residual whenever ``dw/dt`` was zero.
+    Long constant-command trials subsequently showed a several-second yaw mode
+    that cannot be stabilized by that controller.  V60 keeps V57's mechanically
+    correct lead sign while a command is changing and switches to the equally
+    constrained instantaneous yaw-error sign while the command is held.
+    """
+
+    class control(RotunbotVelSRU50CalibratedMapV59Cfg.control):
+        # The second V59 scan measured 0.269 m/s at action 0.71.  Interpolation
+        # identifies action 0.65 for the requested 0.25 m/s endpoint.
+        nominal_drive_action_values = [0.0, 0.10, 0.15, 0.25, 0.375, 0.50, 0.65]
+        # Re-identify the 0.25 m/s steering row after removing the inherited
+        # 0.20 m/s projection cap.  Lower-speed rows remain measured V59 values.
+        nominal_steering_half_fraction_scales = [
+            2.90, 2.90, 2.00, 1.30, 0.86, 0.79, 1.12
+        ]
+        nominal_steering_full_fraction_scales = [
+            2.90, 2.90, 2.00, 1.30, 0.86, 0.98, 1.45
+        ]
+        residual_rate_alignment_zero_inactive = False
+        residual_rate_alignment_error_when_inactive = True
+        residual_action_scale = [0.0, 0.15]
+
+
+class RotunbotVelSRU50HybridResidualV60CfgPPO(
+    RotunbotVelSRU50CalibratedMapV59CfgPPO
+):
+    class runner(RotunbotVelSRU50CalibratedMapV59CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v60_hybrid_residual"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50RadiusPriorityV61Cfg(RotunbotVelSRU50HybridResidualV60Cfg):
+    """V61: measured stable envelope with curvature-preserving projection."""
+
+    class control(RotunbotVelSRU50HybridResidualV60Cfg.control):
+        # Remove the V60 zero-crossing limit cycle: the bounded learned steady
+        # correction vanishes continuously as yaw error approaches zero.
+        residual_inactive_error_full_scale = 0.02
+
+    class commands(RotunbotVelSRU50HybridResidualV60Cfg.commands):
+        # V29 also carried an independent 0.20 m/s cap inside the acceleration
+        # governor.  V59 fixed the controller lead projection but not this
+        # second cap, so a held 0.25 m/s request still settled at 0.20 m/s.
+        governor_projection_max_forward_speed = 0.25
+        # Identified from the V59/V60 symmetric constant-command scans.  At high
+        # curvature, reduce v and w by one common factor.  Thus w/v and turn
+        # radius are preserved while maximum straight speed remains 0.25 m/s.
+        stable_curvature_fraction_breakpoints = [0.0, 0.25, 0.50, 1.0]
+        stable_curvature_max_speed_values = [0.25, 0.20, 0.15, 0.10]
+
+
+class RotunbotVelSRU50RadiusPriorityV61CfgPPO(
+    RotunbotVelSRU50HybridResidualV60CfgPPO
+):
+    class runner(RotunbotVelSRU50HybridResidualV60CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v61_radius_priority"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50SafeYawResidualV62Cfg(
+    RotunbotVelSRU50RadiusPriorityV61Cfg
+):
+    """V62: retain V61 disturbance authority without zero-crossing chatter."""
+
+    class control(RotunbotVelSRU50RadiusPriorityV61Cfg.control):
+        # Keep the trained maximum authority for persistent mismatch.  The
+        # stateful gate makes the effective scale zero around ordinary tracking
+        # error and after every error-sign crossing.
+        residual_action_scale = [0.0, 0.15]
+        residual_persistent_yaw_error_gate = True
+        residual_yaw_gate_activation_error = 0.010
+        residual_yaw_gate_release_error = 0.004
+        residual_yaw_gate_full_scale_error = 0.025
+        residual_yaw_gate_activation_time = 0.20
+        residual_yaw_gate_sign_flip_cooldown = 0.40
+        # Preserve V61's mechanically aligned transient sign.  At the measured
+        # 0.007 rad/s^2 governor slope this admits the full learned transient
+        # feedforward.  Held commands, command extrema and error sign changes
+        # still use the persistent-error safety gate, which removes the V61
+        # steady oscillation without degrading sine tracking.
+        residual_yaw_gate_force_error_alignment = False
+        residual_yaw_gate_rate_bypass_start = 0.004
+        residual_yaw_gate_rate_bypass_full = 0.007
+
+
+class RotunbotVelSRU50SafeYawResidualV62CfgPPO(
+    RotunbotVelSRU50RadiusPriorityV61CfgPPO
+):
+    class runner(RotunbotVelSRU50RadiusPriorityV61CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v62_safe_yaw_residual"
+        max_iterations = 1000
+        save_interval = 25
+
+
+class RotunbotVelSRU50SafeYawResidualV62TransitionCfg(
+    RotunbotVelSRU50SafeYawResidualV62Cfg
+):
+    """V62 experiment arm with only the feasible transition manager enabled."""
+
+    class commands(RotunbotVelSRU50SafeYawResidualV62Cfg.commands):
+        feasible_transition_manager_enabled = True
+        transition_settle_v_threshold = 0.01
+        transition_settle_w_threshold = 0.005
+        transition_settle_time = 0.10
+
+
+class RotunbotVelSRU50SafeYawResidualV62TransitionCfgPPO(
+    RotunbotVelSRU50SafeYawResidualV62CfgPPO
+):
+    class runner(RotunbotVelSRU50SafeYawResidualV62CfgPPO.runner):
+        experiment_name = "rotunbot_vel_sru50_v62_feasible_transition_manager"
+        max_iterations = 1000
+        save_interval = 25
