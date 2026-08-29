@@ -40,6 +40,17 @@ class CorridorArtifactTests(unittest.TestCase):
         self.assertFalse(failed["pass"])
         self.assertTrue(failed["failures"])
 
+    def test_gate_result_supports_strict_bounds(self):
+        result = GateResult.evaluate(
+            {"max_lateral_error_m": 0.19, "transition_activation_count": 1},
+            current_rules={
+                "max_lateral_error_m": ("<", 0.20),
+                "transition_activation_count": (">", 0),
+            },
+            regression_rules={},
+        )
+        self.assertTrue(result["pass"])
+
     def test_checkpoint_metadata_records_sha_and_parent(self):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "model.pt"

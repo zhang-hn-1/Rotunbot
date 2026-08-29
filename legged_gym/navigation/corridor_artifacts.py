@@ -11,6 +11,10 @@ def _compare(actual, operator, expected):
         return actual >= expected
     if operator == "<=":
         return actual <= expected
+    if operator == ">":
+        return actual > expected
+    if operator == "<":
+        return actual < expected
     if operator == "==":
         return actual == expected
     raise ValueError("unsupported gate operator: %s" % operator)
