@@ -73,6 +73,21 @@ class FeasibleTransitionManagerTests(unittest.TestCase):
         self.assertEqual(int(state.item()), TransitionState.TRACK)
         self.assertFalse(bool(active.item()))
 
+    def test_boundary_turn_can_release_yaw_before_accelerating(self):
+        manager = self.make_manager()
+        current = torch.tensor([[0.10, 0.05]])
+        target = torch.tensor([[0.20, 0.0]])
+        manager.update_target(target, current, current[:, 0], current[:, 1])
+        next_command, _, _ = manager.advance(
+            current, current[:, 0], current[:, 1]
+        )
+        self.assertLess(float(next_command[0, 1]), 0.05)
+        self.assertLessEqual(float(torch.abs(next_command[0, 0] - current[0, 0])), 0.002)
+        for _ in range(300):
+            current, _, _ = manager.advance(current, current[:, 0], current[:, 1])
+        self.assertGreater(float(current[0, 0]), 0.15)
+        self.assertLess(float(current[0, 1]), 0.02)
+
     def test_backward_same_branch_does_not_enter_brake(self):
         manager = self.make_manager()
         current = torch.tensor([[-0.10, -0.03]])

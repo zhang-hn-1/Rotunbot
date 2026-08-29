@@ -202,6 +202,7 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
             transition_active_steps = 0
             governor_active_steps = 0
             projection_active_steps = 0
+            transition_activation_events = 0
             sign_reversal_count = 0
             collision = False
             success = False
@@ -211,8 +212,13 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
                 quat = env.base_quat[0]
                 yaw = _yaw_from_quaternion(quat)
                 if step % UPPER_HOLD_STEPS == 0:
+                    previous_target = previous_raw.copy()
                     command = controller.update(position, yaw, scenario)
                     raw_command = np.asarray(command, dtype=np.float64)
+                    target_changed = bool(
+                        np.max(np.abs(raw_command - previous_target)) > 3.0e-6
+                    )
+                    transition_activation_events += int(target_changed)
                     if abs(raw_command[1]) > 1.0e-6 and abs(previous_raw[1]) > 1.0e-6:
                         if np.sign(raw_command[1]) != np.sign(previous_raw[1]):
                             sign_reversal_count += 1
@@ -284,6 +290,9 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
                     "feasible_domain_violation": int(domain_bad),
                     "hidden_projection_jump": int(rate_bad),
                     "transition_active": transition_active,
+                    "transition_activation_event": int(
+                        target_changed if step % UPPER_HOLD_STEPS == 0 else 0
+                    ),
                     "governor_active": int(np.linalg.norm(raw_command - applied) > 3.0e-6),
                     "projection_active": int(np.max(np.abs(projected_raw - raw_command)) > 3.0e-6) if step % UPPER_HOLD_STEPS == 0 else 0,
                 })
@@ -345,7 +354,9 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
                 "rate_violation_count": rate_violations,
                 "feasible_domain_violation_count": domain_violations,
                 "hidden_projection_jump_count": hidden_jumps,
-                "transition_activation_count": transition_active_steps,
+                "transition_activation_count": transition_activation_events,
+                "transition_active_step_count": transition_active_steps,
+                "transition_activation_event_count": transition_activation_events,
                 "governor_activation_count": governor_active_steps,
                 "projection_activation_count": projection_active_steps,
                 "mean_command_correction": float(np.mean(command_corrections)) if command_corrections else 0.0,
@@ -370,7 +381,9 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
             "rate_violation_count": sum(row["rate_violation_count"] for row in all_records),
             "feasible_domain_violation_count": sum(row["feasible_domain_violation_count"] for row in all_records),
             "hidden_projection_jump_count": sum(row["hidden_projection_jump_count"] for row in all_records),
-            "transition_activation_count": sum(row["transition_activation_count"] for row in all_records),
+            "transition_activation_count": sum(row["transition_activation_event_count"] for row in all_records),
+            "transition_active_step_count": sum(row["transition_active_step_count"] for row in all_records),
+            "transition_activation_event_count": sum(row["transition_activation_event_count"] for row in all_records),
             "governor_activation_count": sum(row["governor_activation_count"] for row in all_records),
             "projection_activation_count": sum(row["projection_activation_count"] for row in all_records),
             "max_lateral_error_m": max(row["max_lateral_error_m"] for row in all_records),
@@ -384,7 +397,7 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
         total_steps = sum(
             int(round(row["duration_s"] / float(env.dt))) for row in all_records
         )
-        summary["transition_activation_ratio"] = summary["transition_activation_count"] / max(total_steps, 1)
+        summary["transition_activation_ratio"] = summary["transition_active_step_count"] / max(total_steps, 1)
         summary["governor_activation_ratio"] = summary["governor_activation_count"] / max(total_steps, 1)
         summary["projection_activation_ratio"] = summary["projection_activation_count"] / max(episodes * UPPER_HOLD_STEPS, 1)
         logger.write_summary(summary)

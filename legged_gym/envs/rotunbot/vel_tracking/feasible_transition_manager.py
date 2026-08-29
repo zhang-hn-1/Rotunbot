@@ -260,6 +260,30 @@ class FeasibleVelocityTransitionManager:
         if torch.all(valid):
             return bounded
 
+        # A stable-curvature schedule can make the diagonal rate-box step
+        # invalid even though the target is reachable.  This occurs when a
+        # boundary turn must release yaw before increasing linear speed.  Try
+        # one component at a time, preserving the same per-component rate
+        # bounds and allowing the next policy step to continue from the new
+        # feasible point.
+        yaw_first = current.clone()
+        yaw_first[:, 1] = bounded[:, 1]
+        yaw_first_valid = self._is_feasible(yaw_first)
+        speed_first = current.clone()
+        speed_first[:, 0] = bounded[:, 0]
+        speed_first_valid = self._is_feasible(speed_first)
+        selected = torch.where(
+            yaw_first_valid.unsqueeze(1), yaw_first, current
+        )
+        selected = torch.where(
+            ((~yaw_first_valid) & speed_first_valid).unsqueeze(1),
+            speed_first,
+            selected,
+        )
+        selected_valid = yaw_first_valid | speed_first_valid
+        if torch.all(selected_valid):
+            return selected
+
         # Backtrack inside the local rate box until the command is feasible.
         # The fixed iteration count is over the scalar search, never over envs.
         low = torch.zeros(current.shape[0], dtype=self.dtype, device=self.device)
