@@ -175,6 +175,10 @@ class RotunbotVelCfg(LeggedRobotCfg):
         # stop/restart phase may replace it.  The upper layer is responsible for
         # sending commands inside the measured reachable set.
         direct_command_tracking = False
+        # Stage1.4 is opt-in.  The default command path and all legacy tasks
+        # remain unchanged when this switch is false.
+        dynamic_governor_enabled = False
+        dynamic_governor_model_path = ""
         # Optionally cap steering authority using achieved rolling speed rather
         # than only the requested speed.  This prevents a high-level command
         # from requesting full yaw while the sphere is still accelerating from

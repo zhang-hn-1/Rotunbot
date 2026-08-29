@@ -96,8 +96,9 @@ def _measure(env):
     return float(env.tracking_lin_vel[0, 0]), float(env.tracking_ang_vel[0, 2])
 
 
-def _establish_initial_state(env, policy, v0, w0, seed, trial_id, args):
-    env.reset()
+def _establish_initial_state(env, policy, v0, w0, seed, trial_id, args, reset=True):
+    if reset:
+        env.reset()
     _set_initial_pose(env, initial_pose_for_episode(seed, trial_id))
     start_raw = torch.tensor([[v0, w0]], device=env.device)
     start_projected = _projection(env, start_raw)

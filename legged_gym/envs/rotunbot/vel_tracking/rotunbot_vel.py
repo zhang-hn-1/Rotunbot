@@ -866,6 +866,9 @@ class RotunbotVel(LeggedRobot):
             f"hold={self.upper_level_command_interval_steps} low-level steps"
         )
         self.command_targets = self.commands[:, :2].clone()
+        # The dynamic governor is an explicitly attached upper-layer object.
+        # Leaving it unset preserves the Stage1.2 command path exactly.
+        self.dynamic_governor = None
         self.command_brake_pending = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
@@ -1307,6 +1310,66 @@ class RotunbotVel(LeggedRobot):
                 discontinuous_ids = changed_ids[reset_integral]
                 self.tracking_error_integral[discontinuous_ids] = 0.0
         self.command_targets[env_ids] = targets
+
+    def set_governed_command_targets(self, target_commands, governor, env_ids=None):
+        """Apply the opt-in reachable governor before normal command latching.
+
+        The method deliberately leaves ``set_command_targets`` untouched.  A
+        caller must attach a governor explicitly and enable the config switch;
+        otherwise this is exactly the existing raw-target operation.
+        """
+        if not bool(getattr(self.cfg.commands, "dynamic_governor_enabled", False)):
+            return self.set_command_targets(target_commands, env_ids)
+        if governor is None:
+            raise ValueError("dynamic governor is enabled but no governor is attached")
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        elif not torch.is_tensor(env_ids):
+            env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        else:
+            env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        targets = target_commands.to(device=self.device, dtype=self.command_targets.dtype)
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(0).expand(env_ids.numel(), -1)
+        if targets.shape != (env_ids.numel(), 2):
+            raise ValueError(
+                "target_commands must have shape (len(env_ids), 2); "
+                f"received {tuple(targets.shape)}"
+            )
+        from legged_gym.navigation.v49_dynamic_reachability import ReachabilityState
+
+        selected = []
+        decisions = []
+        for row, env_id in enumerate(env_ids.detach().cpu().tolist()):
+            state = ReachabilityState(
+                current_forward_velocity=float(self.tracking_lin_vel[env_id, 0]),
+                current_yaw_rate=float(self.tracking_ang_vel[env_id, 2]),
+                previous_command=tuple(self.command_targets[env_id].detach().cpu().tolist()),
+            )
+            decision = governor.select_command(
+                state,
+                tuple(targets[row].detach().cpu().tolist()),
+                state.previous_command,
+            )
+            selected.append(decision.command)
+            decisions.append(decision)
+        selected_tensor = torch.as_tensor(
+            selected, dtype=self.command_targets.dtype, device=self.device
+        )
+        # Keep the existing geometric hard guard as the final runtime boundary.
+        cfg = self.cfg.commands
+        selected_tensor = project_velocity_commands(
+            selected_tensor,
+            cfg.max_forward_speed,
+            cfg.max_yaw_rate,
+            cfg.minimum_turn_radius,
+            getattr(cfg, "feasible_envelope_fraction", 1.0),
+            stationary_threshold=self.cfg.rewards.stationary_command_threshold,
+            turn_authority_start_speed=getattr(cfg, "turn_authority_start_speed", 0.0),
+            turn_authority_full_speed=getattr(cfg, "turn_authority_full_speed", 0.0),
+        )
+        self.set_command_targets(selected_tensor, env_ids)
+        return decisions
 
     def _reset_root_states(self, env_ids):
         super()._reset_root_states(env_ids)
