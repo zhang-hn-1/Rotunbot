@@ -1,6 +1,7 @@
 """Evaluate frozen V62 spatial motion in deterministic corridor scenarios."""
 
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -15,7 +16,11 @@ from legged_gym.navigation.v62_corridor_task import (
     make_wall_segments,
     register_v62_corridor_eval_task,
 )
-from legged_gym.navigation.corridor_artifacts import EpisodeLogger, GateResult
+from legged_gym.navigation.corridor_artifacts import (
+    CheckpointMetadata,
+    EpisodeLogger,
+    GateResult,
+)
 from legged_gym.navigation.corridor_plotting import plot_corridor_artifacts
 from legged_gym.navigation.corridor_scenarios import (
     make_double_turn_scenario,
@@ -161,6 +166,16 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
     runner.load(str(args.corridor_checkpoint))
     policy = runner.get_inference_policy(device=env.device)
     logger = EpisodeLogger(output_dir)
+    metadata = CheckpointMetadata.from_path(
+        args.corridor_checkpoint,
+        parent=args.corridor_checkpoint,
+        stage="S0_%s" % scenario.family,
+        seed=scenario.seed,
+        iterations=0,
+    )
+    (output_dir / "checkpoint_metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True)
+    )
     controller = _new_controller(env)
     try:
         if max_steps is None:
