@@ -1,0 +1,29 @@
+{
+  "date": "2026-08-29",
+  "branch": "codex/corridor-curriculum-navigation",
+  "base_commit": "6aa9f531f991ae101053b1ebe3973cb340daa0d1",
+  "checkpoint": "/home/jason/Rotunbot_SRU50_V62_SafeYaw_Final_Verified_20260829/model/model_150.pt",
+  "checkpoint_sha256": "d7173fbbb113ab790d25b0587e82a73abd7ffad9ab2ed148387ba04084944f1b",
+  "runtime": {
+    "physics_dt_s": 0.005,
+    "control_decimation": 4,
+    "policy_dt_s": 0.02,
+    "policy_hz": 50.0,
+    "upper_command_hz": 5.0,
+    "upper_hold_policy_steps": 10,
+    "maximum_linear_acceleration_mps2": 0.1,
+    "maximum_yaw_acceleration_radps2": 0.007,
+    "max_forward_speed_mps": 0.25,
+    "max_yaw_rate_radps": 0.1,
+    "minimum_turn_radius_m": 2.0,
+    "feasible_envelope_fraction": 1.0
+  },
+  "regression": {
+    "command": "unittest test_rotunbot_velocity_tracking test_feasible_transition_manager test_vel_sru50_structured_random",
+    "tests_run": 94,
+    "failures": 0,
+    "errors": 0,
+    "status": "PASS"
+  },
+  "phase_0_decision": "PASS"
+}
