@@ -76,6 +76,11 @@ from .rotunbot.local_p2p.rotunbot_local_p2p import RotunbotLocalP2P
 from .rotunbot.local_p2p.rotunbot_local_p2p_config import RotunbotLocalP2PCfg, RotunbotLocalP2PCfgPPO
 from .rotunbot.local_goal_p2p.rotunbot_local_goal import RotunbotLocalGoal
 from .rotunbot.local_goal_p2p.rotunbot_local_goal_config import RotunbotLocalGoalCfg, RotunbotLocalGoalCfgPPO
+from .rotunbot.direct_velocity import (
+    RotunbotDirectVelocity,
+    RotunbotDirectVelocityCfg,
+    RotunbotDirectVelocityCfgPPO,
+)
 
 import os
 
@@ -118,3 +123,9 @@ task_registry.register(
 )
 task_registry.register( "rotunbot_local_p2p", RotunbotLocalP2P, RotunbotLocalP2PCfg(), RotunbotLocalP2PCfgPPO() )
 task_registry.register( "rotunbot_local_goal", RotunbotLocalGoal, RotunbotLocalGoalCfg(), RotunbotLocalGoalCfgPPO() )
+task_registry.register(
+    "rotunbot_sru_direct_velocity",
+    RotunbotDirectVelocity,
+    RotunbotDirectVelocityCfg(),
+    RotunbotDirectVelocityCfgPPO(),
+)

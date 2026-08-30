@@ -12,6 +12,7 @@ from legged_gym.dwl.ppo_dwl import PPODWL
 from legged_gym.dwl.actor_critic_dwl import ActorCriticDWL
 from legged_gym.dwl.actor_critic_depth import ActorCriticDepth
 from legged_gym.dwl.actor_critic_depth_local import ActorCriticDepthLocal
+from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocity
 from rsl_rl.env import VecEnv
 
 
