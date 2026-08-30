@@ -61,6 +61,9 @@ class RotunbotDirectVelocityCfg(RotunbotVelSRU50SafeYawResidualV62TransitionCfg)
         goal_bearing = (-0.17453292519943295, 0.17453292519943295)
         goal_radius = 0.35
         maximum_goal_distance = 8.0
+        recovery_enter_bearing = 0.3490658503988659
+        recovery_exit_bearing = 0.17453292519943295
+        recovery_exit_distance_margin = 0.10
         # Policy actions are sampled at 5 Hz and held for ten 50 Hz updates.
         upper_level_command_frequency_hz = 5.0
         feasible_transition_manager_enabled = True

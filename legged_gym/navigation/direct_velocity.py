@@ -49,6 +49,48 @@ def velocity_command_rate_penalty(command, previous_command):
     return torch.sum(torch.square(command - previous_command), dim=1)
 
 
+def inside_minimum_radius_turn_circle(goal_xy_robot, minimum_turn_radius=2.0):
+    """Return targets requiring tighter than the minimum same-side turn."""
+    if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
+        raise ValueError("goal_xy_robot must have shape [batch, 2]")
+    distance = torch.linalg.vector_norm(goal_xy_robot, dim=1)
+    bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
+    boundary = 2.0 * float(minimum_turn_radius) * torch.sin(torch.abs(bearing))
+    return distance < boundary
+
+
+def update_goal_recovery_phase(
+    active,
+    goal_xy_robot,
+    minimum_turn_radius=2.0,
+    goal_radius=0.35,
+    enter_bearing=0.3490658503988659,
+    exit_bearing=0.17453292519943295,
+    exit_distance_margin=0.10,
+):
+    """Latch reverse recovery until a direct forward turn is feasible again."""
+    if active.ndim != 1 or active.shape[0] != goal_xy_robot.shape[0]:
+        raise ValueError("active must have shape [batch]")
+    if active.dtype != torch.bool:
+        raise ValueError("active must be a boolean tensor")
+    if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
+        raise ValueError("goal_xy_robot must have shape [batch, 2]")
+    distance = torch.linalg.vector_norm(goal_xy_robot, dim=1)
+    bearing = torch.abs(torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0]))
+    boundary = 2.0 * float(minimum_turn_radius) * torch.sin(bearing)
+    enter = (
+        (distance < boundary)
+        & (bearing >= float(enter_bearing))
+        & (distance > float(goal_radius))
+    )
+    exit_phase = (
+        (distance <= float(goal_radius))
+        | (bearing <= float(exit_bearing))
+        | (distance >= boundary + float(exit_distance_margin))
+    )
+    return (active & ~exit_phase) | enter
+
+
 def goal_turn_alignment(goal_xy_robot, command, bearing_threshold=0.05):
     """Reward yaw-command sign that turns toward the robot-frame goal."""
     if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
@@ -70,6 +112,7 @@ def goal_speed_alignment(
     goal_radius=0.35,
     stopping_distance=0.80,
     minimum_turn_radius=2.0,
+    recovery_active=None,
 ):
     """Prefer a distance-dependent forward speed near the goal.
 
@@ -101,24 +144,44 @@ def goal_speed_alignment(
     # Forward motion cannot reduce a large bearing once the target is inside
     # the robot's minimum-radius turning geometry.  Reverse while steering
     # toward the target to leave that non-convergent local configuration.
-    infeasible_forward = distance < float(minimum_turn_radius) * torch.sin(
-        torch.abs(bearing)
-    )
-    infeasible_forward &= torch.abs(bearing) >= 0.05
+    if recovery_active is None:
+        infeasible_forward = inside_minimum_radius_turn_circle(
+            goal_xy_robot, minimum_turn_radius
+        )
+        infeasible_forward &= torch.abs(bearing) >= 0.05
+    else:
+        if recovery_active.shape != distance.shape or recovery_active.dtype != torch.bool:
+            raise ValueError("recovery_active must be a boolean tensor with shape [batch]")
+        infeasible_forward = recovery_active
     desired_speed[infeasible_forward] = -desired_speed[infeasible_forward].abs()
     return -torch.abs(command[:, 0] - desired_speed) / float(maximum_forward_speed)
 
 
-def goal_kinematic_recovery(goal_xy_robot, command, minimum_turn_radius=2.0):
+def goal_kinematic_recovery(
+    goal_xy_robot,
+    command,
+    minimum_turn_radius=2.0,
+    recovery_active=None,
+):
     """Reward reverse motion when forward curvature cannot converge to goal."""
     if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
         raise ValueError("goal_xy_robot must have shape [batch, 2]")
     if command.ndim != 2 or command.shape != goal_xy_robot.shape:
         raise ValueError("command must have the same shape [batch, 2] as goal_xy_robot")
-    distance = torch.linalg.vector_norm(goal_xy_robot, dim=1)
-    bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
-    infeasible_forward = distance < float(minimum_turn_radius) * torch.sin(
-        torch.abs(bearing)
-    )
-    infeasible_forward &= torch.abs(bearing) >= 0.05
+    if recovery_active is None:
+        bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
+        infeasible_forward = inside_minimum_radius_turn_circle(
+            goal_xy_robot, minimum_turn_radius
+        )
+        infeasible_forward &= torch.abs(bearing) >= 0.05
+    else:
+        if (
+            recovery_active.ndim != 1
+            or recovery_active.shape[0] != goal_xy_robot.shape[0]
+            or recovery_active.dtype != torch.bool
+        ):
+            raise ValueError(
+                "recovery_active must be a boolean tensor with shape [batch]"
+            )
+        infeasible_forward = recovery_active
     return infeasible_forward.float() * -torch.tanh(command[:, 0] / 0.05)

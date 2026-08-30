@@ -10,6 +10,7 @@ from legged_gym.navigation.direct_velocity import (
     goal_speed_alignment,
     goal_turn_alignment,
     normalized_action_to_velocity_command,
+    update_goal_recovery_phase,
     velocity_command_rate_penalty,
 )
 from legged_gym.navigation.direct_velocity_observation import (
@@ -61,6 +62,12 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         )
         self.goal_reached_buf = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.goal_recovery_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.goal_recovery_activation_count = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
         )
         self.success_buf = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
@@ -131,6 +138,19 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.goal_dist[:] = torch.linalg.vector_norm(
             self.global_goal_xy_world - self.root_states[:, :2], dim=1
         )
+        recovery = update_goal_recovery_phase(
+            self.goal_recovery_active,
+            self._goal_xy_robot(),
+            minimum_turn_radius=self.cfg.commands.minimum_turn_radius,
+            goal_radius=self.cfg.commands.goal_radius,
+            enter_bearing=self.cfg.commands.recovery_enter_bearing,
+            exit_bearing=self.cfg.commands.recovery_exit_bearing,
+            exit_distance_margin=self.cfg.commands.recovery_exit_distance_margin,
+        )
+        self.goal_recovery_activation_count += (
+            recovery & ~self.goal_recovery_active
+        ).long()
+        self.goal_recovery_active.copy_(recovery)
 
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
@@ -276,6 +296,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             self.cfg.commands.max_forward_speed,
             self.cfg.commands.goal_radius,
             minimum_turn_radius=self.cfg.commands.minimum_turn_radius,
+            recovery_active=self.goal_recovery_active,
         )
 
     def _reward_goal_kinematic_recovery(self):
@@ -283,6 +304,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             self._goal_xy_robot(),
             self.previous_velocity_command,
             self.cfg.commands.minimum_turn_radius,
+            recovery_active=self.goal_recovery_active,
         )
 
     def reset_idx(self, env_ids):
@@ -311,6 +333,8 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         )
         self.previous_velocity_command[env_ids] = 0.0
         self.last_velocity_command[env_ids] = 0.0
+        self.goal_recovery_active[env_ids] = False
+        self.goal_recovery_activation_count[env_ids] = 0
         self.previous_goal_distance[env_ids] = torch.linalg.vector_norm(
             self.global_goal_xy_world[env_ids] - self.root_states[env_ids, :2], dim=1
         )

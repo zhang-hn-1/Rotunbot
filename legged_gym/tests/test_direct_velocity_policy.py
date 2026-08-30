@@ -1,6 +1,7 @@
 import unittest
 import math
 
+import isaacgym  # noqa: F401 - Isaac Gym must be imported before torch
 import torch
 
 from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocity
@@ -8,7 +9,9 @@ from legged_gym.navigation.direct_velocity import (
     goal_turn_alignment,
     goal_speed_alignment,
     goal_kinematic_recovery,
+    inside_minimum_radius_turn_circle,
     normalized_action_to_velocity_command,
+    update_goal_recovery_phase,
     velocity_command_rate_penalty,
 )
 from legged_gym.navigation.direct_velocity_curriculum import configure_direct_velocity_stage
@@ -133,6 +136,22 @@ class DirectVelocityPolicyTests(unittest.TestCase):
             torch.allclose(command, torch.tensor([[0.12, 0.048]]), atol=1.0e-5)
         )
 
+    def test_direct_velocity_mapping_is_symmetric_and_bounded(self):
+        action = torch.tensor([[-1.0, -1.0], [-0.5, 1.0], [0.5, -1.0], [1.0, 1.0]])
+        command = normalized_action_to_velocity_command(
+            action,
+            maximum_forward_speed=0.25,
+            maximum_yaw_rate=0.10,
+            minimum_turn_radius=2.0,
+            envelope_fraction=1.0,
+        )
+
+        self.assertTrue(
+            torch.allclose(command[:, 0], torch.tensor([-0.25, -0.125, 0.125, 0.25]))
+        )
+        self.assertTrue(torch.allclose(command[0], -command[3]))
+        self.assertTrue(torch.allclose(command[1], -command[2]))
+
     def test_action_rate_uses_previous_physical_velocity_command(self):
         current = torch.tensor([[0.10, 0.02], [0.0, -0.01]])
         previous = torch.tensor([[0.04, 0.01], [0.0, -0.01]])
@@ -168,6 +187,105 @@ class DirectVelocityPolicyTests(unittest.TestCase):
             float(goal_kinematic_recovery(goal, forward)[0]),
         )
         self.assertAlmostEqual(float(goal_kinematic_recovery(goal, reverse)[1]), 0.0, places=6)
+
+    def test_direct_turn_circle_uses_hand_derived_chord_boundary(self):
+        sqrt_three = math.sqrt(3.0)
+        goal = torch.tensor(
+            [
+                [sqrt_three / 2.0, 0.5],
+                [sqrt_three, 1.0],
+                [3.0 * sqrt_three / 2.0, 1.5],
+                [1.0, 0.0],
+            ]
+        )
+
+        inside = inside_minimum_radius_turn_circle(goal, minimum_turn_radius=2.0)
+
+        self.assertTrue(torch.equal(inside, torch.tensor([True, False, False, False])))
+
+    def test_recovery_phase_enters_on_corrected_geometry_and_exits_with_hysteresis(self):
+        def polar(distance, bearing_deg):
+            bearing = math.radians(bearing_deg)
+            return [distance * math.cos(bearing), distance * math.sin(bearing)]
+
+        active = torch.tensor([False, False, True, True, True, True])
+        goals = torch.tensor(
+            [
+                polar(1.50, 30.0),
+                polar(1.00, 15.0),
+                polar(2.05, 30.0),
+                polar(2.20, 30.0),
+                polar(1.00, 5.0),
+                polar(0.30, 30.0),
+            ]
+        )
+
+        updated = update_goal_recovery_phase(
+            active,
+            goals,
+            minimum_turn_radius=2.0,
+            goal_radius=0.35,
+            enter_bearing=math.radians(20.0),
+            exit_bearing=math.radians(10.0),
+            exit_distance_margin=0.10,
+        )
+
+        self.assertTrue(
+            torch.equal(updated, torch.tensor([True, False, True, False, False, False]))
+        )
+
+    def test_stateful_recovery_prefers_reverse_inside_factor_two_boundary(self):
+        bearing = math.radians(30.0)
+        goal = torch.tensor([[1.5 * math.cos(bearing), 1.5 * math.sin(bearing)]])
+        reverse = torch.tensor([[-0.20, 0.0]])
+        forward = torch.tensor([[0.20, 0.0]])
+        active = torch.tensor([True])
+
+        self.assertGreater(
+            float(goal_speed_alignment(goal, reverse, recovery_active=active)[0]),
+            float(goal_speed_alignment(goal, forward, recovery_active=active)[0]),
+        )
+        self.assertGreater(
+            float(goal_kinematic_recovery(goal, reverse, recovery_active=active)[0]),
+            float(goal_kinematic_recovery(goal, forward, recovery_active=active)[0]),
+        )
+
+    def test_environment_reward_consumes_latched_recovery_phase(self):
+        from legged_gym.envs.rotunbot.direct_velocity.rotunbot_direct_velocity import (
+            RotunbotDirectVelocity,
+        )
+
+        env = RotunbotDirectVelocity.__new__(RotunbotDirectVelocity)
+        env.cfg = type(
+            "Cfg",
+            (),
+            {
+                "commands": type(
+                    "Commands",
+                    (),
+                    {
+                        "max_forward_speed": 0.25,
+                        "goal_radius": 0.35,
+                        "minimum_turn_radius": 2.0,
+                    },
+                )()
+            },
+        )()
+        bearing = math.radians(30.0)
+        goal = torch.tensor(
+            [
+                [1.5 * math.cos(bearing), 1.5 * math.sin(bearing)],
+                [1.5 * math.cos(bearing), 1.5 * math.sin(bearing)],
+            ]
+        )
+        env._goal_xy_robot = lambda: goal
+        env.previous_velocity_command = torch.tensor([[-0.20, 0.0], [-0.20, 0.0]])
+        env.goal_recovery_active = torch.tensor([True, False])
+
+        reward = env._reward_goal_kinematic_recovery()
+
+        self.assertGreater(float(reward[0]), 0.0)
+        self.assertEqual(float(reward[1]), 0.0)
 
 
 if __name__ == "__main__":
