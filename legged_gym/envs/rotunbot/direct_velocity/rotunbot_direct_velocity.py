@@ -225,9 +225,29 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         )
 
     def reset_idx(self, env_ids):
+        if len(env_ids):
+            terminal_success = self.success_buf[env_ids].detach().float().mean()
+            terminal_collision = self.step_collision_buf[env_ids].detach().float().mean()
+            terminal_timeout = self.time_out_buf[env_ids].detach().float().mean()
+            terminal_goal_distance = self.terminal_goal_distance[env_ids].detach().mean()
+            terminal_speed = torch.linalg.vector_norm(
+                self.tracking_lin_vel[env_ids, :2].detach(), dim=1
+            ).mean()
+        else:
+            terminal_success = terminal_collision = terminal_timeout = None
+            terminal_goal_distance = terminal_speed = None
         super().reset_idx(env_ids)
         if len(env_ids) == 0:
             return
+        self.extras["episode"].update(
+            {
+                "success": terminal_success,
+                "collision": terminal_collision,
+                "timeout": terminal_timeout,
+                "terminal_goal_distance": terminal_goal_distance,
+                "terminal_speed": terminal_speed,
+            }
+        )
         self.previous_velocity_command[env_ids] = 0.0
         self.last_velocity_command[env_ids] = 0.0
         self.previous_goal_distance[env_ids] = torch.linalg.vector_norm(
