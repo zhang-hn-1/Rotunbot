@@ -55,3 +55,33 @@ def goal_turn_alignment(goal_xy_robot, command, bearing_threshold=0.05):
     # Keep the signal unsaturated through the V62 yaw-command range so a
     # large-bearing goal still prefers stronger feasible turning authority.
     return turning.float() * torch.tanh(signed_command / 0.10)
+
+
+def goal_speed_alignment(
+    goal_xy_robot,
+    command,
+    maximum_forward_speed=0.25,
+    goal_radius=0.35,
+    stopping_distance=0.80,
+):
+    """Prefer a distance-dependent forward speed near the goal.
+
+    Progress alone rewards moving quickly until the robot has already passed a
+    small goal.  This bounded shaping term asks for full speed outside a
+    stopping band and linearly reduces the requested forward speed to zero at
+    the goal radius.  It only shapes the SRU output; V62 still owns execution.
+    """
+    if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
+        raise ValueError("goal_xy_robot must have shape [batch, 2]")
+    if command.ndim != 2 or command.shape != goal_xy_robot.shape:
+        raise ValueError("command must have the same shape [batch, 2] as goal_xy_robot")
+    if stopping_distance <= goal_radius:
+        raise ValueError("stopping_distance must be greater than goal_radius")
+    distance = torch.linalg.vector_norm(goal_xy_robot, dim=1)
+    desired_speed = torch.clamp(
+        (distance - float(goal_radius))
+        / float(stopping_distance - goal_radius),
+        min=0.0,
+        max=1.0,
+    ) * float(maximum_forward_speed)
+    return -torch.abs(command[:, 0] - desired_speed) / float(maximum_forward_speed)

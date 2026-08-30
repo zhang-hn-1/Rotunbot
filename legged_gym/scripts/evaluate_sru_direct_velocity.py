@@ -10,6 +10,7 @@ import torch
 
 from legged_gym.envs import *  # noqa: F401,F403
 from legged_gym.navigation.direct_velocity_curriculum import configure_direct_velocity_stage
+from legged_gym.navigation.direct_velocity import normalized_action_to_velocity_command
 from legged_gym.utils import get_args, task_registry
 
 
@@ -61,8 +62,22 @@ def evaluate(argv=None):
     counts = {"success": 0, "collision": 0, "timeout": 0, "other_failure": 0}
     lengths = []
     terminal_distances = []
+    initial_goal_distances = []
+    initial_goal_bearings = []
+    success_flags = []
+    episode_alignment_sum = torch.zeros(env.num_envs, device=env.device)
+    episode_forward_sum = torch.zeros(env.num_envs, device=env.device)
+    episode_yaw_sum = torch.zeros(env.num_envs, device=env.device)
+    episode_command_count = torch.zeros(env.num_envs, device=env.device)
+    failed_alignment = []
+    failed_forward_command = []
+    failed_abs_yaw_command = []
     completed = 0
     episode_steps = [0 for _ in range(env.num_envs)]
+    episode_goal_distances = env.goal_dist.detach().clone()
+    episode_goal_bearings = torch.atan2(
+        env._goal_xy_robot()[:, 1], env._goal_xy_robot()[:, 0]
+    ).detach().clone()
 
     print(
         "Evaluation: stage={} episodes={} checkpoint={}".format(
@@ -73,6 +88,22 @@ def evaluate(argv=None):
     with torch.no_grad():
         while completed < stage_args.episodes:
             actions = policy(obs)
+            commands = normalized_action_to_velocity_command(
+                actions,
+                env.cfg.commands.max_forward_speed,
+                env.cfg.commands.max_yaw_rate,
+                env.cfg.commands.minimum_turn_radius,
+                env.cfg.commands.feasible_envelope_fraction,
+            )
+            goal_xy = env._goal_xy_robot()
+            goal_bearing = torch.atan2(goal_xy[:, 1], goal_xy[:, 0])
+            bearing_sign = torch.sign(goal_bearing)
+            turning = torch.abs(goal_bearing) >= 0.05
+            aligned = (~turning) | (bearing_sign * commands[:, 1] >= 0.0)
+            episode_alignment_sum += aligned.float()
+            episode_forward_sum += commands[:, 0]
+            episode_yaw_sum += torch.abs(commands[:, 1])
+            episode_command_count += 1.0
             obs, _, _, dones, _ = env.step(actions)
             for index in range(env.num_envs):
                 episode_steps[index] += 1
@@ -92,8 +123,22 @@ def evaluate(argv=None):
                 timeout = (_bool(env.time_out_buf[index]) or forced_timeout) and not collision
                 key = "success" if success else "collision" if collision else "timeout" if timeout else "other_failure"
                 counts[key] += 1
+                success_flags.append(bool(success))
                 lengths.append(episode_steps[index])
                 terminal_distances.append(float(env.terminal_goal_distance[index].item()))
+                initial_goal_distances.append(float(episode_goal_distances[index].item()))
+                initial_goal_bearings.append(float(episode_goal_bearings[index].item()))
+                command_count = max(float(episode_command_count[index].item()), 1.0)
+                if not success:
+                    failed_alignment.append(
+                        float(episode_alignment_sum[index].item()) / command_count
+                    )
+                    failed_forward_command.append(
+                        float(episode_forward_sum[index].item()) / command_count
+                    )
+                    failed_abs_yaw_command.append(
+                        float(episode_yaw_sum[index].item()) / command_count
+                    )
                 completed += 1
                 print(
                     "episode {:>3}: success={} collision={} timeout={} final_dist={:.3f} steps={}".format(
@@ -103,11 +148,26 @@ def evaluate(argv=None):
                     flush=True,
                 )
                 episode_steps[index] = 0
+                episode_alignment_sum[index] = 0.0
+                episode_forward_sum[index] = 0.0
+                episode_yaw_sum[index] = 0.0
+                episode_command_count[index] = 0.0
                 if forced_timeout:
                     manual_reset_ids.append(index)
+                if not forced_timeout:
+                    episode_goal_distances[index] = env.goal_dist[index]
+                    episode_goal_bearings[index] = torch.atan2(
+                        env._goal_xy_robot()[index, 1], env._goal_xy_robot()[index, 0]
+                    )
             if manual_reset_ids:
                 env.reset_idx(torch.as_tensor(manual_reset_ids, device=env.device, dtype=torch.long))
                 obs = env.get_observations()
+                new_bearings = torch.atan2(
+                    env._goal_xy_robot()[:, 1], env._goal_xy_robot()[:, 0]
+                )
+                for index in manual_reset_ids:
+                    episode_goal_distances[index] = env.goal_dist[index]
+                    episode_goal_bearings[index] = new_bearings[index]
 
     summary = {
         "stage": stage_args.stage,
@@ -120,6 +180,18 @@ def evaluate(argv=None):
         "other_failure_rate": counts["other_failure"] / stage_args.episodes,
         "mean_steps": sum(lengths) / len(lengths),
         "mean_terminal_distance": sum(terminal_distances) / len(terminal_distances),
+        "mean_initial_goal_distance": sum(initial_goal_distances) / len(initial_goal_distances),
+        "mean_initial_abs_bearing_deg": sum(abs(value) for value in initial_goal_bearings) / len(initial_goal_bearings) * 180.0 / 3.141592653589793,
+        "failed_initial_goal_distances": [
+            round(distance, 4) for distance, success in zip(initial_goal_distances, success_flags) if not success
+        ],
+        "failed_initial_abs_bearings_deg": [
+            round(abs(bearing) * 180.0 / 3.141592653589793, 3)
+            for bearing, success in zip(initial_goal_bearings, success_flags) if not success
+        ],
+        "failed_mean_command_alignment": [round(value, 4) for value in failed_alignment],
+        "failed_mean_forward_command": [round(value, 4) for value in failed_forward_command],
+        "failed_mean_abs_yaw_command": [round(value, 4) for value in failed_abs_yaw_command],
     }
     print("SUMMARY " + json.dumps(summary, sort_keys=True), flush=True)
     if stage_args.output:

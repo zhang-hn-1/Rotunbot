@@ -6,6 +6,7 @@ import torch
 from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocity
 from legged_gym.navigation.direct_velocity import (
     goal_turn_alignment,
+    goal_speed_alignment,
     normalized_action_to_velocity_command,
     velocity_command_rate_penalty,
 )
@@ -55,7 +56,7 @@ class DirectVelocityPolicyTests(unittest.TestCase):
             active,
             {
                 "termination", "goal_progress", "goal_reach", "collision",
-                "action_rate", "goal_turn_alignment",
+                "action_rate", "goal_turn_alignment", "goal_speed_alignment",
             },
         )
 
@@ -126,6 +127,15 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         away = -toward
         self.assertTrue(torch.all(goal_turn_alignment(goal, toward) > 0.0))
         self.assertTrue(torch.all(goal_turn_alignment(goal, away) < 0.0))
+
+    def test_goal_speed_alignment_requests_braking_inside_stopping_band(self):
+        goal = torch.tensor([[2.0, 0.0], [0.5, 0.0]])
+        fast = torch.tensor([[0.25, 0.0], [0.25, 0.0]])
+        slow = torch.tensor([[0.25, 0.0], [0.08, 0.0]])
+        fast_reward = goal_speed_alignment(goal, fast)
+        slow_reward = goal_speed_alignment(goal, slow)
+        self.assertAlmostEqual(float(fast_reward[0]), 0.0, places=6)
+        self.assertGreater(float(slow_reward[1]), float(fast_reward[1]))
 
 
 if __name__ == "__main__":
