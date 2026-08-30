@@ -107,3 +107,18 @@ def goal_speed_alignment(
     infeasible_forward &= torch.abs(bearing) >= 0.05
     desired_speed[infeasible_forward] = -desired_speed[infeasible_forward].abs()
     return -torch.abs(command[:, 0] - desired_speed) / float(maximum_forward_speed)
+
+
+def goal_kinematic_recovery(goal_xy_robot, command, minimum_turn_radius=2.0):
+    """Reward reverse motion when forward curvature cannot converge to goal."""
+    if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
+        raise ValueError("goal_xy_robot must have shape [batch, 2]")
+    if command.ndim != 2 or command.shape != goal_xy_robot.shape:
+        raise ValueError("command must have the same shape [batch, 2] as goal_xy_robot")
+    distance = torch.linalg.vector_norm(goal_xy_robot, dim=1)
+    bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
+    infeasible_forward = distance < float(minimum_turn_radius) * torch.sin(
+        torch.abs(bearing)
+    )
+    infeasible_forward &= torch.abs(bearing) >= 0.05
+    return infeasible_forward.float() * -torch.tanh(command[:, 0] / 0.05)

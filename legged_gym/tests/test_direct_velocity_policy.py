@@ -7,6 +7,7 @@ from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocit
 from legged_gym.navigation.direct_velocity import (
     goal_turn_alignment,
     goal_speed_alignment,
+    goal_kinematic_recovery,
     normalized_action_to_velocity_command,
     velocity_command_rate_penalty,
 )
@@ -57,6 +58,7 @@ class DirectVelocityPolicyTests(unittest.TestCase):
             {
                 "termination", "goal_progress", "goal_reach", "collision",
                 "action_rate", "goal_turn_alignment", "goal_speed_alignment",
+                "goal_kinematic_recovery",
             },
         )
 
@@ -156,6 +158,16 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertGreater(float(slow_reward[1]), float(fast_reward[1]))
         self.assertGreater(float(slow_reward[2]), float(fast_reward[2]))
         self.assertGreater(float(slow_reward[3]), float(fast_reward[3]))
+
+    def test_goal_kinematic_recovery_prefers_reverse_in_nonconvergent_geometry(self):
+        goal = torch.tensor([[0.5, 0.5], [2.0, 0.0]])
+        reverse = torch.tensor([[-0.20, 0.0], [-0.20, 0.0]])
+        forward = -reverse
+        self.assertGreater(
+            float(goal_kinematic_recovery(goal, reverse)[0]),
+            float(goal_kinematic_recovery(goal, forward)[0]),
+        )
+        self.assertAlmostEqual(float(goal_kinematic_recovery(goal, reverse)[1]), 0.0, places=6)
 
 
 if __name__ == "__main__":
