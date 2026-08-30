@@ -137,6 +137,12 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             (len(env_ids), 1),
             device=self.device,
         ).squeeze(1)
+        bearings = torch_rand_float(
+            self.cfg.commands.goal_bearing[0],
+            self.cfg.commands.goal_bearing[1],
+            (len(env_ids), 1),
+            device=self.device,
+        ).squeeze(1)
         replay_specs = getattr(self.cfg.commands, "replay_goal_specs", ())
         if replay_specs:
             selector = torch.rand(len(env_ids), device=self.device)
@@ -153,12 +159,6 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
                         bearing_range[0], bearing_range[1], (count, 1), device=self.device
                     ).squeeze(1)
                 lower = upper
-        bearings = torch_rand_float(
-            self.cfg.commands.goal_bearing[0],
-            self.cfg.commands.goal_bearing[1],
-            (len(env_ids), 1),
-            device=self.device,
-        ).squeeze(1)
         yaw = self._yaw_from_quaternion()[env_ids]
         world_bearing = yaw + bearings
         self.global_goal_xy_world[env_ids, 0] = self.root_states[env_ids, 0] + distances * torch.cos(world_bearing)
