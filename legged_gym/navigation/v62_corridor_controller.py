@@ -36,6 +36,8 @@ class PoseBasedCorridorController:
         turn_yaw_rate=0.05,
         deceleration_distance=0.60,
         turn_exit_distance=0.50,
+        turn_exit_settle_ticks=40,
+        turn_start_anticipation_distance=0.75,
     ):
         self.maximum_forward_speed = float(maximum_forward_speed)
         self.maximum_yaw_rate = float(maximum_yaw_rate)
@@ -46,6 +48,8 @@ class PoseBasedCorridorController:
         self.turn_yaw_rate = float(turn_yaw_rate)
         self.deceleration_distance = float(deceleration_distance)
         self.turn_exit_distance = float(turn_exit_distance)
+        self.turn_exit_settle_ticks = int(turn_exit_settle_ticks)
+        self.turn_start_anticipation_distance = float(turn_start_anticipation_distance)
         self.reset()
 
     def reset(self):
@@ -53,6 +57,7 @@ class PoseBasedCorridorController:
         self.turn_index = 0
         self.transition_activation_count = 0
         self._scenario_key = None
+        self.turn_exit_settle_ticks_remaining = 0
 
     def _set_state(self, state):
         if state != self.state:
@@ -75,6 +80,13 @@ class PoseBasedCorridorController:
         delta = centerline[right] - centerline[left]
         return math.atan2(float(delta[1]), float(delta[0]))
 
+    def _outgoing_heading(self, centerline, index):
+        if index < len(centerline) - 1:
+            delta = centerline[index + 1] - centerline[index]
+            if np.linalg.norm(delta) > 1.0e-9:
+                return math.atan2(float(delta[1]), float(delta[0]))
+        return self._heading_at(centerline, index)
+
     def _project(self, command):
         tensor = torch.as_tensor(np.asarray(command, dtype=np.float32)).reshape(1, 2)
         projected = project_velocity_commands(
@@ -91,6 +103,10 @@ class PoseBasedCorridorController:
         if position.shape != (2,):
             raise ValueError("position_xy must have shape (2,)")
         self._scenario_changed(scenario)
+        if self.turn_exit_settle_ticks_remaining > 0:
+            self.turn_exit_settle_ticks_remaining -= 1
+            self._set_state(CorridorControllerState.DECELERATION)
+            return self._project((0.0, 0.0))
         nearest = self._nearest_index(position, scenario.centerline)
 
         if self.turn_index >= len(scenario.turns):
@@ -102,24 +118,31 @@ class PoseBasedCorridorController:
         turn_end = scenario.centerline[turn.end_index]
         distance_to_start = float(np.linalg.norm(position - turn_start))
         distance_to_end = float(np.linalg.norm(position - turn_end))
-        desired_heading = self._heading_at(scenario.centerline, nearest)
-        heading_error = _wrap_angle(desired_heading - yaw)
 
-        if nearest >= turn.end_index or distance_to_end <= self.turn_exit_distance:
+        outgoing_heading = self._outgoing_heading(scenario.centerline, turn.end_index)
+        outgoing_heading_error = abs(_wrap_angle(outgoing_heading - yaw))
+        aligned_for_exit = outgoing_heading_error <= 0.20
+        if (
+            (nearest >= turn.end_index or distance_to_end <= self.turn_exit_distance)
+            and aligned_for_exit
+        ):
             self.turn_index += 1
-            self._set_state(CorridorControllerState.ACCELERATE)
-            return self._project((self.straight_speed, 0.0))
+            self.turn_exit_settle_ticks_remaining = self.turn_exit_settle_ticks
+            self._set_state(CorridorControllerState.DECELERATION)
+            return self._project((0.0, 0.0))
 
-        if nearest < turn.start_index and distance_to_start > self.deceleration_distance:
+        if (
+            nearest < turn.start_index
+            and distance_to_start > self.turn_start_anticipation_distance
+        ):
             self._set_state(CorridorControllerState.STRAIGHT)
             return self._project((self.straight_speed, 0.0))
 
         if nearest < turn.start_index:
-            self._set_state(CorridorControllerState.DECELERATION)
-            return self._project((min(self.turn_speed, 0.10), 0.0))
+            self._set_state(CorridorControllerState.TURN)
+            direction = float(turn.direction)
+            return self._project((self.turn_speed, direction * self.turn_yaw_rate))
 
         self._set_state(CorridorControllerState.TURN)
         direction = float(turn.direction)
-        if abs(heading_error) > 0.08:
-            direction = math.copysign(1.0, heading_error)
         return self._project((self.turn_speed, direction * self.turn_yaw_rate))

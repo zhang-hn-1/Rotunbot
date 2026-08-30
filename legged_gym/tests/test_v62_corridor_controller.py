@@ -5,6 +5,7 @@ import isaacgym  # noqa: F401 - import before torch-backed navigation modules
 import numpy as np
 
 from legged_gym.navigation.corridor_scenarios import (
+    make_double_turn_scenario,
     make_l_scenario,
     make_straight_scenario,
 )
@@ -72,18 +73,55 @@ class V62CorridorControllerTests(unittest.TestCase):
         self.assertGreater(turn[1], 0.0)
         self.assertTrue(self.controller.transition_activation_count > 0)
 
+    def test_l_corridor_starts_yaw_ramp_before_corner(self):
+        scenario = make_l_scenario(2.0, 3.0, 2.0, seed=2)
+        command = self.controller.update(np.array([2.4, 0.0]), 0.0, scenario)
+
+        self.assertEqual(self.controller.state, CorridorControllerState.TURN)
+        self.assertGreater(command[1], 0.0)
+
+    def test_turn_direction_does_not_flip_from_noisy_heading_error(self):
+        scenario = make_l_scenario(2.0, 3.0, 2.0, seed=2)
+        command = self.controller.update(np.array([3.0, 0.0]), 0.20, scenario)
+
+        self.assertGreater(command[1], 0.0)
+
     def test_turn_exit_restores_forward_motion_from_pose(self):
         scenario = make_l_scenario(2.0, 3.0, 2.0, seed=3)
         self.controller.update(np.array([3.0, 0.0]), 0.0, scenario)
         turn_end = scenario.centerline[scenario.turns[0].end_index]
         command = self.controller.update(turn_end, math.pi / 2.0, scenario)
 
-        self.assertIn(
-            self.controller.state,
-            (CorridorControllerState.ACCELERATE, CorridorControllerState.STRAIGHT),
-        )
-        self.assertGreater(command[0], 0.0)
+        self.assertEqual(self.controller.state, CorridorControllerState.DECELERATION)
+        self.assertAlmostEqual(command[0], 0.0)
         self.assertAlmostEqual(command[1], 0.0)
+
+        for _ in range(self.controller.turn_exit_settle_ticks + 1):
+            command = self.controller.update(turn_end, math.pi / 2.0, scenario)
+        self.assertEqual(self.controller.state, CorridorControllerState.STRAIGHT)
+        self.assertGreater(command[0], 0.0)
+
+    def test_turn_does_not_exit_until_heading_is_aligned(self):
+        scenario = make_l_scenario(2.0, 3.0, 2.0, seed=3)
+        self.controller.update(np.array([3.0, 0.0]), 0.0, scenario)
+        turn_end = scenario.centerline[scenario.turns[0].end_index]
+        command = self.controller.update(turn_end, math.pi / 2.0 - 0.22, scenario)
+
+        self.assertEqual(self.controller.state, CorridorControllerState.TURN)
+        self.assertGreater(command[1], 0.0)
+
+    def test_double_turn_has_two_distinct_turn_commands(self):
+        scenario = make_double_turn_scenario(2.0, 2.0, "right_left", seed=3)
+        first_end = scenario.centerline[scenario.turns[0].end_index]
+        second_start = scenario.centerline[scenario.turns[1].start_index]
+        first = self.controller.update(first_end, -math.pi / 2.0, scenario)
+        self.assertEqual(self.controller.state, CorridorControllerState.DECELERATION)
+        self.assertAlmostEqual(first[1], 0.0)
+        for _ in range(self.controller.turn_exit_settle_ticks + 1):
+            self.controller.update(first_end, -math.pi / 2.0, scenario)
+        second = self.controller.update(second_start, -math.pi / 2.0, scenario)
+        self.assertEqual(self.controller.state, CorridorControllerState.TURN)
+        self.assertGreater(second[1], 0.0)
 
     def test_every_command_is_inside_configured_feasible_domain(self):
         scenario = make_l_scenario(2.0, 3.0, 2.0, seed=4)
