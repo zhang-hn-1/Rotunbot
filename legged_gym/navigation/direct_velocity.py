@@ -99,9 +99,7 @@ def goal_turn_alignment(goal_xy_robot, command, bearing_threshold=0.05):
         raise ValueError("command must have the same shape [batch, 2] as goal_xy_robot")
     bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
     turning = torch.abs(bearing) >= float(bearing_threshold)
-    meaningful_reverse = command[:, 0] < -0.01
-    drive_direction = torch.where(meaningful_reverse, -1.0, 1.0)
-    signed_command = torch.sign(bearing) * command[:, 1] * drive_direction
+    signed_command = torch.sign(bearing) * command[:, 1]
     # Keep the signal unsaturated through the V62 yaw-command range so a
     # large-bearing goal still prefers stronger feasible turning authority.
     return turning.float() * torch.tanh(signed_command / 0.10)

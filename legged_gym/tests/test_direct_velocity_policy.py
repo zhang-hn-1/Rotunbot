@@ -172,7 +172,7 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertTrue(torch.all(goal_turn_alignment(goal, toward) > 0.0))
         self.assertTrue(torch.all(goal_turn_alignment(goal, away) < 0.0))
 
-    def test_goal_turn_alignment_reverses_yaw_sign_only_for_meaningful_reverse(self):
+    def test_goal_turn_alignment_keeps_goal_side_yaw_sign_for_reverse_motion(self):
         goals = torch.tensor(
             [
                 [1.0, 0.5],
@@ -187,10 +187,10 @@ class DirectVelocityPolicyTests(unittest.TestCase):
             [
                 [0.20, 0.05],
                 [0.20, -0.05],
-                [-0.20, -0.05],
                 [-0.20, 0.05],
-                [-0.005, 0.05],
-                [-0.005, -0.05],
+                [-0.20, -0.05],
+                [-0.01, 0.05],
+                [-0.0101, -0.05],
             ]
         )
 
