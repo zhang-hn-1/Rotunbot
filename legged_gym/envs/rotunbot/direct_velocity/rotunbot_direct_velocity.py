@@ -186,6 +186,23 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
                 self.cfg.commands.max_yaw_rate,
                 self.cfg.commands.minimum_turn_radius,
                 self.cfg.commands.feasible_envelope_fraction,
+                preserve_curvature_when_saturating=bool(
+                    getattr(
+                        self.cfg.commands,
+                        "preserve_curvature_when_saturating",
+                        False,
+                    )
+                ),
+                curvature_fraction_breakpoints=getattr(
+                    self.cfg.commands,
+                    "stable_curvature_fraction_breakpoints",
+                    None,
+                ),
+                curvature_max_speed_values=getattr(
+                    self.cfg.commands,
+                    "stable_curvature_max_speed_values",
+                    None,
+                ),
             )
             self.last_velocity_command.copy_(self.previous_velocity_command)
             self.previous_velocity_command.copy_(command)

@@ -11,6 +11,9 @@ def normalized_action_to_velocity_command(
     maximum_yaw_rate,
     minimum_turn_radius,
     envelope_fraction=1.0,
+    preserve_curvature_when_saturating=False,
+    curvature_fraction_breakpoints=None,
+    curvature_max_speed_values=None,
 ):
     """Map SRU velocity-head outputs into the V62 command domain."""
     if actions.ndim != 2 or actions.shape[1] != 2:
@@ -25,6 +28,9 @@ def normalized_action_to_velocity_command(
         maximum_yaw_rate,
         minimum_turn_radius,
         envelope_fraction,
+        preserve_curvature_when_saturating=preserve_curvature_when_saturating,
+        curvature_fraction_breakpoints=curvature_fraction_breakpoints,
+        curvature_max_speed_values=curvature_max_speed_values,
     )
 
 

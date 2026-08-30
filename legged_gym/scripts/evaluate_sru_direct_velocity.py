@@ -94,6 +94,23 @@ def evaluate(argv=None):
                 env.cfg.commands.max_yaw_rate,
                 env.cfg.commands.minimum_turn_radius,
                 env.cfg.commands.feasible_envelope_fraction,
+                preserve_curvature_when_saturating=bool(
+                    getattr(
+                        env.cfg.commands,
+                        "preserve_curvature_when_saturating",
+                        False,
+                    )
+                ),
+                curvature_fraction_breakpoints=getattr(
+                    env.cfg.commands,
+                    "stable_curvature_fraction_breakpoints",
+                    None,
+                ),
+                curvature_max_speed_values=getattr(
+                    env.cfg.commands,
+                    "stable_curvature_max_speed_values",
+                    None,
+                ),
             )
             goal_xy = env._goal_xy_robot()
             goal_bearing = torch.atan2(goal_xy[:, 1], goal_xy[:, 0])

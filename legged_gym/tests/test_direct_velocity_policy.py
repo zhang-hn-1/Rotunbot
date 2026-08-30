@@ -115,6 +115,22 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertTrue(torch.all(command[:, 1].abs() <= 0.10 + 1.0e-6))
         self.assertTrue(torch.all(command[:, 1].abs() <= command[:, 0].abs() / 2.0 + 1.0e-6))
 
+    def test_velocity_head_can_apply_the_complete_v62_curvature_projection(self):
+        action = torch.tensor([[1.0, 1.0]])
+        command = normalized_action_to_velocity_command(
+            action,
+            maximum_forward_speed=0.25,
+            maximum_yaw_rate=0.10,
+            minimum_turn_radius=2.0,
+            envelope_fraction=1.0,
+            preserve_curvature_when_saturating=True,
+            curvature_fraction_breakpoints=(0.0, 0.25, 0.50, 1.0),
+            curvature_max_speed_values=(0.25, 0.20, 0.15, 0.10),
+        )
+        self.assertTrue(
+            torch.allclose(command, torch.tensor([[0.12, 0.048]]), atol=1.0e-5)
+        )
+
     def test_action_rate_uses_previous_physical_velocity_command(self):
         current = torch.tensor([[0.10, 0.02], [0.0, -0.01]])
         previous = torch.tensor([[0.04, 0.01], [0.0, -0.01]])
