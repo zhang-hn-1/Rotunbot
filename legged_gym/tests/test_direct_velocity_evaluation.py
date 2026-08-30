@@ -9,6 +9,10 @@ import isaacgym  # noqa: F401 - Isaac Gym must be imported before torch
 import torch
 
 from legged_gym.envs.rotunbot.vel_tracking.rotunbot_vel import project_velocity_commands
+from legged_gym.envs.rotunbot.vel_tracking.feasible_transition_manager import (
+    FeasibleVelocityTransitionManager,
+    TransitionState,
+)
 from legged_gym.navigation.direct_velocity import normalized_action_to_velocity_command
 import legged_gym.navigation.direct_velocity_evaluation as direct_velocity_evaluation
 from legged_gym.navigation.direct_velocity_evaluation import (
@@ -216,6 +220,132 @@ class DirectVelocityEvaluationTests(unittest.TestCase):
             (1, 1, 1),
         )
         self.assertEqual((row["projection_active"], row["governor_active"]), (1, 0))
+
+    def test_negative_action_crosses_real_v62_transition_manager_boundary(self):
+        manager = FeasibleVelocityTransitionManager(
+            num_envs=1,
+            device="cpu",
+            dtype=torch.float32,
+            dt=0.02,
+            maximum_linear_acceleration=0.10,
+            maximum_yaw_acceleration=0.007,
+            maximum_forward_speed=0.25,
+            maximum_yaw_rate=0.10,
+            minimum_turn_radius=2.0,
+            envelope_fraction=1.0,
+            stationary_threshold=0.0,
+            reversal_detection_v=0.05,
+            reversal_detection_w=0.015,
+            reversal_minimum_request_jump_v=0.10,
+            reversal_minimum_request_jump_w=0.03,
+            settle_v_threshold=0.01,
+            settle_w_threshold=0.005,
+            settle_time=0.10,
+            curvature_fraction_breakpoints=(0.0, 0.25, 0.50, 1.0),
+            curvature_max_speed_values=(0.25, 0.20, 0.15, 0.10),
+        )
+        current = torch.tensor([[0.14, 0.035]])
+        manager.update_target(
+            current, current, current[:, 0], current[:, 1]
+        )
+        diagnostics = CommandDiagnostics(
+            policy_dt=0.02,
+            maximum_linear_acceleration=0.10,
+            maximum_yaw_acceleration=0.007,
+            projection_jump_threshold=(0.20, 0.20),
+        )
+        diagnostics.record(
+            current[0].tolist(),
+            current[0].tolist(),
+            current[0].tolist(),
+            current[0].tolist(),
+            transition_active=False,
+        )
+
+        action = torch.tensor([[-0.2, 1.0]])
+        raw = action * torch.tensor([[0.25, 0.10]])
+        requested = normalized_action_to_velocity_command(
+            action,
+            maximum_forward_speed=0.25,
+            maximum_yaw_rate=0.10,
+            minimum_turn_radius=2.0,
+            envelope_fraction=1.0,
+        )
+        manager.update_target(
+            requested, current, current[:, 0], current[:, 1]
+        )
+        applied, state, active = manager.advance(
+            current, current[:, 0], current[:, 1]
+        )
+        transition_row = diagnostics.record(
+            raw[0].tolist(),
+            requested[0].tolist(),
+            applied[0].tolist(),
+            project_velocity_commands(
+                applied,
+                maximum_forward_speed=0.25,
+                maximum_yaw_rate=0.10,
+                minimum_turn_radius=2.0,
+                envelope_fraction=1.0,
+            )[0].tolist(),
+            transition_active=active[0],
+        )
+
+        self.assertTrue(torch.allclose(raw, torch.tensor([[-0.05, 0.10]])))
+        self.assertTrue(torch.allclose(requested, torch.tensor([[-0.05, 0.025]])))
+        self.assertEqual(int(state.item()), TransitionState.BRAKE_TO_ORIGIN)
+        self.assertTrue(bool(active.item()))
+        self.assertGreater(float(applied[0, 0]), 0.0)
+        self.assertLess(float(applied[0, 0]), float(current[0, 0]))
+        self.assertEqual(
+            (
+                transition_row["raw_reverse_command"],
+                transition_row["requested_reverse_command"],
+                transition_row["applied_reverse_command"],
+            ),
+            (1, 1, 0),
+        )
+        self.assertEqual(transition_row["transition_activation_event"], 1)
+        self.assertEqual(
+            (
+                transition_row["transition_active"],
+                transition_row["projection_active"],
+                transition_row["governor_active"],
+            ),
+            (1, 1, 1),
+        )
+
+        application_row = None
+        current = applied
+        for _ in range(400):
+            current, state, active = manager.advance(
+                current, current[:, 0], current[:, 1]
+            )
+            if float(current[0, 0]) < -1.0e-6:
+                application_row = diagnostics.record(
+                    raw[0].tolist(),
+                    requested[0].tolist(),
+                    current[0].tolist(),
+                    project_velocity_commands(
+                        current,
+                        maximum_forward_speed=0.25,
+                        maximum_yaw_rate=0.10,
+                        minimum_turn_radius=2.0,
+                        envelope_fraction=1.0,
+                    )[0].tolist(),
+                    transition_active=active[0],
+                )
+                break
+
+        self.assertIsNotNone(application_row)
+        self.assertEqual(application_row["applied_reverse_command"], 1)
+        self.assertEqual(application_row["transition_active"], 1)
+        self.assertTrue(torch.isfinite(current).all())
+        self.assertLessEqual(float(current[:, 0].abs().max()), 0.25)
+        self.assertLessEqual(float(current[:, 1].abs().max()), 0.10)
+        summary = diagnostics.summary()
+        self.assertEqual(summary["transition_activation_count"], 1)
+        self.assertEqual(summary["reverse_transition_activation_count"], 1)
 
     def test_checkpoint_identity_hashes_evaluated_checkpoint_and_declared_parent(self):
         with tempfile.TemporaryDirectory() as directory:

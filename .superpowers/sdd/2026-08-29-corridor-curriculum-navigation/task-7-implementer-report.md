@@ -214,3 +214,42 @@ exit 0
 ### Remaining evidence limitation
 
 The old 77/100 diagnostic's `hidden_projection_jump_count=0` was produced by the pre-fix aliased definition. It has not been recomputed with the independent threshold-based metric because this round explicitly prohibited GPU evaluation/training. No replacement rollout metric is claimed.
+
+## Fix Round 2 — real V62 transition-manager boundary
+
+### Scope and result
+
+Re-review finding 3 is covered by a new real integration-boundary test, `test_negative_action_crosses_real_v62_transition_manager_boundary`. Production code is unchanged. No GPU process, training, simulator rollout, checkpoint evaluation, or frozen V62 edit was performed.
+
+The test uses the actual `FeasibleVelocityTransitionManager` with the frozen V62 transition parameters. It first establishes a feasible positive state `(v, w) = (0.14, 0.035)`, then sends normalized action `[-0.2, 1.0]` through `normalized_action_to_velocity_command`. This produces:
+
+- raw command `[-0.05, 0.10]`;
+- requested feasible command `[-0.05, 0.025]`;
+- first manager-applied command still positive and smaller than `0.14 m/s`, while the manager is in `BRAKE_TO_ORIGIN` with `transition_active=True`;
+- eventual finite, bounded negative applied command after the real brake, settle, and accelerate phases.
+
+`CommandDiagnostics` observes the actual manager output. On transition activation it reports raw reverse `1`, requested reverse `1`, applied reverse `0`, projection active `1`, governor active `1`, transition active `1`, and transition activation event `1`. Once the manager begins applying reverse, applied reverse becomes `1`. The aggregate reports exactly one transition activation and one reverse-transition activation. The test would fail if the manager were bypassed, if the transition did not activate, if requested and applied commands were conflated, or if reverse never reached the applied command.
+
+This characterization passed on its first run, demonstrating that the reviewer finding was a missing integration test rather than a missing production behavior:
+
+```text
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_evaluation.DirectVelocityEvaluationTests.test_negative_action_crosses_real_v62_transition_manager_boundary
+Ran 1 test in 0.029s
+OK
+```
+
+Focused evaluator suite:
+
+```text
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_evaluation
+Ran 10 tests in 0.217s
+OK
+```
+
+Combined relevant direct-velocity/V62 suite:
+
+```text
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_policy legged_gym.tests.test_direct_velocity_evaluation legged_gym.tests.test_corridor_artifacts legged_gym.tests.test_rotunbot_velocity_tracking legged_gym.tests.test_feasible_transition_manager legged_gym.tests.test_vel_sru50_structured_random
+Ran 126 tests in 0.518s
+OK
+```
