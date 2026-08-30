@@ -54,7 +54,7 @@ def main(argv=None):
     )
     if runner.log_dir is not None and stage_args.parent_checkpoint:
         checkpoint = os.path.join(
-            runner.log_dir, "model_{}.pt" % runner.current_learning_iteration
+            runner.log_dir, "model_{}.pt".format(runner.current_learning_iteration)
         )
         metadata = CheckpointMetadata.from_path(
             checkpoint,
