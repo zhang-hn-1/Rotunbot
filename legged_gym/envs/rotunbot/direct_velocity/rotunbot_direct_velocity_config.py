@@ -49,16 +49,16 @@ class RotunbotDirectVelocityCfg(RotunbotVelSRU50SafeYawResidualV62TransitionCfg)
         position = (0.42, 0.0, 0.0)
         rotation = (0.0, 0.0, 0.0, 1.0)
         body_name = "base_link"
-        add_noise = True
+        add_noise = False
         noise_std = 0.025
         dropout_probability = 0.015
         quantization = 0.01
 
     class commands(RotunbotVelSRU50SafeYawResidualV62TransitionCfg.commands):
         resample_commands = False
-        random_start_yaw = True
-        goal_distance = (2.0, 6.0)
-        goal_bearing = (-3.141592653589793, 3.141592653589793)
+        random_start_yaw = False
+        goal_distance = (0.5, 1.0)
+        goal_bearing = (-0.17453292519943295, 0.17453292519943295)
         goal_radius = 0.35
         maximum_goal_distance = 8.0
         # Policy actions are sampled at 5 Hz and held for ten 50 Hz updates.

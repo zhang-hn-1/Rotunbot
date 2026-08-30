@@ -1,25 +1,27 @@
 """Curriculum presets for direct global-goal velocity navigation."""
 
+import math
+
 
 def configure_direct_velocity_stage(env_cfg, stage):
     """Apply an explicit S1/S2/S2B training preset to a direct-velocity cfg."""
     stage = str(stage).upper()
     presets = {
         "S1": {
-            "goal_distance": (1.5, 3.0),
-            "goal_bearing": (-0.60, 0.60),
+            "goal_distance": (0.5, 1.0),
+            "goal_bearing": (-math.radians(10.0), math.radians(10.0)),
             "camera_noise": False,
             "random_start_yaw": False,
         },
         "S2": {
-            "goal_distance": (2.0, 5.0),
-            "goal_bearing": (-1.20, 1.20),
+            "goal_distance": (0.5, 1.5),
+            "goal_bearing": (-math.radians(30.0), math.radians(30.0)),
             "camera_noise": False,
             "random_start_yaw": True,
         },
         "S2B": {
-            "goal_distance": (2.0, 6.0),
-            "goal_bearing": (-3.141592653589793, 3.141592653589793),
+            "goal_distance": (0.5, 2.0),
+            "goal_bearing": (-math.radians(45.0), math.radians(45.0)),
             "camera_noise": True,
             "random_start_yaw": True,
         },
