@@ -261,14 +261,13 @@ OK
 Formal S2B evidence showed `model_900.pt` at 80/100 and `model_1100.pt`
 at 65/100. Their traces contained raw and eventually applied reverse
 commands, but failed trajectories drove away from the target. Inspection of
-`goal_turn_alignment` confirmed the causal mismatch: it always scored
-`sign(bearing) * w_cmd`, which is the lateral-convergence yaw sign only while
-driving forward. Reverse kinematics require the opposite yaw sign.
+`goal_turn_alignment` led to an initial hypothesis that its
+`sign(bearing) * w_cmd` term was wrong for reverse motion. The signed-unicycle
+relation `beta_dot = -w - (v/r)sin(beta)` disproved that hypothesis: the yaw
+term has the same convergence sign for either signed linear velocity.
 
-The correction is confined to `goal_turn_alignment`. Commands with
-`v_cmd < -0.01 m/s` now multiply the yaw alignment by `-1`; forward commands
-and the near-zero band (`v_cmd >= -0.01 m/s`) retain the existing sign. The
-0.01 m/s boundary matches the existing V62 near-zero/settled convention. No
+The correction is confined to `goal_turn_alignment`: it keeps
+`sign(bearing) * w_cmd` for forward, reverse, and near-zero commands. No
 reward scale, recovery latch, action mapping, evaluator, Transition Manager,
 governor, projector, frozen V62 implementation, or checkpoint was changed.
 
@@ -276,21 +275,21 @@ governor, projector, frozen V62 implementation, or checkpoint was changed.
 
 The regression uses positive and negative goal bearings with six literal
 `(v_cmd, w_cmd)` fixtures: two forward commands steering toward the goal, two
-meaningful reverse commands steering with the kinematically opposite yaw sign,
-and two `-0.005 m/s` near-zero commands preserving the forward convention. For
+meaningful reverse commands steering with the same goal-side yaw sign, and two
+near-threshold reverse commands (`-0.01` and `-0.0101 m/s`). For
 every fixture, `|w_cmd| = 0.05 rad/s`, so the independently derived expected
 reward is the literal `tanh(0.05 / 0.10) = 0.462117`.
 
 Before the production change, the focused test failed as intended because the
-two reverse fixtures received negative alignment:
+pre-fix reverse fixtures expected the incorrect sign convention:
 
 ```text
-PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_policy.DirectVelocityPolicyTests.test_goal_turn_alignment_reverses_yaw_sign_only_for_meaningful_reverse
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_policy.DirectVelocityPolicyTests.test_goal_turn_alignment_keeps_goal_side_yaw_sign_for_reverse_motion
 Ran 1 test in 0.003s
 FAILED (failures=1)
 ```
 
-After the two-line sign selection was added, the same focused test passed:
+After the sign selection was removed, the same focused test passed:
 
 ```text
 Ran 1 test in 0.022s
