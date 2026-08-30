@@ -5,7 +5,10 @@ import math
 import torch
 from isaacgym.torch_utils import torch_rand_float
 
-from legged_gym.navigation.direct_velocity import normalized_action_to_velocity_command
+from legged_gym.navigation.direct_velocity import (
+    normalized_action_to_velocity_command,
+    velocity_command_rate_penalty,
+)
 from legged_gym.navigation.direct_velocity_observation import (
     build_direct_velocity_observation,
 )
@@ -38,6 +41,10 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.previous_velocity_command = torch.zeros(
             self.num_envs, 2, device=self.device
         )
+        self.last_velocity_command = torch.zeros(
+            self.num_envs, 2, device=self.device
+        )
+        self.goal_dist = torch.zeros(self.num_envs, device=self.device)
         self.depth_observation = torch.ones(
             self.num_envs, self.cfg.env.depth_height, self.cfg.env.depth_width,
             device=self.device,
@@ -116,6 +123,9 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.base_euler_tensor[:, 2] = self._yaw_from_quaternion()
         self.obstacle_clearance = self._wall_distance()
         self.step_collision_buf[:] = self.obstacle_clearance <= float(self.cfg.maze.robot_collision_radius)
+        self.goal_dist[:] = torch.linalg.vector_norm(
+            self.global_goal_xy_world - self.root_states[:, :2], dim=1
+        )
 
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
@@ -137,6 +147,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.global_goal_xy_world[env_ids, 0] = self.root_states[env_ids, 0] + distances * torch.cos(world_bearing)
         self.global_goal_xy_world[env_ids, 1] = self.root_states[env_ids, 1] + distances * torch.sin(world_bearing)
         self.commands[env_ids, :2] = 0.0
+        self.goal_dist[env_ids] = distances
 
     def _compute_torques(self, actions):
         # V62 maps the currently governed command to actuator targets. The
@@ -153,6 +164,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
                 self.cfg.commands.minimum_turn_radius,
                 self.cfg.commands.feasible_envelope_fraction,
             )
+            self.last_velocity_command.copy_(self.previous_velocity_command)
             self.previous_velocity_command.copy_(command)
             self.set_command_targets(command)
         from ..vel_tracking.rotunbot_vel import RotunbotVel
@@ -182,6 +194,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         goal_distance = torch.linalg.vector_norm(
             self.global_goal_xy_world - self.root_states[:, :2], dim=1
         )
+        self.goal_dist.copy_(goal_distance)
         self.goal_reached_buf[:] = goal_distance <= float(self.cfg.commands.goal_radius)
         self.time_out_buf[:] = self.episode_length_buf >= self.max_episode_length
         roll = torch.abs(self.base_euler_tensor[:, 0]) > 1.2
@@ -205,13 +218,16 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         return self.step_collision_buf.float()
 
     def _reward_action_rate(self):
-        return torch.sum(torch.square(self.previous_velocity_command - self.last_actions), dim=1)
+        return velocity_command_rate_penalty(
+            self.previous_velocity_command, self.last_velocity_command
+        )
 
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)
         if len(env_ids) == 0:
             return
         self.previous_velocity_command[env_ids] = 0.0
+        self.last_velocity_command[env_ids] = 0.0
         self.previous_goal_distance[env_ids] = torch.linalg.vector_norm(
             self.global_goal_xy_world[env_ids] - self.root_states[env_ids, :2], dim=1
         )

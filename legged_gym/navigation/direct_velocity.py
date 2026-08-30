@@ -26,3 +26,18 @@ def normalized_action_to_velocity_command(
         minimum_turn_radius,
         envelope_fraction,
     )
+
+
+def velocity_command_rate_penalty(command, previous_command):
+    """Return the squared change between two physical velocity commands."""
+    if command.shape != previous_command.shape:
+        raise ValueError(
+            "command and previous_command must have the same shape; "
+            f"received {tuple(command.shape)} and {tuple(previous_command.shape)}"
+        )
+    if command.ndim != 2 or command.shape[1] != 2:
+        raise ValueError(
+            "command tensors must have shape [batch, 2]; "
+            f"received {tuple(command.shape)}"
+        )
+    return torch.sum(torch.square(command - previous_command), dim=1)

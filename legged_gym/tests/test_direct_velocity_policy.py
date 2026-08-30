@@ -4,7 +4,10 @@ import math
 import torch
 
 from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocity
-from legged_gym.navigation.direct_velocity import normalized_action_to_velocity_command
+from legged_gym.navigation.direct_velocity import (
+    normalized_action_to_velocity_command,
+    velocity_command_rate_penalty,
+)
 from legged_gym.navigation.direct_velocity_curriculum import configure_direct_velocity_stage
 from legged_gym.navigation.direct_velocity_observation import (
     build_direct_velocity_observation,
@@ -22,6 +25,19 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertEqual(cfg.commands.goal_bearing, (-math.pi, math.pi))
         self.assertTrue(cfg.camera.add_noise)
         self.assertFalse(cfg.maze.enabled)
+
+    def test_navigation_reward_keeps_only_navigation_terms_active(self):
+        from legged_gym.envs.rotunbot.direct_velocity.rotunbot_direct_velocity_config import (
+            RotunbotDirectVelocityCfg,
+        )
+        from legged_gym.utils.helpers import class_to_dict
+
+        scales = class_to_dict(RotunbotDirectVelocityCfg.rewards.scales)
+        active = {name for name, scale in scales.items() if scale != 0.0}
+        self.assertEqual(
+            active,
+            {"termination", "goal_progress", "goal_reach", "collision", "action_rate"},
+        )
 
     def test_observation_layout_is_goal_and_previous_command_not_local_waypoint(self):
         proprio = torch.zeros(2, 12)
@@ -66,6 +82,12 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertTrue(torch.all(command[:, 0].abs() <= 0.25 + 1.0e-6))
         self.assertTrue(torch.all(command[:, 1].abs() <= 0.10 + 1.0e-6))
         self.assertTrue(torch.all(command[:, 1].abs() <= command[:, 0].abs() / 2.0 + 1.0e-6))
+
+    def test_action_rate_uses_previous_physical_velocity_command(self):
+        current = torch.tensor([[0.10, 0.02], [0.0, -0.01]])
+        previous = torch.tensor([[0.04, 0.01], [0.0, -0.01]])
+        penalty = velocity_command_rate_penalty(current, previous)
+        self.assertTrue(torch.allclose(penalty, torch.tensor([0.0037, 0.0])))
 
 
 if __name__ == "__main__":

@@ -70,10 +70,23 @@ class RotunbotDirectVelocityCfg(RotunbotVelSRU50SafeYawResidualV62TransitionCfg)
     class rewards(RotunbotVelSRU50SafeYawResidualV62TransitionCfg.rewards):
         only_positive_rewards = False
         class scales(RotunbotVelSRU50SafeYawResidualV62TransitionCfg.rewards.scales):
+            # Navigation owns the objective.  V62 tracking rewards are not
+            # active because the SRU command is the target, not a reference
+            # supplied by a separate velocity-tracking policy.
             tracking_lin_vel = 0.0
             tracking_ang_vel = 0.0
+            curvature_tracking = 0.0
             angular_tracking_error = 0.0
+            angular_acceleration_error = 0.0
             yaw_wrong_direction = 0.0
+            yaw_direction = 0.0
+            linear_wrong_direction = 0.0
+            lateral_velocity = 0.0
+            stationary_yaw = 0.0
+            straight_yaw = 0.0
+            action_saturation = 0.0
+            dof_pos_limits = 0.0
+            torques = 0.0
             goal_progress = 3.0
             goal_reach = 20.0
             collision = -20.0
