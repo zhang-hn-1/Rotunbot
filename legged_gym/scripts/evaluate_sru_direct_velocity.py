@@ -22,6 +22,7 @@ def evaluate(argv=None):
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--stage", choices=("S1", "S2", "S2B"), default="S1")
     parser.add_argument("--episodes", type=int, default=20)
+    parser.add_argument("--num_envs", type=int, default=16)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--output", default=None)
     stage_args, remaining = parser.parse_known_args(argv)
@@ -38,7 +39,7 @@ def evaluate(argv=None):
     args.task = "rotunbot_sru_direct_velocity"
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
     configure_direct_velocity_stage(env_cfg, stage_args.stage)
-    env_cfg.env.num_envs = 1
+    env_cfg.env.num_envs = max(1, int(stage_args.num_envs))
     env_cfg.noise.add_noise = False
     env_cfg.camera.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
@@ -61,7 +62,7 @@ def evaluate(argv=None):
     lengths = []
     terminal_distances = []
     completed = 0
-    episode_steps = 0
+    episode_steps = [0 for _ in range(env.num_envs)]
 
     print(
         "Evaluation: stage={} episodes={} checkpoint={}".format(
@@ -73,29 +74,40 @@ def evaluate(argv=None):
         while completed < stage_args.episodes:
             actions = policy(obs)
             obs, _, _, dones, _ = env.step(actions)
-            episode_steps += 1
-            done = _bool(dones[0])
-            forced_timeout = episode_steps >= max_steps
-            if done or forced_timeout:
-                success = _bool(env.success_buf[0]) and not forced_timeout
-                collision = _bool(env.step_collision_buf[0]) and not success
-                timeout = (_bool(env.time_out_buf[0]) or forced_timeout) and not collision
+            for index in range(env.num_envs):
+                episode_steps[index] += 1
+            done_mask = dones.flatten().bool()
+            forced_mask = torch.as_tensor(
+                [steps >= max_steps for steps in episode_steps],
+                device=env.device, dtype=torch.bool,
+            ) & ~done_mask
+            terminal_mask = done_mask | forced_mask
+            manual_reset_ids = []
+            for index in terminal_mask.nonzero(as_tuple=False).flatten().tolist():
+                if completed >= stage_args.episodes:
+                    break
+                forced_timeout = bool(forced_mask[index].item())
+                success = _bool(env.success_buf[index]) and not forced_timeout
+                collision = _bool(env.step_collision_buf[index]) and not success
+                timeout = (_bool(env.time_out_buf[index]) or forced_timeout) and not collision
                 key = "success" if success else "collision" if collision else "timeout" if timeout else "other_failure"
                 counts[key] += 1
-                lengths.append(episode_steps)
-                terminal_distances.append(float(env.terminal_goal_distance[0].item()))
+                lengths.append(episode_steps[index])
+                terminal_distances.append(float(env.terminal_goal_distance[index].item()))
                 completed += 1
                 print(
                     "episode {:>3}: success={} collision={} timeout={} final_dist={:.3f} steps={}".format(
                         completed, int(success), int(collision), int(timeout),
-                        terminal_distances[-1], episode_steps
+                        terminal_distances[-1], episode_steps[index]
                     ),
                     flush=True,
                 )
-                episode_steps = 0
-                if forced_timeout and not done:
-                    env.reset_idx(torch.tensor([0], device=env.device, dtype=torch.long))
-                    obs = env.get_observations()
+                episode_steps[index] = 0
+                if forced_timeout:
+                    manual_reset_ids.append(index)
+            if manual_reset_ids:
+                env.reset_idx(torch.as_tensor(manual_reset_ids, device=env.device, dtype=torch.long))
+                obs = env.get_observations()
 
     summary = {
         "stage": stage_args.stage,
