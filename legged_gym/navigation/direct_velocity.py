@@ -52,4 +52,6 @@ def goal_turn_alignment(goal_xy_robot, command, bearing_threshold=0.05):
     bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
     turning = torch.abs(bearing) >= float(bearing_threshold)
     signed_command = torch.sign(bearing) * command[:, 1]
-    return turning.float() * torch.tanh(signed_command / 0.03)
+    # Keep the signal unsaturated through the V62 yaw-command range so a
+    # large-bearing goal still prefers stronger feasible turning authority.
+    return turning.float() * torch.tanh(signed_command / 0.10)
