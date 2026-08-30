@@ -23,6 +23,7 @@ def main(argv=None):
     parser.add_argument("--resume_path", default=None)
     parser.add_argument("--parent_checkpoint", default=None)
     parser.add_argument("--goal_distance_max", type=float, default=None)
+    parser.add_argument("--goal_distance_min", type=float, default=None)
     parser.add_argument("--goal_bearing_deg", type=float, default=None)
     parser.add_argument("--disable_camera_noise", action="store_true")
     stage_args, remaining = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
@@ -36,11 +37,21 @@ def main(argv=None):
     args.task = "rotunbot_sru_direct_velocity"
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
     configure_direct_velocity_stage(env_cfg, stage_args.stage)
-    if stage_args.goal_distance_max is not None:
-        if stage_args.goal_distance_max <= env_cfg.commands.goal_distance[0]:
-            raise ValueError("--goal_distance_max must exceed the configured minimum")
+    goal_distance_min = (
+        env_cfg.commands.goal_distance[0]
+        if stage_args.goal_distance_min is None
+        else float(stage_args.goal_distance_min)
+    )
+    goal_distance_max = (
+        env_cfg.commands.goal_distance[1]
+        if stage_args.goal_distance_max is None
+        else float(stage_args.goal_distance_max)
+    )
+    if stage_args.goal_distance_min is not None or stage_args.goal_distance_max is not None:
+        if goal_distance_min < 0.0 or goal_distance_max <= goal_distance_min:
+            raise ValueError("goal distance bounds must satisfy 0 <= min < max")
         env_cfg.commands.goal_distance = (
-            env_cfg.commands.goal_distance[0], stage_args.goal_distance_max
+            goal_distance_min, goal_distance_max
         )
     if stage_args.goal_bearing_deg is not None:
         if stage_args.goal_bearing_deg <= 0.0 or stage_args.goal_bearing_deg > 45.0:
