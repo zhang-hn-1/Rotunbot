@@ -77,8 +77,9 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             torch.as_tensor(half_extents, dtype=torch.float32, device=self.device),
         )
 
-    def _yaw_from_quaternion(self):
-        qx, qy, qz, qw = self.base_quat.unbind(dim=1)
+    def _yaw_from_quaternion(self, quaternion=None):
+        quaternion = self.base_quat if quaternion is None else quaternion
+        qx, qy, qz, qw = quaternion.unbind(dim=1)
         return torch.atan2(
             2.0 * (qw * qz + qx * qy),
             1.0 - 2.0 * (qy.square() + qz.square()),
@@ -159,7 +160,10 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
                         bearing_range[0], bearing_range[1], (count, 1), device=self.device
                     ).squeeze(1)
                 lower = upper
-        yaw = self._yaw_from_quaternion()[env_ids]
+        # During reset, ``base_quat`` still contains the previous physics
+        # snapshot.  Read the freshly randomized root quaternion so a random
+        # start yaw cannot desynchronize the sampled world goal.
+        yaw = self._yaw_from_quaternion(self.root_states[env_ids, 3:7])
         world_bearing = yaw + bearings
         self.global_goal_xy_world[env_ids, 0] = self.root_states[env_ids, 0] + distances * torch.cos(world_bearing)
         self.global_goal_xy_world[env_ids, 1] = self.root_states[env_ids, 1] + distances * torch.sin(world_bearing)

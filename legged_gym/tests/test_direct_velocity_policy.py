@@ -55,6 +55,17 @@ class DirectVelocityPolicyTests(unittest.TestCase):
             {"termination", "goal_progress", "goal_reach", "collision", "action_rate"},
         )
 
+    def test_reset_goal_yaw_can_use_fresh_root_quaternion(self):
+        from legged_gym.envs.rotunbot.direct_velocity.rotunbot_direct_velocity import (
+            RotunbotDirectVelocity,
+        )
+
+        env = RotunbotDirectVelocity.__new__(RotunbotDirectVelocity)
+        yaw = math.pi / 3.0
+        quaternion = torch.tensor([[0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)]])
+        measured = env._yaw_from_quaternion(quaternion)
+        self.assertAlmostEqual(float(measured[0]), yaw, places=5)
+
     def test_observation_layout_is_goal_and_previous_command_not_local_waypoint(self):
         proprio = torch.zeros(2, 12)
         goal = torch.tensor([[4.0, 1.0], [2.0, -1.0]])
