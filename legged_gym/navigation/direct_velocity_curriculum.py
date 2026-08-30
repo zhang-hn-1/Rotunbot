@@ -12,18 +12,26 @@ def configure_direct_velocity_stage(env_cfg, stage):
             "goal_bearing": (-math.radians(10.0), math.radians(10.0)),
             "camera_noise": False,
             "random_start_yaw": False,
+            "replay": (),
         },
         "S2": {
             "goal_distance": (0.5, 1.5),
             "goal_bearing": (-math.radians(30.0), math.radians(30.0)),
             "camera_noise": False,
             "random_start_yaw": True,
+            "replay": (
+                (0.30, (0.5, 1.0), (-math.radians(10.0), math.radians(10.0))),
+            ),
         },
         "S2B": {
             "goal_distance": (0.5, 2.0),
             "goal_bearing": (-math.radians(45.0), math.radians(45.0)),
             "camera_noise": True,
             "random_start_yaw": True,
+            "replay": (
+                (0.20, (0.5, 1.5), (-math.radians(30.0), math.radians(30.0))),
+                (0.10, (0.5, 1.0), (-math.radians(10.0), math.radians(10.0))),
+            ),
         },
     }
     if stage not in presets:
@@ -33,6 +41,7 @@ def configure_direct_velocity_stage(env_cfg, stage):
     env_cfg.commands.goal_bearing = preset["goal_bearing"]
     env_cfg.commands.random_start_yaw = preset["random_start_yaw"]
     env_cfg.camera.add_noise = preset["camera_noise"]
+    env_cfg.commands.replay_goal_specs = preset["replay"]
     env_cfg.maze.enabled = False
     env_cfg.maze.scene_mode = "none"
     return env_cfg

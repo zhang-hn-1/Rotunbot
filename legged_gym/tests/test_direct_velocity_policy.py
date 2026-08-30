@@ -24,6 +24,9 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertEqual(cfg.commands.goal_distance, (0.5, 2.0))
         self.assertAlmostEqual(cfg.commands.goal_bearing[0], -math.radians(45.0))
         self.assertAlmostEqual(cfg.commands.goal_bearing[1], math.radians(45.0))
+        self.assertEqual(len(cfg.commands.replay_goal_specs), 2)
+        self.assertAlmostEqual(cfg.commands.replay_goal_specs[0][0], 0.20)
+        self.assertAlmostEqual(cfg.commands.replay_goal_specs[1][0], 0.10)
         self.assertTrue(cfg.camera.add_noise)
         self.assertFalse(cfg.maze.enabled)
 
@@ -36,6 +39,8 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertEqual(cfg.commands.goal_distance, (0.5, 1.5))
         self.assertAlmostEqual(cfg.commands.goal_bearing[0], -math.radians(30.0))
         self.assertAlmostEqual(cfg.commands.goal_bearing[1], math.radians(30.0))
+        self.assertEqual(len(cfg.commands.replay_goal_specs), 1)
+        self.assertAlmostEqual(cfg.commands.replay_goal_specs[0][0], 0.30)
 
     def test_navigation_reward_keeps_only_navigation_terms_active(self):
         from legged_gym.envs.rotunbot.direct_velocity.rotunbot_direct_velocity_config import (

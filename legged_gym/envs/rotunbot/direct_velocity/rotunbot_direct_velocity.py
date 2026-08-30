@@ -137,6 +137,22 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             (len(env_ids), 1),
             device=self.device,
         ).squeeze(1)
+        replay_specs = getattr(self.cfg.commands, "replay_goal_specs", ())
+        if replay_specs:
+            selector = torch.rand(len(env_ids), device=self.device)
+            lower = 0.0
+            for probability, distance_range, bearing_range in replay_specs:
+                upper = lower + float(probability)
+                replay_mask = (selector >= lower) & (selector < upper)
+                if torch.any(replay_mask):
+                    count = int(replay_mask.sum().item())
+                    distances[replay_mask] = torch_rand_float(
+                        distance_range[0], distance_range[1], (count, 1), device=self.device
+                    ).squeeze(1)
+                    bearings[replay_mask] = torch_rand_float(
+                        bearing_range[0], bearing_range[1], (count, 1), device=self.device
+                    ).squeeze(1)
+                lower = upper
         bearings = torch_rand_float(
             self.cfg.commands.goal_bearing[0],
             self.cfg.commands.goal_bearing[1],
