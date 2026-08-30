@@ -69,6 +69,7 @@ def goal_speed_alignment(
     maximum_forward_speed=0.25,
     goal_radius=0.35,
     stopping_distance=0.80,
+    minimum_turn_radius=2.0,
 ):
     """Prefer a distance-dependent forward speed near the goal.
 
@@ -97,4 +98,12 @@ def goal_speed_alignment(
     # orbiting the target indefinitely.
     rear_half_plane = torch.cos(bearing) < 0.0
     desired_speed[rear_half_plane] *= torch.cos(bearing[rear_half_plane])
+    # Forward motion cannot reduce a large bearing once the target is inside
+    # the robot's minimum-radius turning geometry.  Reverse while steering
+    # toward the target to leave that non-convergent local configuration.
+    infeasible_forward = distance < float(minimum_turn_radius) * torch.sin(
+        torch.abs(bearing)
+    )
+    infeasible_forward &= torch.abs(bearing) >= 0.05
+    desired_speed[infeasible_forward] = -desired_speed[infeasible_forward].abs()
     return -torch.abs(command[:, 0] - desired_speed) / float(maximum_forward_speed)

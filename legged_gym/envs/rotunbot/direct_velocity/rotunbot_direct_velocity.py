@@ -274,6 +274,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             self.previous_velocity_command,
             self.cfg.commands.max_forward_speed,
             self.cfg.commands.goal_radius,
+            minimum_turn_radius=self.cfg.commands.minimum_turn_radius,
         )
 
     def reset_idx(self, env_ids):
