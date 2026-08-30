@@ -22,6 +22,9 @@ def main(argv=None):
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--resume_path", default=None)
     parser.add_argument("--parent_checkpoint", default=None)
+    parser.add_argument("--goal_distance_max", type=float, default=None)
+    parser.add_argument("--goal_bearing_deg", type=float, default=None)
+    parser.add_argument("--disable_camera_noise", action="store_true")
     stage_args, remaining = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
     original = list(os.sys.argv)
     os.sys.argv = [original[0]] + remaining
@@ -33,6 +36,19 @@ def main(argv=None):
     args.task = "rotunbot_sru_direct_velocity"
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
     configure_direct_velocity_stage(env_cfg, stage_args.stage)
+    if stage_args.goal_distance_max is not None:
+        if stage_args.goal_distance_max <= env_cfg.commands.goal_distance[0]:
+            raise ValueError("--goal_distance_max must exceed the configured minimum")
+        env_cfg.commands.goal_distance = (
+            env_cfg.commands.goal_distance[0], stage_args.goal_distance_max
+        )
+    if stage_args.goal_bearing_deg is not None:
+        if stage_args.goal_bearing_deg <= 0.0 or stage_args.goal_bearing_deg > 45.0:
+            raise ValueError("--goal_bearing_deg must be in (0, 45]")
+        bearing = float(stage_args.goal_bearing_deg) * 3.141592653589793 / 180.0
+        env_cfg.commands.goal_bearing = (-bearing, bearing)
+    if stage_args.disable_camera_noise:
+        env_cfg.camera.add_noise = False
     if stage_args.num_envs is not None:
         env_cfg.env.num_envs = int(stage_args.num_envs)
     train_cfg.runner.experiment_name = "rotunbot_sru_direct_velocity_%s" % stage_args.stage.lower()
