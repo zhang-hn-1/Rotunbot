@@ -45,6 +45,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             self.num_envs, 2, device=self.device
         )
         self.goal_dist = torch.zeros(self.num_envs, device=self.device)
+        self.terminal_goal_distance = torch.zeros(self.num_envs, device=self.device)
         self.depth_observation = torch.ones(
             self.num_envs, self.cfg.env.depth_height, self.cfg.env.depth_width,
             device=self.device,
@@ -196,6 +197,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         )
         self.goal_dist.copy_(goal_distance)
         self.goal_reached_buf[:] = goal_distance <= float(self.cfg.commands.goal_radius)
+        self.terminal_goal_distance.copy_(goal_distance)
         self.time_out_buf[:] = self.episode_length_buf >= self.max_episode_length
         roll = torch.abs(self.base_euler_tensor[:, 0]) > 1.2
         pitch = torch.abs(self.base_euler_tensor[:, 1]) > 1.2
