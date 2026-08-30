@@ -69,6 +69,37 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.goal_recovery_activation_count = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
         )
+        self.terminal_applied_feasible_command = torch.zeros_like(
+            self.applied_feasible_command
+        )
+        self.terminal_tracking_velocity = torch.zeros(
+            self.num_envs, 2, device=self.device
+        )
+        self.terminal_position = torch.zeros(
+            self.num_envs, 2, device=self.device
+        )
+        self.terminal_command_target = torch.zeros_like(self.command_targets)
+        self.terminal_goal_xy_robot = torch.zeros(
+            self.num_envs, 2, device=self.device
+        )
+        self.terminal_transition_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.terminal_transition_state = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self.terminal_goal_recovery_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.terminal_success = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.terminal_collision = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.terminal_timeout = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
         self.success_buf = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
@@ -309,6 +340,26 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
 
     def reset_idx(self, env_ids):
         if len(env_ids):
+            self.terminal_applied_feasible_command[env_ids] = (
+                self.applied_feasible_command[env_ids]
+            )
+            self.terminal_tracking_velocity[env_ids, 0] = self.tracking_lin_vel[
+                env_ids, 0
+            ]
+            self.terminal_tracking_velocity[env_ids, 1] = self.tracking_ang_vel[
+                env_ids, 2
+            ]
+            self.terminal_position[env_ids] = self.root_states[env_ids, :2]
+            self.terminal_command_target[env_ids] = self.command_targets[env_ids]
+            self.terminal_goal_xy_robot[env_ids] = self._goal_xy_robot()[env_ids]
+            self.terminal_transition_active[env_ids] = self.transition_active[env_ids]
+            self.terminal_transition_state[env_ids] = self.transition_state[env_ids]
+            self.terminal_goal_recovery_active[env_ids] = self.goal_recovery_active[
+                env_ids
+            ]
+            self.terminal_success[env_ids] = self.success_buf[env_ids]
+            self.terminal_collision[env_ids] = self.step_collision_buf[env_ids]
+            self.terminal_timeout[env_ids] = self.time_out_buf[env_ids]
             terminal_success = self.success_buf[env_ids].detach().float().mean()
             terminal_collision = self.step_collision_buf[env_ids].detach().float().mean()
             terminal_timeout = self.time_out_buf[env_ids].detach().float().mean()

@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 
 import isaacgym  # noqa: F401 - Isaac Gym must be imported before torch
+import torch
 
+from legged_gym.envs.rotunbot.vel_tracking.rotunbot_vel import project_velocity_commands
+from legged_gym.navigation.direct_velocity import normalized_action_to_velocity_command
+import legged_gym.navigation.direct_velocity_evaluation as direct_velocity_evaluation
 from legged_gym.navigation.direct_velocity_evaluation import (
     CommandDiagnostics,
     build_fixed_goal_specs,
@@ -76,6 +80,7 @@ class DirectVelocityEvaluationTests(unittest.TestCase):
             policy_dt=0.02,
             maximum_linear_acceleration=0.4,
             maximum_yaw_acceleration=0.2,
+            projection_jump_threshold=(0.05, 0.05),
         )
         first = diagnostics.record(
             raw_command=(-0.25, -0.10),
@@ -110,8 +115,107 @@ class DirectVelocityEvaluationTests(unittest.TestCase):
         self.assertEqual(summary["transition_activation_count"], 1)
         self.assertEqual(summary["reverse_transition_activation_count"], 1)
         self.assertEqual(summary["rate_violation_count"], 1)
-        self.assertEqual(summary["hidden_projection_jump_count"], 1)
+        self.assertEqual(summary["hidden_projection_jump_count"], 0)
         self.assertEqual(summary["feasible_domain_violation_count"], 1)
+
+    def test_projection_jump_and_rate_violation_can_fail_independently(self):
+        rate_only = CommandDiagnostics(
+            policy_dt=0.02,
+            maximum_linear_acceleration=0.4,
+            maximum_yaw_acceleration=0.2,
+            projection_jump_threshold=(0.05, 0.05),
+        )
+        rate_only.record((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), False)
+        rate_row = rate_only.record(
+            (0.02, 0.0), (0.02, 0.0), (0.02, 0.0), (0.02, 0.0), False
+        )
+
+        jump_only = CommandDiagnostics(
+            policy_dt=0.02,
+            maximum_linear_acceleration=5.0,
+            maximum_yaw_acceleration=5.0,
+            projection_jump_threshold=(0.05, 0.05),
+        )
+        jump_only.record((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), False)
+        jump_row = jump_only.record(
+            (0.06, 0.0), (0.06, 0.0), (0.06, 0.0), (0.06, 0.0), False
+        )
+
+        self.assertEqual((rate_row["rate_violation"], rate_row["hidden_projection_jump"]), (1, 0))
+        self.assertEqual((jump_row["rate_violation"], jump_row["hidden_projection_jump"]), (0, 1))
+
+    def test_terminal_step_selector_keeps_exposed_post_step_telemetry(self):
+        post_reset = {
+            "applied_command": (0.0, 0.0),
+            "actual_velocity": (0.0, 0.0),
+            "position": (9.0, 9.0),
+            "transition_active": False,
+        }
+        terminal_post_step = {
+            "applied_command": (-0.04, 0.01),
+            "actual_velocity": (-0.03, 0.008),
+            "position": (1.2, -0.3),
+            "transition_active": True,
+        }
+
+        selected = direct_velocity_evaluation.select_step_telemetry(
+            auto_done=True,
+            post_step=post_reset,
+            terminal_post_step=terminal_post_step,
+        )
+
+        self.assertEqual(selected, terminal_post_step)
+        self.assertIsNot(selected, terminal_post_step)
+
+    def test_negative_action_crosses_real_projection_boundary_with_distinct_telemetry(self):
+        action = torch.tensor([[-0.2, 1.0]])
+        raw = action * torch.tensor([[0.25, 0.10]])
+        requested = normalized_action_to_velocity_command(
+            action,
+            maximum_forward_speed=0.25,
+            maximum_yaw_rate=0.10,
+            minimum_turn_radius=2.0,
+            envelope_fraction=1.0,
+        )
+        applied = project_velocity_commands(
+            requested,
+            maximum_forward_speed=0.25,
+            maximum_yaw_rate=0.10,
+            minimum_turn_radius=2.0,
+            envelope_fraction=1.0,
+        )
+        diagnostics = CommandDiagnostics(
+            policy_dt=0.02,
+            maximum_linear_acceleration=5.0,
+            maximum_yaw_acceleration=5.0,
+            projection_jump_threshold=(0.20, 0.20),
+        )
+
+        row = diagnostics.record(
+            raw[0].tolist(),
+            requested[0].tolist(),
+            applied[0].tolist(),
+            project_velocity_commands(
+                applied,
+                maximum_forward_speed=0.25,
+                maximum_yaw_rate=0.10,
+                minimum_turn_radius=2.0,
+                envelope_fraction=1.0,
+            )[0].tolist(),
+            transition_active=False,
+        )
+
+        self.assertTrue(torch.isfinite(applied).all())
+        self.assertLessEqual(float(applied[:, 0].abs().max()), 0.25)
+        self.assertLessEqual(float(applied[:, 1].abs().max()), 0.10)
+        self.assertLessEqual(float(applied[:, 1].abs().max()), float(applied[:, 0].abs().max()) / 2.0)
+        self.assertAlmostEqual(float(raw[0, 1]), 0.10, places=6)
+        self.assertAlmostEqual(float(requested[0, 1]), 0.025, places=6)
+        self.assertEqual(
+            (row["raw_reverse_command"], row["requested_reverse_command"], row["applied_reverse_command"]),
+            (1, 1, 1),
+        )
+        self.assertEqual((row["projection_active"], row["governor_active"]), (1, 0))
 
     def test_checkpoint_identity_hashes_evaluated_checkpoint_and_declared_parent(self):
         with tempfile.TemporaryDirectory() as directory:

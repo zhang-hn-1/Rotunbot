@@ -24,6 +24,7 @@ from legged_gym.navigation.direct_velocity_evaluation import (
     DEFAULT_EVALUATION_SEEDS,
     build_fixed_goal_specs,
     load_checkpoint_identity,
+    select_step_telemetry,
     summarize_evaluation,
     write_failure_artifacts,
 )
@@ -94,10 +95,12 @@ def _new_episode_state(env, env_index, spec):
         "path_length_m": 0.0,
         "previous_position": position,
         "min_goal_distance_m": float(spec["distance_m"]),
+        "last_goal_distance_m": float(spec["distance_m"]),
         "diagnostics": CommandDiagnostics(
             policy_dt=float(env.dt),
             maximum_linear_acceleration=env.cfg.commands.maximum_linear_acceleration,
             maximum_yaw_acceleration=env.cfg.commands.maximum_yaw_acceleration,
+            projection_jump_threshold=(0.02, 0.01),
         ),
         "trajectory": [],
     }
@@ -106,11 +109,6 @@ def _new_episode_state(env, env_index, spec):
 def _episode_record(env, env_index, state, success, collision, timeout, divergent):
     spec = state["spec"]
     diagnostics = state["diagnostics"].summary()
-    terminal_distance = (
-        float(env.goal_dist[env_index].item())
-        if timeout and not bool(env.time_out_buf[env_index].item())
-        else float(env.terminal_goal_distance[env_index].item())
-    )
     record = {
         "episode_id": int(spec["episode_id"]),
         "seed": int(spec["seed"]),
@@ -125,7 +123,7 @@ def _episode_record(env, env_index, state, success, collision, timeout, divergen
         "duration_s": state["steps"] * float(env.dt),
         "path_length_m": float(state["path_length_m"]),
         "min_goal_distance_m": float(state["min_goal_distance_m"]),
-        "terminal_goal_distance_m": terminal_distance,
+        "terminal_goal_distance_m": float(state["last_goal_distance_m"]),
     }
     record.update(diagnostics)
     return record
@@ -259,12 +257,6 @@ def evaluate_velocity_local_goal(
                             ),
                         )
                     )
-                pre_applied = env.applied_feasible_command.detach().clone()
-                pre_actual = torch.stack(
-                    (env.tracking_lin_vel[:, 0], env.tracking_ang_vel[:, 2]),
-                    dim=1,
-                ).detach().clone()
-                pre_position = env.root_states[:, :2].detach().clone()
                 obs, _, _, dones, _ = env.step(actions)
                 done_mask = dones.flatten().bool()
                 post_applied = env.applied_feasible_command.detach().clone()
@@ -273,6 +265,12 @@ def evaluate_velocity_local_goal(
                     dim=1,
                 ).detach().clone()
                 post_position = env.root_states[:, :2].detach().clone()
+                post_target = env.command_targets.detach().clone()
+                post_goal_xy = env._goal_xy_robot().detach().clone()
+                post_goal_distance = env.goal_dist.detach().clone()
+                post_transition_active = env.transition_active.detach().clone()
+                post_transition_state = env.transition_state.detach().clone()
+                post_recovery_active = env.goal_recovery_active.detach().clone()
                 assigned_new_goal = False
 
                 for env_index in list(active):
@@ -283,27 +281,56 @@ def evaluate_velocity_local_goal(
                         and not bool(done_mask[env_index].item())
                     )
                     auto_done = bool(done_mask[env_index].item())
-                    applied_tensor = (
-                        pre_applied[env_index]
-                        if auto_done
-                        else post_applied[env_index]
+                    post_step = {
+                        "applied_command": post_applied[env_index],
+                        "actual_velocity": post_actual[env_index],
+                        "position": post_position[env_index],
+                        "command_target": post_target[env_index],
+                        "goal_xy_robot": post_goal_xy[env_index],
+                        "goal_distance": post_goal_distance[env_index],
+                        "transition_active": post_transition_active[env_index],
+                        "transition_state": post_transition_state[env_index],
+                        "goal_recovery_active": post_recovery_active[env_index],
+                        "success": env.success_buf[env_index],
+                        "collision": env.step_collision_buf[env_index],
+                        "timeout": env.time_out_buf[env_index],
+                    }
+                    terminal_post_step = None
+                    if auto_done and hasattr(
+                        env, "terminal_applied_feasible_command"
+                    ):
+                        terminal_post_step = {
+                            "applied_command": env.terminal_applied_feasible_command[
+                                env_index
+                            ],
+                            "actual_velocity": env.terminal_tracking_velocity[env_index],
+                            "position": env.terminal_position[env_index],
+                            "command_target": env.terminal_command_target[env_index],
+                            "goal_xy_robot": env.terminal_goal_xy_robot[env_index],
+                            "goal_distance": env.terminal_goal_distance[env_index],
+                            "transition_active": env.terminal_transition_active[
+                                env_index
+                            ],
+                            "transition_state": env.terminal_transition_state[env_index],
+                            "goal_recovery_active": (
+                                env.terminal_goal_recovery_active[env_index]
+                            ),
+                            "success": env.terminal_success[env_index],
+                            "collision": env.terminal_collision[env_index],
+                            "timeout": env.terminal_timeout[env_index],
+                        }
+                    telemetry = select_step_telemetry(
+                        auto_done=auto_done,
+                        post_step=post_step,
+                        terminal_post_step=terminal_post_step,
                     )
-                    actual_tensor = (
-                        pre_actual[env_index] if auto_done else post_actual[env_index]
-                    )
-                    position_tensor = (
-                        pre_position[env_index]
-                        if auto_done
-                        else post_position[env_index]
-                    )
+                    applied_tensor = telemetry["applied_command"]
+                    actual_tensor = telemetry["actual_velocity"]
+                    position_tensor = telemetry["position"]
                     projected_applied = _project_applied(
                         env, applied_tensor.reshape(1, 2)
                     )[0]
-                    transition_active = (
-                        False
-                        if auto_done
-                        else bool(env.transition_active[env_index].item())
-                    )
+                    transition_active = bool(telemetry["transition_active"].item())
                     diagnostic_row = state["diagnostics"].record(
                         held_raw_commands[env_index].detach().cpu().tolist(),
                         held_requested_commands[env_index].detach().cpu().tolist(),
@@ -316,26 +343,20 @@ def evaluate_velocity_local_goal(
                         np.linalg.norm(position - state["previous_position"])
                     )
                     state["previous_position"] = position.copy()
-                    if auto_done:
-                        goal_distance = float(
-                            env.terminal_goal_distance[env_index].item()
-                        )
-                        goal_xy_robot = (float("nan"), float("nan"))
-                        goal_bearing = float("nan")
-                    else:
-                        goal_xy = env._goal_xy_robot()[env_index]
-                        goal_xy_robot = (
-                            float(goal_xy[0].item()),
-                            float(goal_xy[1].item()),
-                        )
-                        goal_distance = float(env.goal_dist[env_index].item())
-                        goal_bearing = math.atan2(
-                            goal_xy_robot[1], goal_xy_robot[0]
-                        )
+                    goal_xy = telemetry["goal_xy_robot"]
+                    goal_xy_robot = (
+                        float(goal_xy[0].item()),
+                        float(goal_xy[1].item()),
+                    )
+                    goal_distance = float(telemetry["goal_distance"].item())
+                    goal_bearing = math.atan2(
+                        goal_xy_robot[1], goal_xy_robot[0]
+                    )
+                    state["last_goal_distance_m"] = goal_distance
                     state["min_goal_distance_m"] = min(
                         state["min_goal_distance_m"], goal_distance
                     )
-                    target = env.command_targets[env_index].detach().cpu().tolist()
+                    target = telemetry["command_target"].detach().cpu().tolist()
                     row = {
                         "episode_id": int(state["spec"]["episode_id"]),
                         "seed": int(state["spec"]["seed"]),
@@ -368,6 +389,10 @@ def evaluate_velocity_local_goal(
                         "w_cmd": float(applied_tensor[1].item()),
                         "v_actual": float(actual_tensor[0].item()),
                         "w_actual": float(actual_tensor[1].item()),
+                        "transition_state": int(telemetry["transition_state"].item()),
+                        "goal_recovery_active": int(
+                            telemetry["goal_recovery_active"].item()
+                        ),
                     }
                     row.update(diagnostic_row)
                     state["trajectory"].append(row)
@@ -375,15 +400,15 @@ def evaluate_velocity_local_goal(
                     if not auto_done and not forced_timeout:
                         continue
                     success = (
-                        bool(env.success_buf[env_index].item())
+                        bool(telemetry["success"].item())
                         and not forced_timeout
                     )
                     collision = (
-                        bool(env.step_collision_buf[env_index].item())
+                        bool(telemetry["collision"].item())
                         and not success
                     )
                     timeout = forced_timeout or (
-                        bool(env.time_out_buf[env_index].item())
+                        bool(telemetry["timeout"].item())
                         and not collision
                     )
                     divergent = not success and not collision and not timeout

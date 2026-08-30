@@ -39,13 +39,18 @@ class CommandDiagnostics:
         policy_dt,
         maximum_linear_acceleration,
         maximum_yaw_acceleration,
+        projection_jump_threshold,
         tolerance=3.0e-6,
     ):
         self.policy_dt = float(policy_dt)
         self.linear_step_limit = float(maximum_linear_acceleration) * self.policy_dt
         self.yaw_step_limit = float(maximum_yaw_acceleration) * self.policy_dt
+        self.projection_jump_threshold = self._pair(projection_jump_threshold)
+        if any(threshold <= 0.0 for threshold in self.projection_jump_threshold):
+            raise ValueError("projection_jump_threshold values must be positive")
         self.tolerance = float(tolerance)
-        self.previous_applied = (0.0, 0.0)
+        self.previous_rate_applied = (0.0, 0.0)
+        self.previous_jump_applied = (0.0, 0.0)
         self.previous_transition_active = False
         self.counts = {
             "raw_reverse_command_count": 0,
@@ -82,11 +87,20 @@ class CommandDiagnostics:
         applied = self._pair(applied_command)
         projected_applied = self._pair(projected_applied_command)
         transition_active = bool(transition_active)
-        delta_v = abs(applied[0] - self.previous_applied[0])
-        delta_w = abs(applied[1] - self.previous_applied[1])
+        delta_v = abs(applied[0] - self.previous_rate_applied[0])
+        delta_w = abs(applied[1] - self.previous_rate_applied[1])
         rate_violation = (
             delta_v > self.linear_step_limit + self.tolerance
             or delta_w > self.yaw_step_limit + self.tolerance
+        )
+        projection_jump_delta = tuple(
+            abs(projected_applied[index] - self.previous_jump_applied[index])
+            for index in range(2)
+        )
+        hidden_projection_jump = any(
+            projection_jump_delta[index]
+            > self.projection_jump_threshold[index] + self.tolerance
+            for index in range(2)
         )
         domain_violation = max(
             abs(projected_applied[index] - applied[index]) for index in range(2)
@@ -110,7 +124,7 @@ class CommandDiagnostics:
             applied[0] < -self.tolerance
         )
         self.counts["rate_violation_count"] += int(rate_violation)
-        self.counts["hidden_projection_jump_count"] += int(rate_violation)
+        self.counts["hidden_projection_jump_count"] += int(hidden_projection_jump)
         self.counts["feasible_domain_violation_count"] += int(domain_violation)
         self.counts["transition_activation_count"] += int(transition_activation)
         self.counts["reverse_transition_activation_count"] += int(
@@ -120,12 +134,15 @@ class CommandDiagnostics:
         self.counts["governor_activation_count"] += int(governor_active)
         self.counts["projection_activation_count"] += int(projection_active)
         self.command_corrections.append(correction)
-        self.previous_applied = applied
+        self.previous_rate_applied = applied
+        self.previous_jump_applied = applied
         self.previous_transition_active = transition_active
         return {
             "rate_violation": int(rate_violation),
             "feasible_domain_violation": int(domain_violation),
-            "hidden_projection_jump": int(rate_violation),
+            "hidden_projection_jump": int(hidden_projection_jump),
+            "projection_jump_delta_v": projection_jump_delta[0],
+            "projection_jump_delta_w": projection_jump_delta[1],
             "transition_activation_event": int(transition_activation),
             "transition_active": int(transition_active),
             "governor_active": int(governor_active),
@@ -144,6 +161,14 @@ class CommandDiagnostics:
             else 0.0
         )
         return result
+
+
+def select_step_telemetry(auto_done, post_step, terminal_post_step=None):
+    """Prefer telemetry captured before an automatic terminal reset."""
+    selected = dict(post_step)
+    if bool(auto_done) and terminal_post_step is not None:
+        selected.update(terminal_post_step)
+    return selected
 
 
 def _mixture_counts(stage, episodes):
