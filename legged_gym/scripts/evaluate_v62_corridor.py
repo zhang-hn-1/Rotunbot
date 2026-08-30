@@ -61,6 +61,7 @@ def _parse_args():
     parser.add_argument("--corridor_output_dir", type=str, required=True)
     parser.add_argument("--corridor_checkpoint", type=str, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--corridor_max_steps", type=int, default=None)
+    parser.add_argument("--corridor_resume", action="store_true")
     original = list(os.sys.argv)
     diagnostic, remaining = parser.parse_known_args()
     os.sys.argv = [original[0]] + remaining
@@ -74,6 +75,7 @@ def _parse_args():
     args.corridor_output_dir = Path(diagnostic.corridor_output_dir).expanduser().resolve()
     args.corridor_checkpoint = Path(diagnostic.corridor_checkpoint).expanduser().resolve()
     args.corridor_max_steps = diagnostic.corridor_max_steps
+    args.corridor_resume = diagnostic.corridor_resume
     if args.corridor_episodes < 1 or not args.corridor_checkpoint.is_file():
         raise ValueError("positive episodes and an existing checkpoint are required")
     args.task = CORRIDOR_TASK_NAME
@@ -143,6 +145,27 @@ def _configure_env(env_cfg, scenario):
     env_cfg.corridor_wall_segments = make_wall_segments(scenario.centerline)
 
 
+def _coerce_record(record):
+    """Restore the scalar types needed when aggregating resumed CSV records."""
+    converted = {}
+    for key, value in record.items():
+        if value == "True":
+            converted[key] = True
+        elif value == "False":
+            converted[key] = False
+        elif key == "scenario_parameters":
+            converted[key] = json.loads(value)
+        else:
+            try:
+                converted[key] = int(value)
+            except (TypeError, ValueError):
+                try:
+                    converted[key] = float(value)
+                except (TypeError, ValueError):
+                    converted[key] = value
+    return converted
+
+
 def _new_controller(env):
     cfg = env.cfg.commands
     return PoseBasedCorridorController(
@@ -154,7 +177,7 @@ def _new_controller(env):
     )
 
 
-def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_steps=None):
+def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_steps=None, resume=False):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     _configure_env(env_cfg, scenario)
     train_cfg.runner.resume = False
@@ -165,7 +188,7 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
     )
     runner.load(str(args.corridor_checkpoint))
     policy = runner.get_inference_policy(device=env.device)
-    logger = EpisodeLogger(output_dir)
+    logger = EpisodeLogger(output_dir, append=resume)
     metadata = CheckpointMetadata.from_path(
         args.corridor_checkpoint,
         parent=args.corridor_checkpoint,
@@ -180,8 +203,14 @@ def run_corridor(args, scenario, episodes, output_dir, enforce_gate=True, max_st
     try:
         if max_steps is None:
             max_steps = int(math.ceil(max(240.0, scenario.path_length_m / 0.05) / env.dt))
-        all_records = []
-        for episode_id in range(1, episodes + 1):
+        all_records = [_coerce_record(row) for row in logger.episodes]
+        existing_ids = sorted(int(row["episode_id"]) for row in all_records)
+        if existing_ids and existing_ids != list(range(1, len(existing_ids) + 1)):
+            raise ValueError("resume artifacts must contain contiguous episode IDs starting at 1")
+        start_episode = (existing_ids[-1] + 1) if existing_ids else 1
+        if start_episode > episodes:
+            raise ValueError("resume artifacts already contain the requested episode count")
+        for episode_id in range(start_episode, episodes + 1):
             obs, _ = env.reset()
             controller.reset()
             position0 = env.root_states[0, :2].detach().cpu().numpy() - env.env_origins[0, :2].detach().cpu().numpy()
@@ -426,7 +455,15 @@ def main():
     scenario = _scenario_for_family(args.corridor_family, args.corridor_seed)
     output_dir = args.corridor_output_dir / args.corridor_family.lower()
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_corridor(args, scenario, args.corridor_episodes, output_dir, enforce_gate=True, max_steps=args.corridor_max_steps)
+    run_corridor(
+        args,
+        scenario,
+        args.corridor_episodes,
+        output_dir,
+        enforce_gate=True,
+        max_steps=args.corridor_max_steps,
+        resume=args.corridor_resume,
+    )
 
 
 if __name__ == "__main__":

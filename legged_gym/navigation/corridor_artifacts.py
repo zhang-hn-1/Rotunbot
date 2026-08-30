@@ -68,11 +68,31 @@ class CheckpointMetadata:
 
 
 class EpisodeLogger:
-    def __init__(self, root):
+    def __init__(self, root, append=False):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._episodes = []
         self._trajectory = []
+        if append:
+            episodes_path = self.root / "episodes.csv"
+            if episodes_path.is_file():
+                with episodes_path.open(newline="") as handle:
+                    self._episodes = list(csv.DictReader(handle))
+                for row in self._episodes:
+                    if "episode_id" in row:
+                        row["episode_id"] = int(row["episode_id"])
+            trajectory_path = self.root / "trajectory.csv"
+            if trajectory_path.is_file():
+                with trajectory_path.open(newline="") as handle:
+                    self._trajectory = list(csv.DictReader(handle))
+
+    @property
+    def episodes(self):
+        return self._episodes
+
+    @property
+    def trajectory(self):
+        return self._trajectory
 
     def write_episode(self, record):
         self._episodes.append(dict(record))

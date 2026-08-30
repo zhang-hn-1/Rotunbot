@@ -93,6 +93,24 @@ class CorridorArtifactTests(unittest.TestCase):
             self.assertEqual(len(replay["trajectory"]), 2)
             self.assertEqual(json.loads((root / "summary.json").read_text())["episodes"], 1)
 
+    def test_episode_logger_can_resume_without_overwriting_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logger = EpisodeLogger(root)
+            logger.write_episode({"episode_id": 1, "seed": 1, "success": True})
+            logger.write_trajectory([{"episode_id": 1, "time_s": 0.0, "x": 0.0}])
+
+            resumed = EpisodeLogger(root, append=True)
+            self.assertEqual(len(resumed.episodes), 1)
+            self.assertEqual(resumed.episodes[0]["episode_id"], 1)
+            self.assertEqual(len(resumed.trajectory), 1)
+            resumed.write_episode({"episode_id": 2, "seed": 2, "success": True})
+            resumed.write_trajectory([{"episode_id": 2, "time_s": 0.0, "x": 1.0}])
+
+            replay = replay_episode(root, 1)
+            self.assertEqual(len(replay["trajectory"]), 1)
+            self.assertEqual(replay["trajectory"][0]["x"], "0.0")
+
     def test_plotter_writes_required_pngs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
