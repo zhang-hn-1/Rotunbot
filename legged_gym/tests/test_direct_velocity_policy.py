@@ -165,6 +165,40 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertTrue(torch.all(goal_turn_alignment(goal, toward) > 0.0))
         self.assertTrue(torch.all(goal_turn_alignment(goal, away) < 0.0))
 
+    def test_goal_turn_alignment_reverses_yaw_sign_only_for_meaningful_reverse(self):
+        goals = torch.tensor(
+            [
+                [1.0, 0.5],
+                [1.0, -0.5],
+                [1.0, 0.5],
+                [1.0, -0.5],
+                [1.0, 0.5],
+                [1.0, -0.5],
+            ]
+        )
+        commands = torch.tensor(
+            [
+                [0.20, 0.05],
+                [0.20, -0.05],
+                [-0.20, -0.05],
+                [-0.20, 0.05],
+                [-0.005, 0.05],
+                [-0.005, -0.05],
+            ]
+        )
+
+        reward = goal_turn_alignment(goals, commands)
+
+        self.assertTrue(
+            torch.allclose(
+                reward,
+                torch.tensor(
+                    [0.462117, 0.462117, 0.462117, 0.462117, 0.462117, 0.462117]
+                ),
+                atol=1.0e-6,
+            )
+        )
+
     def test_goal_speed_alignment_requests_braking_inside_stopping_band(self):
         goal = torch.tensor([[2.0, 0.0], [0.5, 0.0], [-1.0, 0.0], [0.5, 0.5]])
         fast = torch.tensor([[0.25, 0.0], [0.25, 0.0]])

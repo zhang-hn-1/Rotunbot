@@ -253,3 +253,66 @@ PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/pyt
 Ran 126 tests in 0.518s
 OK
 ```
+
+## Fix Round 3 — reverse-drive yaw alignment
+
+### Root cause and bounded correction
+
+Formal S2B evidence showed `model_900.pt` at 80/100 and `model_1100.pt`
+at 65/100. Their traces contained raw and eventually applied reverse
+commands, but failed trajectories drove away from the target. Inspection of
+`goal_turn_alignment` confirmed the causal mismatch: it always scored
+`sign(bearing) * w_cmd`, which is the lateral-convergence yaw sign only while
+driving forward. Reverse kinematics require the opposite yaw sign.
+
+The correction is confined to `goal_turn_alignment`. Commands with
+`v_cmd < -0.01 m/s` now multiply the yaw alignment by `-1`; forward commands
+and the near-zero band (`v_cmd >= -0.01 m/s`) retain the existing sign. The
+0.01 m/s boundary matches the existing V62 near-zero/settled convention. No
+reward scale, recovery latch, action mapping, evaluator, Transition Manager,
+governor, projector, frozen V62 implementation, or checkpoint was changed.
+
+### Hand-derived TDD fixture
+
+The regression uses positive and negative goal bearings with six literal
+`(v_cmd, w_cmd)` fixtures: two forward commands steering toward the goal, two
+meaningful reverse commands steering with the kinematically opposite yaw sign,
+and two `-0.005 m/s` near-zero commands preserving the forward convention. For
+every fixture, `|w_cmd| = 0.05 rad/s`, so the independently derived expected
+reward is the literal `tanh(0.05 / 0.10) = 0.462117`.
+
+Before the production change, the focused test failed as intended because the
+two reverse fixtures received negative alignment:
+
+```text
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_policy.DirectVelocityPolicyTests.test_goal_turn_alignment_reverses_yaw_sign_only_for_meaningful_reverse
+Ran 1 test in 0.003s
+FAILED (failures=1)
+```
+
+After the two-line sign selection was added, the same focused test passed:
+
+```text
+Ran 1 test in 0.022s
+OK
+```
+
+The full focused policy module then passed:
+
+```text
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_policy
+Ran 17 tests in 0.024s
+OK
+```
+
+The established combined direct-velocity/V62 CPU regression passed:
+
+```text
+PATH=/home/jason/legged_gym/.venv/bin:$PATH /home/jason/legged_gym/.venv/bin/python -m unittest -v legged_gym.tests.test_direct_velocity_policy legged_gym.tests.test_direct_velocity_evaluation legged_gym.tests.test_corridor_artifacts legged_gym.tests.test_rotunbot_velocity_tracking legged_gym.tests.test_feasible_transition_manager legged_gym.tests.test_vel_sru50_structured_random
+Ran 128 tests in 0.538s
+OK
+```
+
+No GPU command, simulator rollout, training, or checkpoint evaluation was run.
+Task 7 remains blocked on a future post-commit B3 training/evaluation gate; this
+fix does not claim B3 passage.
