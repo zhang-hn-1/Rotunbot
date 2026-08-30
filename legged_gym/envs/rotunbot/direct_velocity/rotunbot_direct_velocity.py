@@ -30,6 +30,8 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
 
     def _init_buffers(self):
         super()._init_buffers()
+        self.num_single_obs = int(self.cfg.env.num_single_obs)
+        self.num_short_obs = int(self.cfg.env.num_short_obs)
         self.global_goal_xy_world = torch.zeros(self.num_envs, 2, device=self.device)
         self.previous_goal_distance = torch.zeros(self.num_envs, device=self.device)
         self.base_euler_tensor = torch.zeros(self.num_envs, 3, device=self.device)

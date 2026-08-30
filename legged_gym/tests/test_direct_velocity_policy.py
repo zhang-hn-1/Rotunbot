@@ -1,15 +1,28 @@
 import unittest
+import math
 
 import torch
 
 from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocity
 from legged_gym.navigation.direct_velocity import normalized_action_to_velocity_command
+from legged_gym.navigation.direct_velocity_curriculum import configure_direct_velocity_stage
 from legged_gym.navigation.direct_velocity_observation import (
     build_direct_velocity_observation,
 )
 
 
 class DirectVelocityPolicyTests(unittest.TestCase):
+    def test_curriculum_is_explicit_and_has_no_local_goal_mode(self):
+        cfg = type("Cfg", (), {})()
+        cfg.commands = type("Commands", (), {})()
+        cfg.camera = type("Camera", (), {})()
+        cfg.maze = type("Maze", (), {})()
+        configure_direct_velocity_stage(cfg, "S2B")
+        self.assertEqual(cfg.commands.goal_distance, (2.0, 6.0))
+        self.assertEqual(cfg.commands.goal_bearing, (-math.pi, math.pi))
+        self.assertTrue(cfg.camera.add_noise)
+        self.assertFalse(cfg.maze.enabled)
+
     def test_observation_layout_is_goal_and_previous_command_not_local_waypoint(self):
         proprio = torch.zeros(2, 12)
         goal = torch.tensor([[4.0, 1.0], [2.0, -1.0]])
