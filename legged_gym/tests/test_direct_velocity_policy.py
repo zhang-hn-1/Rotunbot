@@ -145,13 +145,16 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertTrue(torch.all(goal_turn_alignment(goal, away) < 0.0))
 
     def test_goal_speed_alignment_requests_braking_inside_stopping_band(self):
-        goal = torch.tensor([[2.0, 0.0], [0.5, 0.0]])
+        goal = torch.tensor([[2.0, 0.0], [0.5, 0.0], [-1.0, 0.0]])
         fast = torch.tensor([[0.25, 0.0], [0.25, 0.0]])
         slow = torch.tensor([[0.25, 0.0], [0.08, 0.0]])
+        fast = torch.cat((fast, torch.tensor([[0.25, 0.0]])), dim=0)
+        slow = torch.cat((slow, torch.tensor([[-0.20, 0.0]])), dim=0)
         fast_reward = goal_speed_alignment(goal, fast)
         slow_reward = goal_speed_alignment(goal, slow)
         self.assertAlmostEqual(float(fast_reward[0]), 0.0, places=6)
         self.assertGreater(float(slow_reward[1]), float(fast_reward[1]))
+        self.assertGreater(float(slow_reward[2]), float(fast_reward[2]))
 
 
 if __name__ == "__main__":

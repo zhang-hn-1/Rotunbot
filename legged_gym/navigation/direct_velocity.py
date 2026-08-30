@@ -90,4 +90,11 @@ def goal_speed_alignment(
         min=0.0,
         max=1.0,
     ) * float(maximum_forward_speed)
+    bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
+    # A target that has moved behind the robot requires a recovery command.
+    # Keep normal forward approach unchanged, but make the desired speed
+    # negative in the rear half-plane so the policy can reverse instead of
+    # orbiting the target indefinitely.
+    rear_half_plane = torch.cos(bearing) < 0.0
+    desired_speed[rear_half_plane] *= torch.cos(bearing[rear_half_plane])
     return -torch.abs(command[:, 0] - desired_speed) / float(maximum_forward_speed)

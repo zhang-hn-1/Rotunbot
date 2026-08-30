@@ -72,6 +72,10 @@ def evaluate(argv=None):
     failed_alignment = []
     failed_forward_command = []
     failed_abs_yaw_command = []
+    episode_bearing_sum = torch.zeros(env.num_envs, device=env.device)
+    episode_bearing_count = torch.zeros(env.num_envs, device=env.device)
+    failed_mean_abs_bearing = []
+    failed_final_abs_bearing = []
     completed = 0
     episode_steps = [0 for _ in range(env.num_envs)]
     episode_goal_distances = env.goal_dist.detach().clone()
@@ -121,6 +125,8 @@ def evaluate(argv=None):
             episode_forward_sum += commands[:, 0]
             episode_yaw_sum += torch.abs(commands[:, 1])
             episode_command_count += 1.0
+            episode_bearing_sum += torch.abs(goal_bearing)
+            episode_bearing_count += 1.0
             obs, _, _, dones, _ = env.step(actions)
             for index in range(env.num_envs):
                 episode_steps[index] += 1
@@ -156,6 +162,15 @@ def evaluate(argv=None):
                     failed_abs_yaw_command.append(
                         float(episode_yaw_sum[index].item()) / command_count
                     )
+                    failed_mean_abs_bearing.append(
+                        float(episode_bearing_sum[index].item())
+                        / max(float(episode_bearing_count[index].item()), 1.0)
+                        * 180.0 / 3.141592653589793
+                    )
+                    failed_final_abs_bearing.append(
+                        abs(float(goal_bearing[index].item()))
+                        * 180.0 / 3.141592653589793
+                    )
                 completed += 1
                 print(
                     "episode {:>3}: success={} collision={} timeout={} final_dist={:.3f} steps={}".format(
@@ -169,6 +184,8 @@ def evaluate(argv=None):
                 episode_forward_sum[index] = 0.0
                 episode_yaw_sum[index] = 0.0
                 episode_command_count[index] = 0.0
+                episode_bearing_sum[index] = 0.0
+                episode_bearing_count[index] = 0.0
                 if forced_timeout:
                     manual_reset_ids.append(index)
                 if not forced_timeout:
@@ -209,6 +226,8 @@ def evaluate(argv=None):
         "failed_mean_command_alignment": [round(value, 4) for value in failed_alignment],
         "failed_mean_forward_command": [round(value, 4) for value in failed_forward_command],
         "failed_mean_abs_yaw_command": [round(value, 4) for value in failed_abs_yaw_command],
+        "failed_mean_abs_bearing_deg": [round(value, 3) for value in failed_mean_abs_bearing],
+        "failed_final_abs_bearing_deg": [round(value, 3) for value in failed_final_abs_bearing],
     }
     print("SUMMARY " + json.dumps(summary, sort_keys=True), flush=True)
     if stage_args.output:
