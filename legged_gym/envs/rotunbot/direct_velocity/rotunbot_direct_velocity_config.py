@@ -87,9 +87,12 @@ class RotunbotDirectVelocityCfg(RotunbotVelSRU50SafeYawResidualV62TransitionCfg)
             action_saturation = 0.0
             dof_pos_limits = 0.0
             torques = 0.0
-            goal_progress = 3.0
-            goal_reach = 20.0
-            collision = -20.0
+            # These are physical metres and one-step rewards are multiplied
+            # by dt in LeggedRobot.  Use navigation-scale weights so that a
+            # 2--3 m goal produces a learnable return over a 30 s episode.
+            goal_progress = 20.0
+            goal_reach = 50.0
+            collision = -50.0
             action_rate = -0.01
             residual_action = 0.0
 
