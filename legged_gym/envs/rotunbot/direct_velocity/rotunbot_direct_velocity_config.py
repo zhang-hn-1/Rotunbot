@@ -93,6 +93,7 @@ class RotunbotDirectVelocityCfg(RotunbotVelSRU50SafeYawResidualV62TransitionCfg)
             goal_progress = 20.0
             goal_reach = 50.0
             collision = -50.0
+            goal_turn_alignment = 1.0
             action_rate = -0.01
             residual_action = 0.0
 

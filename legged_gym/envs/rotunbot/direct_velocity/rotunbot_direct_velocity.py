@@ -6,6 +6,7 @@ import torch
 from isaacgym.torch_utils import torch_rand_float
 
 from legged_gym.navigation.direct_velocity import (
+    goal_turn_alignment,
     normalized_action_to_velocity_command,
     velocity_command_rate_penalty,
 )
@@ -242,6 +243,11 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
     def _reward_action_rate(self):
         return velocity_command_rate_penalty(
             self.previous_velocity_command, self.last_velocity_command
+        )
+
+    def _reward_goal_turn_alignment(self):
+        return goal_turn_alignment(
+            self._goal_xy_robot(), self.previous_velocity_command
         )
 
     def reset_idx(self, env_ids):

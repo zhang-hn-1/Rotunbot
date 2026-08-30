@@ -41,3 +41,15 @@ def velocity_command_rate_penalty(command, previous_command):
             f"received {tuple(command.shape)}"
         )
     return torch.sum(torch.square(command - previous_command), dim=1)
+
+
+def goal_turn_alignment(goal_xy_robot, command, bearing_threshold=0.05):
+    """Reward yaw-command sign that turns toward the robot-frame goal."""
+    if goal_xy_robot.ndim != 2 or goal_xy_robot.shape[1] != 2:
+        raise ValueError("goal_xy_robot must have shape [batch, 2]")
+    if command.ndim != 2 or command.shape != goal_xy_robot.shape:
+        raise ValueError("command must have the same shape [batch, 2] as goal_xy_robot")
+    bearing = torch.atan2(goal_xy_robot[:, 1], goal_xy_robot[:, 0])
+    turning = torch.abs(bearing) >= float(bearing_threshold)
+    signed_command = torch.sign(bearing) * command[:, 1]
+    return turning.float() * torch.tanh(signed_command / 0.03)

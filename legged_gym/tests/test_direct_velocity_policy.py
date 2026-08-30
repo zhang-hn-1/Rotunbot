@@ -5,6 +5,7 @@ import torch
 
 from legged_gym.dwl.actor_critic_direct_velocity import ActorCriticDirectVelocity
 from legged_gym.navigation.direct_velocity import (
+    goal_turn_alignment,
     normalized_action_to_velocity_command,
     velocity_command_rate_penalty,
 )
@@ -52,7 +53,10 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         active = {name for name, scale in scales.items() if scale != 0.0}
         self.assertEqual(
             active,
-            {"termination", "goal_progress", "goal_reach", "collision", "action_rate"},
+            {
+                "termination", "goal_progress", "goal_reach", "collision",
+                "action_rate", "goal_turn_alignment",
+            },
         )
 
     def test_reset_goal_yaw_can_use_fresh_root_quaternion(self):
@@ -115,6 +119,13 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         previous = torch.tensor([[0.04, 0.01], [0.0, -0.01]])
         penalty = velocity_command_rate_penalty(current, previous)
         self.assertTrue(torch.allclose(penalty, torch.tensor([0.0037, 0.0])))
+
+    def test_goal_turn_alignment_prefers_command_toward_goal_side(self):
+        goal = torch.tensor([[1.0, 0.5], [1.0, -0.5]])
+        toward = torch.tensor([[0.0, 0.05], [0.0, -0.05]])
+        away = -toward
+        self.assertTrue(torch.all(goal_turn_alignment(goal, toward) > 0.0))
+        self.assertTrue(torch.all(goal_turn_alignment(goal, away) < 0.0))
 
 
 if __name__ == "__main__":
