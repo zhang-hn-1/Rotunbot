@@ -21,6 +21,13 @@ from legged_gym.navigation.direct_velocity_observation import (
 
 
 class DirectVelocityPolicyTests(unittest.TestCase):
+    def test_isaacgym_random_helper_uses_sm89_compatible_eager_path(self):
+        import isaacgym.torch_utils as torch_utils
+
+        self.assertFalse(hasattr(torch_utils.torch_rand_float, "graph"))
+        self.assertFalse(hasattr(torch_utils.quat_rotate_inverse, "graph"))
+        self.assertFalse(hasattr(torch_utils.quat_apply, "graph"))
+
     def test_curriculum_is_explicit_and_has_no_local_goal_mode(self):
         cfg = type("Cfg", (), {})()
         cfg.commands = type("Commands", (), {})()
