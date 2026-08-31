@@ -81,6 +81,11 @@ from .rotunbot.direct_velocity import (
     RotunbotDirectVelocityCfg,
     RotunbotDirectVelocityCfgPPO,
 )
+from .rotunbot.visual_corridor_v1 import (
+    RotunbotVisualCorridorV1,
+    RotunbotVisualCorridorV1Cfg,
+    RotunbotVisualCorridorV1CfgPPO,
+)
 
 import os
 
@@ -128,4 +133,10 @@ task_registry.register(
     RotunbotDirectVelocity,
     RotunbotDirectVelocityCfg(),
     RotunbotDirectVelocityCfgPPO(),
+)
+task_registry.register(
+    "rotunbot_sru_visual_corridor_v1",
+    RotunbotVisualCorridorV1,
+    RotunbotVisualCorridorV1Cfg(),
+    RotunbotVisualCorridorV1CfgPPO(),
 )

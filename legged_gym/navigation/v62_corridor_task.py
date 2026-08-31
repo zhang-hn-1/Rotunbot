@@ -94,11 +94,12 @@ class RotunbotVelCorridor(RotunbotVel):
                     0.5 * (float(start[1]) + float(end[1])),
                 )
                 for side in (-1.0, 1.0):
+                    origin = self.env_origins[env_index]
                     pose = gymapi.Transform()
                     pose.p = gymapi.Vec3(
-                        midpoint[0] + side * half_width * normal[0],
-                        midpoint[1] + side * half_width * normal[1],
-                        0.20,
+                        origin[0].item() + midpoint[0] + side * half_width * normal[0],
+                        origin[1].item() + midpoint[1] + side * half_width * normal[1],
+                        origin[2].item() + 0.20,
                     )
                     pose.r = gymapi.Quat(
                         0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)
