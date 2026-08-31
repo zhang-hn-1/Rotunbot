@@ -77,7 +77,9 @@ class PPODWL:
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
         # Bootstrapping on time outs
-        if 'time_outs' in infos:
+        if 'timeout_bootstrap' in infos:
+            self.transition.rewards += infos['timeout_bootstrap'].to(self.device)
+        elif 'time_outs' in infos:
             self.transition.rewards += self.gamma * torch.squeeze(self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
 
         # Record the transition

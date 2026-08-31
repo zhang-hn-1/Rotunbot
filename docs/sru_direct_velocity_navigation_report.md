@@ -2,7 +2,12 @@
 
 ## Fixed interface
 
-`Depth + goal_xy_robot + proprioception + previous (v,w) -> Depth Encoder -> SRU -> velocity head -> V62 transition manager/governor -> actuator`.
+`Depth_t + goal_xy_robot_t + proprioception_t + previous (v,w)_t -> Depth Encoder -> single-step SRU block -> velocity head -> V62 transition manager/governor -> actuator`.
+
+The current model is a stateless, length-one SRU-block baseline; it has no
+persistent hidden state or temporal depth history. Training currently uses the
+fallback backend of 32 horizontal rays replicated across 8 rows, not a
+calibrated two-dimensional Isaac Gym depth image.
 
 The SRU does not output actuator actions or local waypoints. The frozen V62 parent is `/home/jason/Rotunbot_SRU50_V62_SafeYaw_Final_Verified_20260829/model/model_150.pt`.
 
@@ -120,12 +125,15 @@ All direct policies route desired `(v,w)` through the existing V62 command proje
 
 ## Current decision and next work
 
-Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / V1 curriculum implementation complete, formal V1 PENDING / Maze NOT STARTED**.
+Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / P0 timing correction PASS, 5 Hz-aligned S2 parent PENDING / V1 formal PENDING / Maze NOT STARTED**.
 
 Next: compare the retained S2 checkpoint and the historical 80% S2B
 checkpoint with the same short warm-start probe, select the more stable V1
 parent, then train and formally evaluate V1 Depth Straight Corridor. The first
-fixed-6 m run was stopped for lack of learning evidence; the training entry
+The actual repository primitive clock is `sim.dt=0.005 s`, decimation `4`,
+`env.dt=0.02 s`; therefore the corrected 5 Hz PPO macro transition uses
+`repeat=10`. The first fixed-6 m run was stopped for lack of learning evidence;
+the training entry
 now uses a bounded 2--6 m transfer curriculum while formal evaluation remains
 fixed at 6 m. Oracle
 waypoints remain diagnostic/reference only and are not actor inputs.

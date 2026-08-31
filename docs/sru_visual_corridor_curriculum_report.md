@@ -6,8 +6,13 @@ The visual curriculum keeps one learned control interface:
 
 ```text
 Depth + goal_xy_robot + proprioception + previous (v,w) + approved state bit
-    -> Depth Encoder -> SRU -> (v_cmd,w_cmd) -> frozen V62 -> actuator
+    -> Depth Encoder -> single-step SRU block -> (v_cmd,w_cmd) -> frozen V62 -> actuator
 ```
+
+The current temporal model is stateless: each policy call constructs a
+length-one sequence and resets the SRU block's hidden tensor. It is not a
+persistent recurrent SRU. The current training backend is fallback depth:
+32 horizontal rays replicated across 8 rows, not a calibrated 2D depth image.
 
 `CorridorWaypointOracle` is restricted to geometry diagnostics, upper-bound
 reference, and future teacher-data generation. It is not an actor input and it
@@ -84,3 +89,35 @@ full 6 m corridor. A four-environment GPU smoke completed with mean rollout
 path distance 2.008 m, finite 273-value observations, and zero collision
 rate. The V1 Gate remains `PENDING` until a converged checkpoint achieves the
 100-episode fixed 6 m evaluation and the same-checkpoint Depth ablation.
+
+## P0 timing correction
+
+The repository's actual V62-derived timing is `sim.dt=0.005 s`, control
+decimation `4`, primitive env step `0.020 s` (50 Hz), and direct-velocity
+command frequency `5 Hz`. The timing layer derives `repeat=10`, so PPO stores
+one macro transition for ten held primitive steps. Reward aggregation uses
+`sum(gamma_p**j * r_j)`, with `gamma_macro=gamma_p**10` and
+`lambda_macro=lambda_p**10`. The deterministic timing artifact records 20
+primitive rows for two policy samples, ten rows per sample; no action is
+resampled inside a macro transition.
+
+The original 6 m failure and the clipped-goal causal result remain diagnostic
+evidence only until a 5 Hz-aligned S2 parent has passed regression.
+
+## P0-A deterministic distance diagnostics
+
+Using the selected S2 parent `model_100.pt`, fixed centered pose, zero
+velocity, zero previous command, fixed fallback depth, and deterministic
+`act_inference`, the 0.50--6.00 m scan (0.25 m increments) found the first
+raw `a_v` and mapped `v_cmd` zero crossing at approximately `3.911 m`.
+At 6.00 m the normal actor input produced `raw a_v=-0.305746` and
+`mapped v_cmd=-0.076437 m/s`; at 2.00 m it produced `raw a_v=+0.305011` and
+`mapped v_cmd=+0.076253 m/s`. The complete rows and plot are retained in
+`logs/diagnostics/v1_distance_action_scan.csv` and
+`logs/diagnostics/v1_distance_action_scan.png`.
+
+In the observation-only causal control, the physical goal stayed at 6.00 m.
+Normal visible 6.00 m gave `a_v=-0.305746`, `v_cmd=-0.076437 m/s`; temporary
+visible 2.00 m clipping gave `a_v=+0.305011`, `v_cmd=+0.076253 m/s`. This
+supports distance-observation OOD as a direct trigger of sign reversal, but
+it is not a permanent clipping solution.

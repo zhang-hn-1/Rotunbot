@@ -29,6 +29,15 @@ class DWLOnPolicyRunner:
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
+        self.action_repeat = 1
+        self.primitive_gamma = None
+        if bool(getattr(self.env.cfg.env, "high_level_action_timing_enabled", False)):
+            from legged_gym.navigation.high_level_action_timing import derive_action_repeat
+
+            self.action_repeat = derive_action_repeat(
+                self.env.dt,
+                self.env.cfg.commands.upper_level_command_frequency_hz,
+            )
         if self.env.num_privileged_obs is not None:
             num_critic_obs = self.env.num_privileged_obs 
         else:
@@ -40,6 +49,10 @@ class DWLOnPolicyRunner:
 
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPODWL
         self.alg: PPODWL = alg_class(actor_critic, device=self.device, **self.alg_cfg)
+        self.primitive_gamma = float(self.alg.gamma)
+        if self.action_repeat > 1:
+            self.alg.gamma = self.primitive_gamma ** self.action_repeat
+            self.alg.lam = float(self.alg.lam) ** self.action_repeat
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.world_size = (
@@ -63,6 +76,60 @@ class DWLOnPolicyRunner:
         self.current_learning_iteration = 0
 
         _, _ = self.env.reset()
+
+    def _step_high_level(self, actions):
+        """Hold one policy action while collecting one macro transition."""
+        if self.action_repeat == 1:
+            return self.env.step(actions)
+        from legged_gym.navigation.high_level_action_timing import MacroStepAccumulator
+
+        accumulator = MacroStepAccumulator(
+            self.env.num_envs,
+            self.action_repeat,
+            self.primitive_gamma,
+            device=self.device,
+        )
+        active = torch.ones(self.env.num_envs, dtype=torch.bool, device=self.device)
+        last_obs = last_privileged = last_infos = None
+        terminal_infos = None
+        with torch.inference_mode():
+            for primitive_index in range(self.action_repeat):
+                primitive_actions = torch.where(
+                    active.unsqueeze(1), actions, torch.zeros_like(actions)
+                )
+                last_obs, last_privileged, rewards, dones, infos = self.env.step(
+                    primitive_actions
+                )
+                dones = dones.flatten().bool()
+                timeouts = infos.get(
+                    "time_outs",
+                    torch.zeros_like(dones, dtype=torch.bool),
+                ).flatten().bool()
+                active_before = accumulator.add(
+                    rewards,
+                    dones,
+                    timeouts,
+                    self.alg.transition.values,
+                    primitive_index,
+                )
+                if torch.any(active_before & dones):
+                    terminal_infos = infos
+                active = ~accumulator.dones
+                last_infos = infos
+        result = accumulator.result()
+        macro_infos = dict(last_infos or {})
+        if terminal_infos is not None:
+            macro_infos.update(terminal_infos)
+        macro_infos["time_outs"] = torch.zeros_like(result.dones)
+        macro_infos["timeout_bootstrap"] = result.timeout_bootstrap
+        macro_infos["macro_action_repeat"] = self.action_repeat
+        return (
+            last_obs,
+            last_privileged,
+            result.rewards.squeeze(1),
+            result.dones.squeeze(1),
+            macro_infos,
+        )
     
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
@@ -123,7 +190,7 @@ class DWLOnPolicyRunner:
                     )
                     base_speed_before = getattr(self.env, "base_lin_vel", None)
                     actions = self.alg.act(obs, critic_obs)
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
+                    obs, privileged_obs, rewards, dones, infos = self._step_high_level(actions)
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = (
                         obs.to(self.device),
