@@ -17,8 +17,11 @@ from legged_gym.envs.rotunbot.maze.rotunbot_maze_camera import (
 
 
 def camera_forward_rotation():
-    """Rotate Isaac's optical -Z axis onto the robot-frame +X axis."""
-    return (0.0, -0.70710678, 0.0, 0.70710678)
+    """Return the production V1 camera pose (Isaac Gym default forward)."""
+    # In this Isaac Gym sensor path the attached identity pose is the
+    # production forward view.  Rotating by -90 degrees around Y points the
+    # sensor away from the corridor and was only a diagnostic assumption.
+    return (0.0, 0.0, 0.0, 1.0)
 
 
 def summarize_depth_pipeline(raw, normalized, near_plane, far_plane, metadata=None):
@@ -144,7 +147,7 @@ def isaacgym_audit(framework_args, forward_camera=False):
                 "resolution": [int(env_cfg.camera.height), int(env_cfg.camera.width)],
                 "camera_position_m": list(env_cfg.camera.position),
                 "camera_rotation_quat": list(env_cfg.camera.rotation),
-                "camera_forward_direction": "+x in robot frame (configured pose)",
+                "camera_forward_direction": "Isaac Gym attached identity pose",
                 "forward_camera_rotation_applied": bool(forward_camera),
                 "normalization": "clamp/fill invalid to far, then (depth-near)/(far-near)",
             },

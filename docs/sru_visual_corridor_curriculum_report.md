@@ -131,20 +131,21 @@ double-turn/S curricula remain blocked.
 
 ## Depth and temporal-state audit
 
-The fallback depth audit passes the normalization contract: invalid synthetic
-raw values become far-range values, the near obstacle is closer than the far
-obstacle, and the final tensor is finite in [0, 1]. The actual Isaac Gym
-`IMAGE_DEPTH` audit under the current V1 camera/scene produced `-Inf` for all
-256 raw pixels; normalization consequently produced an all-far tensor. A
-diagnostic forward-camera quaternion did not change this. Real-depth calibration
-is therefore **not PASS** and the V1 result must be described as fallback-depth
-only.
+The fallback depth audit passes the normalization contract. The new real-camera
+physical sanity artifact is `logs/phase_b/v1_physical_depth_production_pose.json`:
+with the production V1 identity mount, the one-wall center depths at 0.5/2/5 m
+are 0.056/1.556/4.557 m, the GPU and CPU depth values agree, and the final
+encoder tensors have finite ratio 100%. The former all-`-Inf` observation came
+from the diagnostic Y-axis quaternion pointing away from the corridor; it was
+not used to claim a camera repair. Raw no-return values remain separately
+reported and are filled to far only at the explicit normalization boundary.
 
-The SRU audit confirms the current model is stateless: `is_recurrent=False`,
-each inference constructs a length-one sequence with a fresh zero hidden tensor,
-transition storage carries no hidden state, and `reset()` is a no-op. This is a
-verified baseline fact, not a repaired recurrent implementation; changing it
-would require a separate architecture decision and checkpoint protocol.
+The recurrent SRU implementation is now enabled only on the direct-velocity
+visual policy: `is_recurrent=True`, per-environment hidden state is carried at
+the 5 Hz macro decision boundary, done environments are reset selectively, and
+PPO consumes chronological `[time, environment, observation]` sequences with
+done masks and stored initial hidden states. The previous stateless behavior
+and the old V1 Gate result remain historical baseline evidence.
 
 ## P0 timing correction
 

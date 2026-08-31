@@ -17,7 +17,7 @@ def _activation(name):
 class ActorCriticDirectVelocity(nn.Module):
     """Depth/goal/proprioception SRU with a two-channel velocity head."""
 
-    is_recurrent = False
+    is_recurrent = True
 
     def __init__(
         self,
@@ -97,6 +97,10 @@ class ActorCriticDirectVelocity(nn.Module):
         self.min_noise_std = float(min_noise_std)
         self.max_noise_std = float(max_noise_std)
         self.distribution = None
+        # The runner owns one actor instance for the vectorized environment.
+        # This state is only used during rollout/inference; PPO supplies an
+        # explicit initial state and masks while replaying sequences.
+        self._hidden_state = None
         Normal.set_default_validate_args = False
 
     def split_observation(self, observations):
@@ -111,19 +115,81 @@ class ActorCriticDirectVelocity(nn.Module):
             context = torch.cat((context, observations[:, -1:]), dim=1)
         return context, depth
 
-    def _actor_features(self, observations):
-        context, depth = self.split_observation(observations)
-        visual = self.depth_encoder(depth, context)
-        sequence = torch.cat((visual, context), dim=-1).unsqueeze(1)
-        hidden = self.memory(sequence)
-        return torch.cat((hidden, context), dim=-1)
+    def _actor_features(
+        self, observations, hidden_states=None, masks=None, update_state=False
+    ):
+        if observations.ndim == 2:
+            context, depth = self.split_observation(observations)
+            visual = self.depth_encoder(depth, context)
+            sequence = torch.cat((visual, context), dim=-1).unsqueeze(1)
+            if hidden_states is None:
+                hidden_states = self._hidden_state
+            if masks is not None:
+                if masks.ndim == 1:
+                    masks = masks.unsqueeze(1)
+                elif masks.ndim == 2 and masks.shape[-1] != 1:
+                    raise ValueError("single-step recurrent masks must have shape [N, 1]")
+            recurrent, hidden = self.memory(
+                sequence,
+                hidden=hidden_states,
+                masks=masks,
+                return_sequence=True,
+            )
+            features = torch.cat((recurrent[:, -1], context), dim=-1)
+        elif observations.ndim == 3:
+            # RolloutStorage presents [time, batch, observation].  Encode all
+            # frames together, then run the SRU in chronological order.
+            time_steps, batch_size, _ = observations.shape
+            flat_context, flat_depth = self.split_observation(
+                observations.reshape(time_steps * batch_size, -1)
+            )
+            flat_visual = self.depth_encoder(flat_depth, flat_context)
+            context = flat_context.reshape(time_steps, batch_size, -1)
+            sequence = torch.cat(
+                (
+                    flat_visual.reshape(time_steps, batch_size, -1),
+                    context,
+                ),
+                dim=-1,
+            ).transpose(0, 1)
+            if hidden_states is None:
+                hidden_states = self._hidden_state
+            sequence_masks = None
+            if masks is not None:
+                if masks.ndim != 2 or tuple(masks.shape) != (time_steps, batch_size):
+                    raise ValueError("sequence masks must have shape [time, batch]")
+                sequence_masks = masks.transpose(0, 1)
+            recurrent, hidden = self.memory(
+                sequence,
+                hidden=hidden_states,
+                masks=sequence_masks,
+                return_sequence=True,
+            )
+            features = torch.cat((recurrent.transpose(0, 1), context), dim=-1)
+        else:
+            raise ValueError("direct velocity actor expects [N, D] or [T, N, D]")
+        if update_state:
+            self._hidden_state = hidden.detach()
+        return features
 
-    def _mean(self, observations):
-        features = self._actor_features(observations)
+    def _mean(self, observations, hidden_states=None, masks=None, update_state=True):
+        features = self._actor_features(
+            observations,
+            hidden_states=hidden_states,
+            masks=masks,
+            update_state=update_state,
+        )
         return torch.tanh(self.velocity_output(self.velocity_head(features)))
 
-    def _update_distribution(self, observations):
-        mean = self._mean(observations)
+    def _update_distribution(
+        self, observations, masks=None, hidden_states=None, update_state=False
+    ):
+        mean = self._mean(
+            observations,
+            hidden_states=hidden_states,
+            masks=masks,
+            update_state=update_state,
+        )
         with torch.no_grad():
             self.std.clamp_(self.min_noise_std, self.max_noise_std)
         self.distribution = Normal(mean, self.std.expand_as(mean))
@@ -140,12 +206,17 @@ class ActorCriticDirectVelocity(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def act(self, observations, **kwargs):
-        self._update_distribution(observations)
+    def act(self, observations, masks=None, hidden_states=None, **kwargs):
+        self._update_distribution(
+            observations,
+            masks=masks,
+            hidden_states=hidden_states,
+            update_state=hidden_states is None,
+        )
         return self.distribution.sample()
 
     def act_inference(self, observations):
-        return self._mean(observations)
+        return self._mean(observations, update_state=True)
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
@@ -153,7 +224,22 @@ class ActorCriticDirectVelocity(nn.Module):
     def evaluate(self, critic_observations, **kwargs):
         return self.critic(critic_observations)
 
+    def get_hidden_states(self):
+        if self._hidden_state is None:
+            return (None, None)
+        return (self._hidden_state.detach(), None)
+
     def reset(self, dones=None):
+        if self._hidden_state is None or dones is None:
+            return None
+        dones = dones.reshape(-1).to(device=self._hidden_state.device, dtype=torch.bool)
+        if dones.shape[0] != self._hidden_state.shape[0]:
+            raise ValueError("done mask does not match recurrent hidden batch")
+        self._hidden_state = torch.where(
+            dones.unsqueeze(1),
+            torch.zeros_like(self._hidden_state),
+            self._hidden_state,
+        )
         return None
 
 

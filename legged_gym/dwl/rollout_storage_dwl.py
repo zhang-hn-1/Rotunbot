@@ -50,7 +50,7 @@ class RolloutStorage:
         def clear(self):
             self.__init__()
 
-    def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape, num_single_obs=None, device='cpu'):
+    def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape, num_single_obs=None, device='cpu', recurrent=False):
 
         self.device = device
 
@@ -82,9 +82,11 @@ class RolloutStorage:
             self.next_proprio_obs = torch.zeros(num_transitions_per_env, num_envs, num_single_obs, device=self.device)
             
         self.num_single_obs = num_single_obs
+        self.recurrent = bool(recurrent)
         # rnn
         self.saved_hidden_states_a = None
         self.saved_hidden_states_c = None
+        self.last_sequence_metadata = None
 
         self.step = 0
 
@@ -106,20 +108,22 @@ class RolloutStorage:
         self.step += 1
 
     def _save_hidden_states(self, hidden_states):
-        if hidden_states is None or hidden_states==(None, None):
+        if hidden_states is None:
             return
-        # make a tuple out of GRU hidden state sto match the LSTM format
-        hid_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
-        hid_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
+        if isinstance(hidden_states, tuple):
+            if not hidden_states or hidden_states[0] is None:
+                return
+            actor_hidden = hidden_states[0]
+        else:
+            actor_hidden = hidden_states
+        hid_a = actor_hidden if isinstance(actor_hidden, tuple) else (actor_hidden,)
 
         # initialize if needed 
         if self.saved_hidden_states_a is None:
             self.saved_hidden_states_a = [torch.zeros(self.observations.shape[0], *hid_a[i].shape, device=self.device) for i in range(len(hid_a))]
-            self.saved_hidden_states_c = [torch.zeros(self.observations.shape[0], *hid_c[i].shape, device=self.device) for i in range(len(hid_c))]
         # copy the states
         for i in range(len(hid_a)):
             self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
-            self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
 
 
     def clear(self):
@@ -150,6 +154,9 @@ class RolloutStorage:
         return trajectory_lengths.float().mean(), self.rewards.mean()
 
     def mini_batch_generator(self, num_mini_batches, num_epochs=8):
+        if self.recurrent:
+            yield from self._recurrent_mini_batch_generator(num_mini_batches, num_epochs)
+            return
         batch_size = self.num_envs * self.num_transitions_per_env
         mini_batch_size = batch_size // num_mini_batches
         indices = torch.randperm(num_mini_batches*mini_batch_size, requires_grad=False, device=self.device)
@@ -194,3 +201,57 @@ class RolloutStorage:
                 else:
                     yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
                         old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
+
+    def _recurrent_mini_batch_generator(self, num_mini_batches, num_epochs):
+        """Yield full chronological sequences for recurrent PPO updates.
+
+        Environments are the independent sequence units.  A mini-batch may
+        contain several environments, but it never shuffles time within one
+        environment.  The mask at time ``t`` resets the carried state when
+        the preceding transition ended an episode.
+        """
+        if self.num_envs < num_mini_batches:
+            raise ValueError("recurrent PPO requires num_envs >= num_mini_batches")
+        mini_batch_size = self.num_envs // num_mini_batches
+        usable_envs = num_mini_batches * mini_batch_size
+        indices = torch.randperm(usable_envs, requires_grad=False, device=self.device)
+        observations = self.observations
+        if self.privileged_observations is not None:
+            critic_observations = self.privileged_observations
+        else:
+            critic_observations = observations
+        if self.saved_hidden_states_a is None:
+            raise RuntimeError("recurrent rollout is missing initial hidden states")
+        done = self.dones.squeeze(-1).float()
+        self.last_sequence_metadata = {
+            "sequence_length": int(self.num_transitions_per_env),
+            "sequence_batch_size": int(mini_batch_size),
+            "number_of_sequences": int(usable_envs),
+            "hidden_shape": list(self.saved_hidden_states_a[0].shape[1:]),
+        }
+        for _ in range(num_epochs):
+            for batch_index in range(num_mini_batches):
+                start = batch_index * mini_batch_size
+                end = (batch_index + 1) * mini_batch_size
+                env_indices = indices[start:end]
+                masks = torch.ones(
+                    self.num_transitions_per_env,
+                    mini_batch_size,
+                    device=self.device,
+                )
+                if self.num_transitions_per_env > 1:
+                    masks[1:] = 1.0 - done[:-1, env_indices]
+                hidden = self.saved_hidden_states_a[0][0, env_indices]
+                yield (
+                    observations[:, env_indices],
+                    critic_observations[:, env_indices],
+                    self.actions[:, env_indices],
+                    self.values[:, env_indices],
+                    self.advantages[:, env_indices],
+                    self.returns[:, env_indices],
+                    self.actions_log_prob[:, env_indices],
+                    self.mu[:, env_indices],
+                    self.sigma[:, env_indices],
+                    (hidden, None),
+                    masks,
+                )

@@ -61,10 +61,31 @@ class SpatialRecurrentUnit(nn.Module):
         self.gates = nn.Linear(input_dim + hidden_dim, 2 * hidden_dim)
         self.hidden_dim = hidden_dim
 
-    def forward(self, sequence):
+    def forward(self, sequence, hidden=None, masks=None, return_sequence=False):
+        if sequence.ndim != 3:
+            raise ValueError("SRU expects a [batch, time, feature] sequence")
         batch_size = sequence.shape[0]
-        hidden = sequence.new_zeros(batch_size, self.hidden_dim)
+        if hidden is None:
+            hidden = sequence.new_zeros(batch_size, self.hidden_dim)
+        else:
+            hidden = hidden.to(device=sequence.device, dtype=sequence.dtype)
+            if hidden.ndim == 3 and hidden.shape[0] == 1:
+                hidden = hidden[0]
+            if tuple(hidden.shape) != (batch_size, self.hidden_dim):
+                raise ValueError(
+                    "SRU hidden state must have shape [%d, %d]" %
+                    (batch_size, self.hidden_dim)
+                )
+        if masks is not None:
+            if masks.ndim == 1:
+                masks = masks.unsqueeze(1)
+            if tuple(masks.shape) != tuple(sequence.shape[:2]):
+                raise ValueError("SRU masks must have shape [batch, time]")
+            masks = masks.to(device=sequence.device, dtype=sequence.dtype)
+        outputs = []
         for step in range(sequence.shape[1]):
+            if masks is not None:
+                hidden = hidden * masks[:, step:step + 1]
             current = sequence[:, step]
             update, reset = torch.sigmoid(
                 self.gates(torch.cat((current, hidden), dim=-1))
@@ -73,6 +94,9 @@ class SpatialRecurrentUnit(nn.Module):
             candidate_input = self.input_projection(current) + reset * hidden
             candidate = torch.tanh(spatial * candidate_input)
             hidden = (1.0 - update) * hidden + update * candidate
+            outputs.append(hidden)
+        if return_sequence:
+            return torch.stack(outputs, dim=1), hidden
         return hidden
 
 

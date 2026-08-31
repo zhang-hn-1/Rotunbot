@@ -51,7 +51,16 @@ class PPODWL:
         self.num_short_obs = self.actor_critic.num_short_obs
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
-        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, None, self.device)
+        self.storage = RolloutStorage(
+            num_envs,
+            num_transitions_per_env,
+            actor_obs_shape,
+            critic_obs_shape,
+            action_shape,
+            None,
+            self.device,
+            recurrent=self.actor_critic.is_recurrent,
+        )
 
     def test_mode(self):
         self.actor_critic.test()
@@ -167,5 +176,6 @@ class PPODWL:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         self.storage.clear()
+        self.sequence_metadata = self.storage.last_sequence_metadata
 
         return mean_value_loss, mean_surrogate_loss

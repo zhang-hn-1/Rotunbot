@@ -304,6 +304,7 @@ class DWLOnPolicyRunner:
             self.alg.compute_returns(critic_obs)
             
             mean_value_loss, mean_surrogate_loss = self.alg.update()
+            sequence_metadata = getattr(self.alg, "sequence_metadata", None)
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
@@ -534,6 +535,18 @@ class DWLOnPolicyRunner:
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
         self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
+        sequence_metadata = locs.get("sequence_metadata") or {}
+        for key in (
+            "sequence_length",
+            "sequence_batch_size",
+            "number_of_sequences",
+        ):
+            if key in sequence_metadata:
+                self.writer.add_scalar(
+                    "Recurrent/" + key,
+                    sequence_metadata[key],
+                    locs['it'],
+                )
         diagnostic_labels = {
             "path_distance": "Diagnostics/rollout_mean_path_distance",
             "base_speed": "Diagnostics/mean_base_speed",

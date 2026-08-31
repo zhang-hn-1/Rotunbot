@@ -163,7 +163,12 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         zero_bit = torch.cat((legacy, torch.zeros(2, 1)), dim=1)
         one_bit = torch.cat((legacy, torch.ones(2, 1)), dim=1)
 
-        self.assertTrue(torch.equal(new_policy.act_inference(zero_bit), new_policy.act_inference(one_bit)))
+        new_policy.act_inference(zero_bit)
+        new_policy.reset(torch.ones(2, dtype=torch.bool))
+        zero_output = new_policy.act_inference(zero_bit)
+        new_policy.reset(torch.ones(2, dtype=torch.bool))
+        one_output = new_policy.act_inference(one_bit)
+        self.assertTrue(torch.equal(zero_output, one_output))
         self.assertTrue(torch.equal(new_policy.evaluate(torch.zeros(2, 19)), new_policy.evaluate(torch.tensor([[0.0] * 18 + [1.0]] * 2))))
         self.assertTrue(torch.equal(new_policy.depth_encoder.cross_query.weight[:, -1], torch.zeros(32)))
         self.assertTrue(torch.equal(new_policy.memory.input_projection.weight[:, -1], torch.zeros(32)))
@@ -174,7 +179,11 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
 
         with torch.no_grad():
             new_policy.velocity_head[0].weight[:, -1].fill_(0.25)
-        self.assertFalse(torch.equal(new_policy.act_inference(zero_bit), new_policy.act_inference(one_bit)))
+        new_policy.reset(torch.ones(2, dtype=torch.bool))
+        zero_output = new_policy.act_inference(zero_bit)
+        new_policy.reset(torch.ones(2, dtype=torch.bool))
+        one_output = new_policy.act_inference(one_bit)
+        self.assertFalse(torch.equal(zero_output, one_output))
 
     def test_migration_rejects_unrecognized_weight_mismatch(self):
         old_policy = _policy(272, 18)
@@ -210,6 +219,8 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         self.assertEqual(result["source_iteration"], 800)
         self.assertEqual(new_optimizer.state_dict()["state"], {})
         old_actor_observation = torch.randn(2, 272)
+        old_policy.reset(torch.ones(2, dtype=torch.bool))
+        new_policy.reset(torch.ones(2, dtype=torch.bool))
         self.assertTrue(
             torch.equal(
                 old_policy.act_inference(old_actor_observation),

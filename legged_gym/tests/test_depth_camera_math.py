@@ -57,7 +57,7 @@ class DepthCameraMathTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(normalized).all())
         self.assertGreaterEqual(float(normalized.min()), 0.0)
         self.assertLessEqual(float(normalized.max()), 1.0)
-        self.assertEqual(float(normalized[0, 0]), 1.0)
+        self.assertAlmostEqual(float(normalized[0, 0]), (1.0 - 0.05) / (8.0 - 0.05))
         self.assertEqual(float(normalized[0, 1]), 1.0)
         self.assertEqual(float(normalized[0, 5]), 1.0)
 

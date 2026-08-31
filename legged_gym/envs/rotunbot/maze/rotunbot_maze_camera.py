@@ -15,10 +15,37 @@ def normalize_depth_image(depth, near, far):
     # Isaac Gym IMAGE_DEPTH uses non-positive/no-return values for invalid
     # samples on some paths; treat zero like negative/NaN/Inf rather than
     # clamping it to the near plane and presenting a false close obstacle.
-    invalid = (~torch.isfinite(depth)) | (depth <= 0.0)
-    depth = torch.where(invalid, torch.full_like(depth, float(far)), depth)
-    depth = depth.clamp(float(near), float(far))
-    return ((depth - float(near)) / max(float(far) - float(near), 1.0e-6)).clamp(0.0, 1.0)
+    finite = torch.isfinite(depth)
+    # Isaac Gym IMAGE_DEPTH is negative for valid camera returns.  Convert the
+    # signed convention explicitly; zero and non-finite values remain
+    # no-return samples and are filled with the far plane.
+    positive_distance = torch.where(finite, depth.abs(), torch.zeros_like(depth))
+    invalid = (~finite) | (positive_distance <= 0.0)
+    positive_distance = torch.where(
+        invalid, torch.full_like(positive_distance, float(far)), positive_distance
+    )
+    positive_distance = positive_distance.clamp(float(near), float(far))
+    return ((positive_distance - float(near)) / max(float(far) - float(near), 1.0e-6)).clamp(0.0, 1.0)
+
+
+def capture_isaac_depth_tensors(gym, sim, depth_tensors, device, near, far):
+    """Render and copy IMAGE_DEPTH while keeping the access scope explicit."""
+    # GPU PhysX returns asynchronously.  BaseTask.render() fetches results at
+    # the beginning of the next control step, but a camera capture can happen
+    # immediately after simulate() inside post_physics_step.  Synchronize here
+    # so this frame corresponds to the current robot/scene state.
+    gym.fetch_results(sim, True)
+    gym.step_graphics(sim)
+    gym.render_all_camera_sensors(sim)
+    gym.start_access_image_tensors(sim)
+    try:
+        raw = torch.stack(
+            [tensor.detach().to(device).clone() for tensor in depth_tensors], dim=0
+        )
+        normalized = normalize_depth_image(raw, near, far)
+        return raw, normalized
+    finally:
+        gym.end_access_image_tensors(sim)
 
 
 class DepthCameraMixin:
@@ -197,17 +224,16 @@ class DepthCameraMixin:
             return self._apply_depth_noise(self._resize_depth_to_observation(depth))
         if not self._camera_ready:
             raise RuntimeError("IMAGE_DEPTH backend requested but camera tensors are unavailable")
-        from isaacgym import gymapi
-
         try:  # pragma: no cover - simulator dependent
-            self.gym.step_graphics(self.sim)
-            self.gym.render_all_camera_sensors(self.sim)
-            self.gym.start_access_image_tensors(self.sim)
-            raw = torch.stack(self._camera_depth_tensors, dim=0).to(self.device)
-            depth = normalize_depth_image(raw, self.cfg.camera.near_plane, self.cfg.camera.far_plane)
+            raw, depth = capture_isaac_depth_tensors(
+                self.gym,
+                self.sim,
+                self._camera_depth_tensors,
+                self.device,
+                self.cfg.camera.near_plane,
+                self.cfg.camera.far_plane,
+            )
             self.depth_backend_actual = "isaacgym"
             return self._apply_depth_noise(self._resize_depth_to_observation(depth))
         except Exception as exc:  # pragma: no cover - simulator dependent
             raise RuntimeError("Isaac Gym IMAGE_DEPTH capture failed") from exc
-        finally:  # pragma: no cover - simulator dependent
-            self.gym.end_access_image_tensors(self.sim)
