@@ -124,6 +124,63 @@ class V1EvaluationTests(unittest.TestCase):
             [("fixed_6m", 6.0, 100)],
         )
 
+    def test_curriculum_orchestrator_builds_external_training_and_eval_steps(self):
+        from legged_gym.scripts.run_sru_visual_corridor_v1_curriculum import (
+            build_evaluation_command,
+            build_training_command,
+        )
+
+        training = build_training_command(
+            python_executable="python",
+            repo_root="/repo",
+            resume_path="/repo/model_50.pt",
+            parent_checkpoint="/repo/parent.pt",
+            curriculum_state="/repo/state.json",
+            iterations=50,
+            num_envs=64,
+            framework_args=("--headless", "--sim_device=cuda:0"),
+        )
+        training_text = " ".join(training)
+        self.assertIn("train_sru_visual_corridor_v1.py", training_text)
+        self.assertIn("--curriculum-state", training)
+        self.assertIn("--iterations", training)
+        self.assertNotIn("--internal-eval", training)
+
+        evaluation = build_evaluation_command(
+            python_executable="python",
+            repo_root="/repo",
+            checkpoint="/repo/model_50.pt",
+            current_distance=2.5,
+            next_distance=3.0,
+            episodes=30,
+            seed=2026,
+            output_dir="/repo/eval",
+            framework_args=("--headless",),
+        )
+        self.assertIn("eval_sru_visual_corridor_v1.py", " ".join(evaluation))
+        self.assertIn("--next-distance", evaluation)
+        self.assertIn("--episodes", evaluation)
+
+    def test_curriculum_orchestrator_parses_tensorboard_log_directory(self):
+        from legged_gym.scripts.run_sru_visual_corridor_v1_curriculum import (
+            parse_log_directory,
+        )
+
+        output = "TensorBoard log directory: /repo/logs/run_abc\n"
+        self.assertEqual(parse_log_directory(output), "/repo/logs/run_abc")
+
+    def test_training_curriculum_state_payload_accepts_plain_or_wrapped_json(self):
+        from legged_gym.scripts.train_sru_visual_corridor_v1 import (
+            curriculum_state_payload,
+        )
+
+        plain = {"current_level": 1, "current_max_distance": 3.0}
+        self.assertEqual(curriculum_state_payload(plain), {
+            "v1_performance_curriculum": plain,
+        })
+        wrapped = {"v1_performance_curriculum": plain}
+        self.assertEqual(curriculum_state_payload(wrapped), wrapped)
+
     def test_fixed_distance_specs_are_reproducible_and_auditable(self):
         from legged_gym.navigation.v1_evaluation import build_fixed_distance_specs
 
