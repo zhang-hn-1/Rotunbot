@@ -72,6 +72,14 @@ def main(argv=None):
     )
     parent_checkpoint = stage_args.parent_checkpoint or stage_args.resume_path
     if runner.log_dir is not None:
+        curriculum_state = getattr(env, "v1_curriculum", None)
+        if curriculum_state is not None:
+            with open(
+                os.path.join(runner.log_dir, "curriculum_state.json"), "w"
+            ) as handle:
+                json.dump(
+                    curriculum_state.to_dict(), handle, indent=2, sort_keys=True
+                )
         checkpoint = os.path.join(
             runner.log_dir, "model_{}.pt".format(runner.current_learning_iteration)
         )
