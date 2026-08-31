@@ -7,6 +7,23 @@ import numpy as np
 from legged_gym.maps import FREE, cell_centers_to_world
 
 
+class CorridorWaypointAdapter:
+    """Expose a corridor Oracle through the planner's world-waypoint contract.
+
+    The adapter deliberately returns only ``[x, y]`` world coordinates; it
+    does not manufacture velocity or actuator commands.
+    """
+
+    def __init__(self, waypoint_oracle):
+        self.waypoint_oracle = waypoint_oracle
+
+    def next_waypoint(self, pose):
+        waypoint = np.asarray(self.waypoint_oracle.next_waypoint(pose), dtype=np.float64)
+        if waypoint.shape != (2,) or not np.isfinite(waypoint).all():
+            raise ValueError("corridor Oracle must return finite world XY waypoint")
+        return waypoint
+
+
 class OracleLocalSubgoalPlanner:
     """Convert a shortest occupancy-grid path into a local waypoint."""
 
