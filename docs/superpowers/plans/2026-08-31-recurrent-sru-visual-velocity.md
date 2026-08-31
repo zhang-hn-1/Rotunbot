@@ -109,11 +109,11 @@
 - Consumes: robot-frame `goal_xy_robot`, current actual velocity, obstacle/clearance distance, and measured reliable V62 command bounds.
 - Produces: `teacher_velocity_command(goal_xy_robot, actual_velocity, obstacle_distance, config) -> [v_teacher, w_teacher]` plus raw/requested/applied projection diagnostics.
 
-- [ ] Write failing tests for forward/side goal behavior, speed reduction at large bearing/near obstacle, finite outputs, and command bounds.
-- [ ] Inspect S0/S1/S2 measured applied command distributions and set teacher limits from the reliable executed domain, not theoretical action bounds.
-- [ ] Implement a bounded proportional-heading teacher with explicit minimum-turn-radius-compatible speed reduction and no reverse output unless existing measured policy evidence justifies it.
-- [ ] Test raw teacher commands through the unchanged Governor/Feasible Projection and assert projection correction is bounded and auditable.
-- [ ] Run teacher-only 1.0m×100, 1.5m×100, 2.0m×100, and 2.5m×100 evaluations with fixed goals and episode-level CSV/JSON artifacts.
+- [x] Write tests for forward/side goal behavior, speed reduction at large bearing/near obstacle, finite outputs, and command bounds.
+- [x] Set teacher limits from the current reliable executed V62 command domain (`0.25 m/s`, `0.10 rad/s`, `R=2.0 m`, envelope 1.0).
+- [x] Implement a bounded proportional-heading teacher with explicit minimum-turn-radius-compatible speed reduction and no reverse output.
+- [x] Test raw teacher commands through the unchanged Feasible Projection and record bounded projection correction diagnostics.
+- [ ] Run the final teacher-only 1.0m×100, 1.5m×100, 2.0m×100, and 2.5m×100 evaluations with fixed goals and episode-level CSV/JSON artifacts. Smoke evidence is 1.0/1.5/2.0m at 3/3; 2.5m requires the full 45s horizon rather than the 10s smoke cap.
 - [ ] Do not start imitation if any short-distance teacher set fails its declared success/safety threshold; fix teacher first.
 
 ### Task 6: Add teacher-label collection and recurrent imitation warm start

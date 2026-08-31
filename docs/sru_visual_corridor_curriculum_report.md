@@ -147,6 +147,13 @@ PPO consumes chronological `[time, environment, observation]` sequences with
 done masks and stored initial hidden states. The previous stateless behavior
 and the old V1 Gate result remain historical baseline evidence.
 
+The explainable V1 velocity teacher is implemented in
+`legged_gym/navigation/v1_velocity_teacher.py`. It emits only the measured
+V62 `(v,w)` domain and records raw/requested/applied commands plus projection
+correction. Single-environment smoke results are 3/3 at 1.0, 1.5, and 2.0 m;
+the 2.5 m smoke reached about 2.03 m in the intentionally capped 10 s horizon
+and needs the formal 45 s horizon before it can be promoted as a teacher gate.
+
 ## P0 timing correction
 
 The repository's actual V62-derived timing is `sim.dt=0.005 s`, control
