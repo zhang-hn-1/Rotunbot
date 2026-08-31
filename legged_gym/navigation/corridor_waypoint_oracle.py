@@ -6,11 +6,14 @@ import numpy as np
 
 
 class CorridorWaypointOracle:
-    """Return capability-bounded world-frame points along a corridor centerline.
+    """Return capability-bounded world-frame local goals for a centerline.
 
     This component owns no policy or actuator interface.  Consumers receive a
     two-coordinate world waypoint and must route it through the Local Goal and
-    frozen V62 velocity stack themselves.
+    frozen V62 velocity stack themselves.  The preferred candidate is always
+    on the centerline.  If it exceeds the trained local-distance or bearing
+    capability, the returned point is a bounded local-goal fallback and need
+    not itself lie on the centerline.
     """
 
     def __init__(
@@ -78,6 +81,14 @@ class CorridorWaypointOracle:
         for turn_start in self._turn_start_arc_lengths:
             if current_arc_length < turn_start < target:
                 return turn_start
+            if turn_start <= current_arc_length < turn_start + self.lookahead_m:
+                # Ramp the lookahead in from zero after the centerline starts
+                # turning.  This joins the pre-turn target at turn_start and
+                # reaches the normal lookahead without a target jump.
+                return min(
+                    current_arc_length + (current_arc_length - turn_start),
+                    self._arc_lengths[-1],
+                )
         return target
 
     def _cap_to_local_goal_capability(self, position_xy, yaw, candidate_xy):

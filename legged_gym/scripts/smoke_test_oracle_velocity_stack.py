@@ -1,6 +1,7 @@
 """Strict GPU smoke for the 2 Hz corridor Oracle -> Local Goal -> V62 stack."""
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -22,6 +23,62 @@ from legged_gym.utils import get_args, task_registry
 PLANNER_HZ = 2.0
 B3_DISTANCE_LIMIT_M = 2.0
 B3_BEARING_LIMIT_DEG = 45.0
+_SAFETY_COUNT_FIELDS = (
+    "collision_count",
+    "divergence_count",
+    "feasible_domain_violation_count",
+    "hidden_projection_jump_count",
+    "rate_violation_count",
+)
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as checkpoint_file:
+        for block in iter(lambda: checkpoint_file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _adjacent_gate_summary(checkpoint):
+    candidate = checkpoint.parent / "summary.json"
+    return candidate if candidate.is_file() else None
+
+
+def validate_approved_s2b_checkpoint(checkpoint, gate_summary=None):
+    """Return a verified gate artifact or reject every unapproved checkpoint."""
+    checkpoint = Path(checkpoint).expanduser().resolve()
+    if not checkpoint.is_file():
+        raise RuntimeError("GPU smoke requires a checkpoint file: %s" % checkpoint)
+    summary = (
+        Path(gate_summary).expanduser().resolve()
+        if gate_summary is not None
+        else _adjacent_gate_summary(checkpoint)
+    )
+    if summary is None or not summary.is_file():
+        raise RuntimeError(
+            "GPU smoke requires --smoke_gate_summary or an adjacent approved summary.json"
+        )
+    try:
+        payload = json.loads(summary.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("invalid S2B gate summary: %s" % summary) from error
+    if payload.get("stage") != "S2B" or payload.get("gate", {}).get("stage") != "S2B":
+        raise RuntimeError("gate summary is not an S2B artifact: %s" % summary)
+    if payload.get("gate", {}).get("pass") is not True:
+        raise RuntimeError("S2B gate did not pass: %s" % summary)
+    try:
+        artifact_checkpoint = Path(payload["checkpoint"]).expanduser().resolve()
+    except (KeyError, TypeError) as error:
+        raise RuntimeError("S2B gate summary lacks a valid checkpoint") from error
+    if artifact_checkpoint != checkpoint:
+        raise RuntimeError("gate checkpoint does not resolve to requested checkpoint")
+    if payload.get("checkpoint_sha256") != _sha256(checkpoint):
+        raise RuntimeError("gate checkpoint SHA256 does not match requested checkpoint")
+    for field in _SAFETY_COUNT_FIELDS:
+        if payload.get(field) != 0:
+            raise RuntimeError("S2B gate safety count %s is not zero" % field)
+    return summary
 
 
 def _yaw_from_quaternion(quaternion):
@@ -34,6 +91,7 @@ def _yaw_from_quaternion(quaternion):
 def _parse_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--smoke_checkpoint", default=None)
+    parser.add_argument("--smoke_gate_summary", default=None)
     parser.add_argument("--smoke_output_dir", default="logs/oracle_velocity_smoke")
     parser.add_argument("--smoke_max_steps", type=int, default=1200)
     original = list(os.sys.argv)
@@ -46,14 +104,16 @@ def _parse_args():
     if diagnostic.smoke_checkpoint is None:
         raise RuntimeError(
             "GPU smoke is blocked: no approved frozen B3 checkpoint is available; "
-            "pass --smoke_checkpoint only after the B3 gate passes"
+            "pass --smoke_checkpoint and its approved gate summary after B3 passes"
         )
     checkpoint = Path(diagnostic.smoke_checkpoint).expanduser().resolve()
-    if not checkpoint.is_file():
-        raise RuntimeError("GPU smoke requires an approved frozen B3 checkpoint: %s" % checkpoint)
+    gate_summary = validate_approved_s2b_checkpoint(
+        checkpoint, diagnostic.smoke_gate_summary
+    )
     if diagnostic.smoke_max_steps < 1:
         raise ValueError("--smoke_max_steps must be positive")
     args.smoke_checkpoint = checkpoint
+    args.smoke_gate_summary = gate_summary
     args.smoke_output_dir = Path(diagnostic.smoke_output_dir).expanduser().resolve()
     args.smoke_max_steps = int(diagnostic.smoke_max_steps)
     args.task = "rotunbot_sru_direct_velocity"

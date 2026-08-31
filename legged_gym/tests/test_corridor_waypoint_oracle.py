@@ -67,6 +67,33 @@ class CorridorWaypointOracleTests(unittest.TestCase):
             self.assertLess(np.linalg.norm(current - previous), 0.11)
             self.assertLessEqual(abs(float(current[1] - previous[1])), 1.0e-8)
 
+    def test_crossing_turn_start_keeps_waypoint_continuous(self):
+        """Catch a full-lookahead jump immediately after a turn starts."""
+        scenario = make_l_scenario(2.0, 3.0, 2.0, seed=41)
+        oracle = CorridorWaypointOracle(
+            scenario, local_distance_limit=1.0, bearing_limit_deg=80.0,
+        )
+        poses = ((2.999, 0.0, 0.0), (3.0, 0.0, 0.0), (3.001, 0.0, 0.0))
+
+        waypoints = [oracle.next_waypoint(pose) for pose in poses]
+
+        for previous, current in zip(waypoints[:-1], waypoints[1:]):
+            self.assertLess(np.linalg.norm(current - previous), 0.01)
+        self.assertLess(waypoints[-1][1], 0.01)
+
+    def test_infeasible_heading_returns_explicit_bounded_local_goal_fallback(self):
+        """Catch a fallback that is outside B3 capability or non-finite."""
+        scenario = make_straight_scenario(2.0, 5.0, seed=6)
+        oracle = CorridorWaypointOracle(
+            scenario, local_distance_limit=0.4, bearing_limit_deg=30.0,
+        )
+
+        waypoint = oracle.next_waypoint((1.0, 0.0, math.pi / 2.0))
+
+        self.assertTrue(np.isfinite(waypoint).all())
+        self.assertGreater(abs(float(waypoint[1])), 0.1)
+        self.assertLessEqual(np.linalg.norm(waypoint - np.array((1.0, 0.0))), 0.4 + 1.0e-8)
+
     def test_adapter_exposes_only_a_world_waypoint_not_an_actuator_command(self):
         scenario = make_straight_scenario(2.0, 5.0, seed=5)
         oracle = CorridorWaypointOracle(
