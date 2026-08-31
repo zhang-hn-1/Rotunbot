@@ -9,6 +9,18 @@ V1_CORRIDOR_LENGTH_M = 6.0
 V1_WALL_THICKNESS_M = 0.10
 
 
+def v1_curriculum_goal_distance(step, start_distance, formal_distance, horizon_steps):
+    """Linearly expand V1's training goal while formal evaluation stays fixed."""
+    if horizon_steps <= 0:
+        raise ValueError("horizon_steps must be positive")
+    if start_distance <= 0 or formal_distance <= 0:
+        raise ValueError("goal distances must be positive")
+    progress = min(max(float(step), 0.0) / float(horizon_steps), 1.0)
+    return float(start_distance) + progress * (
+        float(formal_distance) - float(start_distance)
+    )
+
+
 def build_v1_straight_geometry(
     width_m=V1_CORRIDOR_WIDTH_M,
     length_m=V1_CORRIDOR_LENGTH_M,

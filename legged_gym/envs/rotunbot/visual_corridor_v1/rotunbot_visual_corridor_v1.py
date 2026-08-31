@@ -6,6 +6,7 @@ import torch
 from isaacgym import gymtorch
 from isaacgym.torch_utils import torch_rand_float
 
+from legged_gym.navigation.visual_corridor_v1 import v1_curriculum_goal_distance
 from ..direct_velocity.rotunbot_direct_velocity import RotunbotDirectVelocity
 from .rotunbot_visual_corridor_v1_config import RotunbotVisualCorridorV1Cfg
 
@@ -55,7 +56,15 @@ class RotunbotVisualCorridorV1(RotunbotDirectVelocity):
         if len(env_ids) == 0:
             return
         goal = self.env_origins[env_ids, :2].clone()
-        goal[:, 0] += float(self.cfg.corridor_length_m)
+        distance = float(self.cfg.corridor_length_m)
+        if bool(getattr(self.cfg.commands, "v1_goal_curriculum_enabled", False)):
+            distance = v1_curriculum_goal_distance(
+                self.common_step_counter,
+                self.cfg.commands.v1_curriculum_start_distance,
+                self.cfg.corridor_length_m,
+                self.cfg.commands.v1_curriculum_horizon_steps,
+            )
+        goal[:, 0] += distance
         self.global_goal_xy_world[env_ids] = goal
         self.goal_dist[env_ids] = torch.linalg.vector_norm(
             goal - self.root_states[env_ids, :2], dim=1

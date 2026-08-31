@@ -5,6 +5,7 @@ from legged_gym.navigation.visual_corridor_v1 import (
     V1_CORRIDOR_LENGTH_M,
     V1_CORRIDOR_WIDTH_M,
     build_v1_straight_geometry,
+    v1_curriculum_goal_distance,
 )
 
 
@@ -46,6 +47,24 @@ class VisualCorridorV1Tests(unittest.TestCase):
 
         self.assertFalse(hasattr(RotunbotVisualCorridorV1, "oracle_waypoint"))
         self.assertTrue(hasattr(RotunbotVisualCorridorV1, "_reward_path_progress"))
+
+    def test_v1_curriculum_reaches_formal_corridor_length(self):
+        self.assertAlmostEqual(
+            v1_curriculum_goal_distance(0, 2.0, V1_CORRIDOR_LENGTH_M, 12000),
+            2.0,
+        )
+        self.assertAlmostEqual(
+            v1_curriculum_goal_distance(6000, 2.0, V1_CORRIDOR_LENGTH_M, 12000),
+            4.0,
+        )
+        self.assertAlmostEqual(
+            v1_curriculum_goal_distance(12000, 2.0, V1_CORRIDOR_LENGTH_M, 12000),
+            V1_CORRIDOR_LENGTH_M,
+        )
+        self.assertAlmostEqual(
+            v1_curriculum_goal_distance(20000, 2.0, V1_CORRIDOR_LENGTH_M, 12000),
+            V1_CORRIDOR_LENGTH_M,
+        )
 
 
 if __name__ == "__main__":

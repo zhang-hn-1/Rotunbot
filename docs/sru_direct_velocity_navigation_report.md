@@ -120,9 +120,12 @@ All direct policies route desired `(v,w)` through the existing V62 command proje
 
 ## Current decision and next work
 
-Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / V1 NOT STARTED / Maze NOT STARTED**.
+Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / V1 curriculum implementation complete, formal V1 PENDING / Maze NOT STARTED**.
 
 Next: compare the retained S2 checkpoint and the historical 80% S2B
 checkpoint with the same short warm-start probe, select the more stable V1
-parent, then train and formally evaluate V1 Depth Straight Corridor. Oracle
+parent, then train and formally evaluate V1 Depth Straight Corridor. The first
+fixed-6 m run was stopped for lack of learning evidence; the training entry
+now uses a bounded 2--6 m transfer curriculum while formal evaluation remains
+fixed at 6 m. Oracle
 waypoints remain diagnostic/reference only and are not actor inputs.

@@ -41,6 +41,7 @@ def main(argv=None):
         env_cfg.env.num_envs = int(stage_args.num_envs)
     if stage_args.disable_camera_noise:
         env_cfg.camera.add_noise = False
+    env_cfg.commands.v1_goal_curriculum_enabled = True
 
     env, _ = task_registry.make_env(args.task, args=args, env_cfg=env_cfg)
     runner, _ = task_registry.make_alg_runner(

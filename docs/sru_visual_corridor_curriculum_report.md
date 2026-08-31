@@ -38,13 +38,13 @@ Audit evidence:
 | V1 warm-start probe B | 100 iterations from historical S2B; 16/20 short evaluation |
 | Direct/V62/corridor/Oracle tests | 83/83 PASS |
 | Depth/visual-observation tests | 26/26 PASS |
-| Total current focused audit | 109/109 PASS |
+| Total current focused audit before V1 curriculum change | 109/109 PASS |
 
 ## Stage ledger
 
 | Stage | Parent checkpoint | Current Gate | Depth ablation | Memory ablation | Decision |
 | --- | --- | --- | --- | --- | --- |
-| V1 Depth Straight Corridor | Probe A `model_100.pt` | Smoke passed; formal evaluation pending | N/A | N/A | TRAINING STARTED |
+| V1 Depth Straight Corridor | Probe A `model_100.pt` | Curriculum smoke passed; formal evaluation pending | N/A | N/A | TRAINING BLOCKED PENDING RETRAIN |
 | V2 Depth L Corridor | V1_best.pt | Blocked by V1 | N/A | N/A | NOT STARTED |
 | V3 Depth Double-Turn | V2_best.pt | Blocked by V2 | N/A | N/A | NOT STARTED |
 | V4 Depth S Corridor | V3_best.pt | Blocked by V3 | N/A | N/A | NOT STARTED |
@@ -70,6 +70,17 @@ The 18/20 result is a probe only and is not a formal B3 or V1 result.
 
 The V1 environment smoke completed with four parallel environments and a
 finite 273-value observation through the direct `(v_cmd,w_cmd)` interface.
-Formal V1 training has now started from the selected parent. The V1 Gate is
-still `PENDING` until at least 100 fixed evaluation episodes and the required
-same-checkpoint Depth ablation are run.
+An initial 1500-iteration run was stopped at iteration 111: the inherited
+policy produced near-zero forward motion and no success evidence, although
+collision and safety counters remained zero. A targeted policy probe isolated
+the issue to distance extrapolation: the selected S2 parent produced forward
+commands around a 2 m goal but reverse commands at a 6 m goal. This is a
+transfer-scale issue, not evidence that the V62 command chain is broken.
+
+The V1 training entry point now enables a bounded 2 m -> 6 m goal-distance
+curriculum over 12000 low-level steps. The task configuration keeps the
+curriculum disabled by default, so formal evaluation remains fixed at the
+full 6 m corridor. A four-environment GPU smoke completed with mean rollout
+path distance 2.008 m, finite 273-value observations, and zero collision
+rate. The V1 Gate remains `PENDING` until a converged checkpoint achieves the
+100-episode fixed 6 m evaluation and the same-checkpoint Depth ablation.
