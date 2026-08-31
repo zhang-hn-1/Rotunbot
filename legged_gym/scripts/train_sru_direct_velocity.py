@@ -18,6 +18,20 @@ from legged_gym.navigation.corridor_artifacts import CheckpointMetadata
 from legged_gym.utils import get_args, task_registry
 
 
+def reject_generic_direct_velocity_resume(args):
+    """Keep direct-velocity warm starts model-only.
+
+    The generic runner resume path restores optimizer state via ``runner.load``.
+    This curriculum instead permits only ``--resume_path``, which is migrated
+    through ``load_direct_velocity_warm_start`` below.
+    """
+    if bool(getattr(args, "resume", False)):
+        raise ValueError(
+            "--resume is not supported for direct-velocity training; "
+            "use --resume_path for a model-only warm start"
+        )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--stage", choices=("S1", "S2", "S2B"), default="S1")
@@ -36,9 +50,14 @@ def main(argv=None):
         args = get_args()
     finally:
         os.sys.argv = original
+    reject_generic_direct_velocity_resume(args)
 
     args.task = "rotunbot_sru_direct_velocity"
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
+    # This entry point never delegates a resume to the generic runner, whose
+    # ``runner.load`` path restores optimizer state.  ``--resume_path`` below
+    # is the sole supported warm-start mechanism.
+    train_cfg.runner.resume = False
     configure_direct_velocity_stage(env_cfg, stage_args.stage)
     goal_distance_min = (
         env_cfg.commands.goal_distance[0]

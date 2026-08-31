@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import isaacgym  # noqa: F401 - Isaac Gym must precede torch
 import torch
@@ -18,6 +19,9 @@ from legged_gym.envs.rotunbot.direct_velocity.rotunbot_direct_velocity_config im
 )
 from legged_gym.navigation.direct_velocity_observation import (
     build_direct_velocity_observation,
+)
+from legged_gym.scripts.train_sru_direct_velocity import (
+    reject_generic_direct_velocity_resume,
 )
 
 
@@ -58,7 +62,7 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         self.assertTrue(torch.equal(observation[:, :272], legacy))
         self.assertTrue(torch.equal(observation[:, 272], torch.tensor([0.0, 1.0])))
 
-    def test_environment_publishes_recovery_bit_to_actor_critic_and_terminal_snapshot(self):
+    def test_environment_publishes_recovery_bit_to_actor_and_critic(self):
         env = RotunbotDirectVelocity.__new__(RotunbotDirectVelocity)
         env.num_envs = 2
         env.cfg = type(
@@ -80,10 +84,8 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         env.depth_observation = torch.zeros_like(depth)
         env.obs_buf = torch.zeros(2, 273)
         env.privileged_obs_buf = torch.zeros(2, 19)
-        env.terminal_privileged_obs = torch.zeros(2, 19)
 
         env.compute_observations()
-        env._snapshot_terminal_privileged_observation(torch.tensor([1]))
 
         legacy = build_direct_velocity_observation(proprio, goal, previous, depth)
         expected_critic_prefix = torch.cat(
@@ -100,7 +102,17 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         self.assertTrue(torch.equal(env.obs_buf[:, 272], torch.tensor([0.0, 1.0])))
         self.assertTrue(torch.equal(env.privileged_obs_buf[:, :18], expected_critic_prefix))
         self.assertTrue(torch.equal(env.privileged_obs_buf[:, 18], torch.tensor([0.0, 1.0])))
-        self.assertTrue(torch.equal(env.terminal_privileged_obs[1], env.privileged_obs_buf[1]))
+
+    def test_generic_resume_is_rejected_before_direct_velocity_runner_creation(self):
+        with self.assertRaisesRegex(ValueError, "--resume is not supported"):
+            reject_generic_direct_velocity_resume(
+                SimpleNamespace(resume=True, resume_path="model_800.pt")
+            )
+
+    def test_weight_only_resume_path_is_allowed(self):
+        reject_generic_direct_velocity_resume(
+            SimpleNamespace(resume=False, resume_path="model_800.pt")
+        )
 
     def test_direct_velocity_config_declares_recovery_aware_observation_dimensions(self):
         self.assertEqual(RotunbotDirectVelocityCfg.env.num_observations, 273)

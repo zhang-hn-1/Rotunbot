@@ -91,7 +91,6 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.terminal_goal_recovery_active = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
-        self.terminal_privileged_obs = torch.zeros_like(self.privileged_obs_buf)
         self.terminal_success = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
@@ -285,10 +284,6 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             dim=1,
         )
 
-    def _snapshot_terminal_privileged_observation(self, env_ids):
-        """Keep terminal critic context aligned with the actor recovery bit."""
-        self.terminal_privileged_obs[env_ids] = self.privileged_obs_buf[env_ids]
-
     def check_termination(self):
         goal_distance = torch.linalg.vector_norm(
             self.global_goal_xy_world - self.root_states[:, :2], dim=1
@@ -347,7 +342,6 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
 
     def reset_idx(self, env_ids):
         if len(env_ids):
-            self._snapshot_terminal_privileged_observation(env_ids)
             self.terminal_applied_feasible_command[env_ids] = (
                 self.applied_feasible_command[env_ids]
             )
