@@ -30,6 +30,7 @@ class ActorCriticDirectVelocity(nn.Module):
         proprio_dim=12,
         goal_dim=2,
         previous_command_dim=2,
+        previous_actual_velocity_dim=0,
         encoder_dim=64,
         attention_heads=4,
         hidden_dim=128,
@@ -51,8 +52,14 @@ class ActorCriticDirectVelocity(nn.Module):
         self.proprio_dim = int(proprio_dim)
         self.goal_dim = int(goal_dim)
         self.previous_command_dim = int(previous_command_dim)
+        self.previous_actual_velocity_dim = int(previous_actual_velocity_dim)
         self.depth_dim = self.depth_height * self.depth_width
-        self.context_dim = self.proprio_dim + self.goal_dim + self.previous_command_dim
+        self.context_dim = (
+            self.proprio_dim
+            + self.goal_dim
+            + self.previous_command_dim
+            + self.previous_actual_velocity_dim
+        )
         self.legacy_observation_dim = self.context_dim + self.depth_dim
         self.has_recovery_observation = self.num_single_obs == self.legacy_observation_dim + 1
         if self.num_single_obs not in (
@@ -281,6 +288,59 @@ def _insert_zero_gate_input_column(source, target, old_input_dim, hidden_dim):
     return migrated
 
 
+def _migrate_context_suffix(source, target, prefix_dim, base_context_dim=16):
+    """Insert new context fields before an optional final recovery bit."""
+    source_context_dim = source.shape[1] - prefix_dim
+    target_context_dim = target.shape[1] - prefix_dim
+    source_has_recovery = source_context_dim > base_context_dim
+    target_has_recovery = target_context_dim > base_context_dim
+    if source_context_dim - int(source_has_recovery) != base_context_dim:
+        _migration_error("unexpected source context shape")
+    if target_context_dim - int(target_has_recovery) < base_context_dim:
+        _migration_error("unexpected context-suffix input shape")
+    migrated = torch.zeros_like(target)
+    migrated[:, :prefix_dim] = source[:, :prefix_dim]
+    migrated[:, prefix_dim:prefix_dim + base_context_dim] = source[:, prefix_dim:prefix_dim + base_context_dim]
+    if target_has_recovery and source_has_recovery:
+        migrated[:, -1] = source[:, -1]
+    return migrated
+
+
+def _migrate_gate_input(source, target, prefix_dim, base_context_dim, hidden_dim):
+    source_input_dim = source.shape[1] - hidden_dim
+    target_input_dim = target.shape[1] - hidden_dim
+    source_context_dim = source_input_dim - prefix_dim
+    target_context_dim = target_input_dim - prefix_dim
+    source_has_recovery = source_context_dim > base_context_dim
+    target_has_recovery = target_context_dim > base_context_dim
+    if source_context_dim - int(source_has_recovery) != base_context_dim or target_context_dim - int(target_has_recovery) < base_context_dim:
+        _migration_error("unexpected recurrent gate context shape")
+    migrated = torch.zeros_like(target)
+    migrated[:, :prefix_dim] = source[:, :prefix_dim]
+    migrated[:, prefix_dim:prefix_dim + base_context_dim] = source[:, prefix_dim:prefix_dim + base_context_dim]
+    if source_has_recovery and target_has_recovery:
+        migrated[:, prefix_dim + target_context_dim - 1] = source[:, prefix_dim + source_context_dim - 1]
+    migrated[:, prefix_dim + target_context_dim:prefix_dim + target_context_dim + hidden_dim] = source[:, prefix_dim + source_context_dim:prefix_dim + source_context_dim + hidden_dim]
+    return migrated
+
+
+def _migrate_critic_input(source, target, base_context_dim=16):
+    source_has_recovery = source.shape[1] > 18
+    target_has_recovery = target.shape[1] > 18
+    source_base = source.shape[1] - int(source_has_recovery)
+    target_base = target.shape[1] - int(target_has_recovery)
+    if source_base < base_context_dim or target_base < base_context_dim:
+        _migration_error("unexpected critic input shape")
+    migrated = torch.zeros_like(target)
+    migrated[:, :base_context_dim] = source[:, :base_context_dim]
+    source_tail = source[:, base_context_dim:source_base]
+    target_tail_start = base_context_dim + (target_base - source_base)
+    migrated[:, target_tail_start:target_base] = source_tail
+    if source_has_recovery and target_has_recovery:
+        migrated[:, -1] = source[:, -1]
+    return migrated
+
+
 def migrate_direct_velocity_state_dict(source_state_dict, target_state_dict):
     """Map the legacy 272/18 direct policy into the 273/19 observation ABI.
 
@@ -307,8 +367,8 @@ def migrate_direct_velocity_state_dict(source_state_dict, target_state_dict):
 
     cross_source = source_state_dict["depth_encoder.cross_query.weight"]
     cross_target = target_state_dict["depth_encoder.cross_query.weight"]
-    if cross_source.ndim != 2 or cross_target.ndim != 2 or cross_source.shape[1] != 16 or cross_target.shape[1] != 17:
-        _migration_error("expected depth cross-query [feature, 16] -> [feature, 17]")
+    if cross_source.ndim != 2 or cross_target.ndim != 2:
+        _migration_error("unexpected depth cross-query shape")
     encoder_dim = cross_source.shape[0]
     if cross_target.shape[0] != encoder_dim:
         _migration_error("depth cross-query feature dimension changed")
@@ -318,40 +378,44 @@ def migrate_direct_velocity_state_dict(source_state_dict, target_state_dict):
     spatial_source = source_state_dict["memory.spatial_projection.weight"]
     spatial_target = target_state_dict["memory.spatial_projection.weight"]
     hidden_dim = input_source.shape[0] if input_source.ndim == 2 else -1
-    old_memory_input = encoder_dim + 16
-    if (
-        input_source.shape != (hidden_dim, old_memory_input)
-        or input_target.shape != (hidden_dim, old_memory_input + 1)
-        or spatial_source.shape != input_source.shape
-        or spatial_target.shape != input_target.shape
-    ):
+    if input_source.ndim != 2 or input_target.ndim != 2 or input_source.shape[0] != input_target.shape[0]:
         _migration_error("unexpected SpatialRecurrentUnit input/projection shape")
+    hidden_dim = input_source.shape[0]
+    if spatial_source.shape != input_source.shape or spatial_target.shape != input_target.shape:
+        _migration_error("unexpected SpatialRecurrentUnit spatial shape")
 
     actor_source = source_state_dict["velocity_head.0.weight"]
     actor_target = target_state_dict["velocity_head.0.weight"]
     critic_source = source_state_dict["critic.0.weight"]
     critic_target = target_state_dict["critic.0.weight"]
-    if actor_source.ndim != 2 or actor_target.ndim != 2 or actor_source.shape[1] != hidden_dim + 16:
+    if actor_source.ndim != 2 or actor_target.ndim != 2 or actor_source.shape[0] != actor_target.shape[0]:
         _migration_error("unexpected actor first-layer shape")
-    if actor_target.shape != (actor_source.shape[0], hidden_dim + 17):
-        _migration_error("expected actor recovery input column")
-    if critic_source.ndim != 2 or critic_target.ndim != 2 or critic_source.shape[1] != 18:
+    if critic_source.ndim != 2 or critic_target.ndim != 2 or critic_source.shape[0] != critic_target.shape[0]:
         _migration_error("unexpected critic first-layer shape")
-    if critic_target.shape != (critic_source.shape[0], 19):
-        _migration_error("expected critic recovery input column")
 
     migrated = {key: value.detach().clone() for key, value in source_state_dict.items()}
-    migrated["depth_encoder.cross_query.weight"] = _append_zero_input_column(cross_source, cross_target)
-    migrated["memory.input_projection.weight"] = _append_zero_input_column(input_source, input_target)
-    migrated["memory.spatial_projection.weight"] = _append_zero_input_column(spatial_source, spatial_target)
-    migrated["memory.gates.weight"] = _insert_zero_gate_input_column(
+    migrated["depth_encoder.cross_query.weight"] = _migrate_context_suffix(
+        cross_source, cross_target, 0, 16
+    )
+    migrated["memory.input_projection.weight"] = _migrate_context_suffix(
+        input_source, input_target, encoder_dim, 16
+    )
+    migrated["memory.spatial_projection.weight"] = _migrate_context_suffix(
+        spatial_source, spatial_target, encoder_dim, 16
+    )
+    migrated["memory.gates.weight"] = _migrate_gate_input(
         source_state_dict["memory.gates.weight"],
         target_state_dict["memory.gates.weight"],
-        old_memory_input,
+        encoder_dim,
+        16,
         hidden_dim,
     )
-    migrated["velocity_head.0.weight"] = _append_zero_input_column(actor_source, actor_target)
-    migrated["critic.0.weight"] = _append_zero_input_column(critic_source, critic_target)
+    migrated["velocity_head.0.weight"] = _migrate_context_suffix(
+        actor_source, actor_target, hidden_dim, 16
+    )
+    migrated["critic.0.weight"] = _migrate_critic_input(
+        critic_source, critic_target
+    )
     return migrated
 
 

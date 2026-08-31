@@ -147,6 +147,11 @@ PPO consumes chronological `[time, environment, observation]` sequences with
 done masks and stored initial hidden states. The previous stateless behavior
 and the old V1 Gate result remain historical baseline evidence.
 
+The V1 recurrent ABI now appends the previous actual `(v,w)` sample before
+depth, producing 275 actor inputs and 21 privileged critic inputs. Legacy
+272/18 and 273/19 policy layouts are migrated with zero-initialized inserted
+columns and regression-tested for output preservation.
+
 The explainable V1 velocity teacher is implemented in
 `legged_gym/navigation/v1_velocity_teacher.py`. It emits only the measured
 V62 `(v,w)` domain and records raw/requested/applied commands plus projection

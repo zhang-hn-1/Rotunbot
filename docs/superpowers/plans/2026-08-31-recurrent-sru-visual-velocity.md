@@ -75,7 +75,7 @@
 - [x] Run the tests and confirm the current `is_recurrent=False` implementation fails them.
 - [x] Extend `SpatialRecurrentUnit.forward(sequence, hidden=None, masks=None)` to carry a supplied hidden state and honor per-step masks.
 - [x] Make `ActorCriticDirectVelocity.is_recurrent=True`; update actor inference/training calls to consume and return actor hidden state while retaining the frozen velocity head and V62 action interface.
-- [x] Keep the existing observation ABI; previous actual velocity is deferred until a separately justified ABI change.
+- [x] Add previous actual velocity through an explicit V1 ABI change: actor 273 -> 275 and critic 19 -> 21, sampled at the 5 Hz command boundary, with migration tests for the old 272/18 and 273/19 layouts.
 - [x] Run state tests and a deterministic two-step recurrence test.
 
 ### Task 4: Make DWL rollout storage and PPO sequence-aware

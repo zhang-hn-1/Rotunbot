@@ -29,6 +29,13 @@ class RotunbotVisualCorridorV1Cfg(RotunbotDirectVelocityCfg):
     class env(RotunbotDirectVelocityCfg.env):
         num_envs = 64
         episode_length_s = 45.0
+        # V1 recurrent policy ABI: proprio + goal + previous requested
+        # velocity + previous actual velocity + depth + recovery bit.
+        num_single_obs = 275
+        num_short_obs = 275
+        num_observations = 275
+        num_privileged_obs = 21
+        single_num_privileged_obs = 21
 
     class init_state(RotunbotDirectVelocityCfg.init_state):
         randomize_initial_velocity = False
@@ -59,6 +66,9 @@ class RotunbotVisualCorridorV1Cfg(RotunbotDirectVelocityCfg):
 
 
 class RotunbotVisualCorridorV1CfgPPO(RotunbotDirectVelocityCfgPPO):
+    class policy(RotunbotDirectVelocityCfgPPO.policy):
+        previous_actual_velocity_dim = 2
+
     class runner(RotunbotDirectVelocityCfgPPO.runner):
         experiment_name = "rotunbot_sru_visual_corridor_v1"
         max_iterations = 1500

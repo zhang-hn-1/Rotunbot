@@ -95,6 +95,19 @@ class DirectVelocityPolicyTests(unittest.TestCase):
         self.assertTrue(torch.equal(observation[:, 14:16], previous))
         self.assertTrue(torch.equal(observation[:, 16:].reshape(2, 8, 32), depth))
 
+    def test_observation_can_append_previous_actual_velocity_before_depth(self):
+        proprio = torch.zeros(2, 12)
+        goal = torch.tensor([[4.0, 1.0], [2.0, -1.0]])
+        previous = torch.tensor([[0.1, 0.02], [0.2, -0.03]])
+        actual = torch.tensor([[0.04, 0.01], [0.08, -0.02]])
+        depth = torch.ones(2, 8, 32)
+        observation = build_direct_velocity_observation(
+            proprio, goal, previous, depth, previous_actual_velocity=actual
+        )
+        self.assertEqual(tuple(observation.shape), (2, 274))
+        self.assertTrue(torch.equal(observation[:, 16:18], actual))
+        self.assertTrue(torch.equal(observation[:, 18:].reshape(2, 8, 32), depth))
+
     def test_velocity_head_is_two_dimensional_and_maps_to_feasible_commands(self):
         policy = ActorCriticDirectVelocity(
             num_short_obs=272,

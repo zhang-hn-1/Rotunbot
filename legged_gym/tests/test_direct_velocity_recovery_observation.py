@@ -25,7 +25,7 @@ from legged_gym.scripts.train_sru_direct_velocity import (
 )
 
 
-def _policy(num_obs, num_critic_obs):
+def _policy(num_obs, num_critic_obs, previous_actual_velocity_dim=0):
     return ActorCriticDirectVelocity(
         num_short_obs=num_obs,
         num_proprio_obs=num_obs,
@@ -39,6 +39,7 @@ def _policy(num_obs, num_critic_obs):
         attention_heads=4,
         actor_hidden_dims=(32,),
         critic_hidden_dims=(32,),
+        previous_actual_velocity_dim=previous_actual_velocity_dim,
     )
 
 
@@ -120,6 +121,55 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         self.assertEqual(RotunbotDirectVelocityCfg.env.num_short_obs, 273)
         self.assertEqual(RotunbotDirectVelocityCfg.env.num_privileged_obs, 19)
         self.assertEqual(RotunbotDirectVelocityCfg.env.single_num_privileged_obs, 19)
+
+    def test_v1_abi_explicitly_adds_previous_actual_velocity(self):
+        from legged_gym.envs import task_registry
+
+        cfg, ppo = task_registry.get_cfgs("rotunbot_sru_visual_corridor_v1")
+        self.assertEqual(cfg.env.num_single_obs, 275)
+        self.assertEqual(cfg.env.num_privileged_obs, 21)
+        self.assertEqual(ppo.policy.previous_actual_velocity_dim, 2)
+
+    def test_migration_inserts_actual_velocity_before_recovery_bit(self):
+        torch.manual_seed(17)
+        old_policy = _policy(273, 19)
+        new_policy = _policy(275, 21, previous_actual_velocity_dim=2)
+        new_policy.load_state_dict(
+            migrate_direct_velocity_state_dict(
+                old_policy.state_dict(), new_policy.state_dict()
+            )
+        )
+        old_actor_observation = torch.randn(2, 273)
+        new_actor_observation = torch.cat(
+            (
+                old_actor_observation[:, :16],
+                torch.zeros(2, 2),
+                old_actor_observation[:, 16:272],
+                old_actor_observation[:, 272:],
+            ),
+            dim=1,
+        )
+        old_critic_observation = torch.randn(2, 19)
+        new_critic_observation = torch.cat(
+            (
+                old_critic_observation[:, :16],
+                torch.zeros(2, 2),
+                old_critic_observation[:, 16:],
+            ),
+            dim=1,
+        )
+        self.assertTrue(
+            torch.equal(
+                old_policy.act_inference(old_actor_observation),
+                new_policy.act_inference(new_actor_observation),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                old_policy.evaluate(old_critic_observation),
+                new_policy.evaluate(new_critic_observation),
+            )
+        )
 
     def test_migration_preserves_old_actor_and_critic_outputs_when_recovery_is_zero(self):
         torch.manual_seed(7)

@@ -30,8 +30,8 @@ class VisualCorridorV1Tests(unittest.TestCase):
         cfg = task_registry.get_cfgs("rotunbot_sru_visual_corridor_v1")[0]
 
         self.assertEqual(cfg.env.num_actions, 2)
-        self.assertEqual(cfg.env.num_observations, 273)
-        self.assertEqual(cfg.env.num_privileged_obs, 19)
+        self.assertEqual(cfg.env.num_observations, 275)
+        self.assertEqual(cfg.env.num_privileged_obs, 21)
         self.assertEqual(cfg.visual_stage, "V1")
         self.assertAlmostEqual(cfg.corridor_width_m, 2.0)
         self.assertAlmostEqual(cfg.corridor_length_m, 6.0)

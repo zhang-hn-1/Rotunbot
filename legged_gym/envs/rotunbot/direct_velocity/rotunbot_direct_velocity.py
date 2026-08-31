@@ -45,6 +45,9 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.previous_velocity_command = torch.zeros(
             self.num_envs, 2, device=self.device
         )
+        self.previous_actual_velocity = torch.zeros(
+            self.num_envs, 2, device=self.device
+        )
         self.last_velocity_command = torch.zeros(
             self.num_envs, 2, device=self.device
         )
@@ -232,6 +235,9 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
 
     def step(self, actions):
         if self.common_step_counter % self.upper_level_command_interval_steps == 0:
+            if getattr(self.cfg.env, "num_single_obs", 0) >= 275:
+                self.previous_actual_velocity[:, 0] = self.tracking_lin_vel[:, 0]
+                self.previous_actual_velocity[:, 1] = self.tracking_ang_vel[:, 2]
             command = normalized_action_to_velocity_command(
                 actions,
                 self.cfg.commands.max_forward_speed,
@@ -263,6 +269,9 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         return RotunbotVel.step(self, torch.zeros_like(actions))
 
     def compute_observations(self):
+        uses_actual_velocity = getattr(
+            getattr(self.cfg, "env", None), "num_single_obs", 0
+        ) >= 275
         self.depth_observation[:] = self.capture_depth()
         self.obs_buf[:] = build_direct_velocity_observation(
             self._proprioception(),
@@ -271,18 +280,23 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             self.depth_observation,
             self.cfg.commands.maximum_goal_distance,
             recovery_active=self.goal_recovery_active,
+            previous_actual_velocity=(self.previous_actual_velocity if uses_actual_velocity else None),
         )
-        self.privileged_obs_buf[:] = torch.cat(
+        privileged_fields = [
+            self._proprioception(),
+            self._goal_xy_robot(),
+            self.previous_velocity_command,
+        ]
+        if uses_actual_velocity:
+            privileged_fields.append(self.previous_actual_velocity)
+        privileged_fields.extend(
             (
-                self._proprioception(),
-                self._goal_xy_robot(),
-                self.previous_velocity_command,
                 self.obstacle_clearance.unsqueeze(1),
                 self.step_collision_buf.float().unsqueeze(1),
                 self.goal_recovery_active.float().unsqueeze(1),
-            ),
-            dim=1,
+            )
         )
+        self.privileged_obs_buf[:] = torch.cat(privileged_fields, dim=1)
 
     def check_termination(self):
         goal_distance = torch.linalg.vector_norm(
@@ -385,6 +399,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             }
         )
         self.previous_velocity_command[env_ids] = 0.0
+        self.previous_actual_velocity[env_ids] = 0.0
         self.last_velocity_command[env_ids] = 0.0
         self.goal_recovery_active[env_ids] = False
         self.goal_recovery_activation_count[env_ids] = 0
