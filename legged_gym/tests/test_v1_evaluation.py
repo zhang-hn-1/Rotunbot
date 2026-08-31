@@ -4,6 +4,22 @@ import torch
 
 
 class V1EvaluationTests(unittest.TestCase):
+    def test_evaluator_explicitly_destroys_sim_when_environment_has_no_close(self):
+        from types import SimpleNamespace
+        from legged_gym.scripts.eval_sru_visual_corridor_v1 import close_environment
+
+        calls = []
+        env = SimpleNamespace(
+            viewer="viewer",
+            sim="sim",
+            gym=SimpleNamespace(
+                destroy_viewer=lambda viewer: calls.append(("viewer", viewer)),
+                destroy_sim=lambda sim: calls.append(("sim", sim)),
+            ),
+        )
+        close_environment(env)
+        self.assertEqual(calls, [("viewer", "viewer"), ("sim", "sim")])
+
     def test_curriculum_history_row_contains_gate_and_command_diagnostics(self):
         from legged_gym.scripts.train_sru_visual_corridor_v1 import curriculum_history_row
 

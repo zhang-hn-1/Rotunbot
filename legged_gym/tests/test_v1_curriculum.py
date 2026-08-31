@@ -8,6 +8,7 @@ class V1CurriculumTests(unittest.TestCase):
         from legged_gym.navigation.v1_curriculum import V1PerformanceCurriculum
 
         curriculum = V1PerformanceCurriculum(seed=4)
+        self.assertEqual(curriculum.next_distance, 3.0)
         distances, kinds = curriculum.sample_distances(1000)
         self.assertTrue(all(2.0 <= value <= 2.5 for value in distances))
         self.assertGreater(sum(kind == "replay" for kind in kinds), 600)

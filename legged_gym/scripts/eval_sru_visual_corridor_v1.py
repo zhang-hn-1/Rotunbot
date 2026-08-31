@@ -46,6 +46,18 @@ def evaluation_targets(current_distance, next_distance=None, episodes=30):
     ]
 
 
+def close_environment(env):
+    """Destroy Isaac Gym resources for tasks that do not expose close()."""
+    if env is None:
+        return
+    viewer = getattr(env, "viewer", None)
+    if viewer is not None:
+        env.gym.destroy_viewer(viewer)
+    sim = getattr(env, "sim", None)
+    if sim is not None:
+        env.gym.destroy_sim(sim)
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--checkpoint", required=True)
@@ -345,8 +357,7 @@ def evaluate_distance(
         )
         return summary
     finally:
-        if env is not None and hasattr(env, "close"):
-            env.close()
+        close_environment(env)
 
 
 def main(argv=None):

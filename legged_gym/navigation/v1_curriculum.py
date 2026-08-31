@@ -52,6 +52,13 @@ class V1PerformanceCurriculum:
                 )
         return distances, kinds
 
+    @property
+    def next_distance(self):
+        """Return the next curriculum level, or the current max at the end."""
+        return V1_CURRICULUM_LEVELS[
+            min(self.current_level + 1, len(V1_CURRICULUM_LEVELS) - 1)
+        ]
+
     def record_evaluation(
         self,
         iteration,
