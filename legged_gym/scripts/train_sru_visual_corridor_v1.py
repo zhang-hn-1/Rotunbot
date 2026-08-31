@@ -6,6 +6,7 @@ import os
 import sys
 
 import isaacgym  # noqa: F401 - must precede torch
+import torch
 
 from legged_gym.envs import *  # noqa: F401,F403
 from legged_gym.dwl.actor_critic_direct_velocity import (
@@ -41,7 +42,8 @@ def main(argv=None):
         env_cfg.env.num_envs = int(stage_args.num_envs)
     if stage_args.disable_camera_noise:
         env_cfg.camera.add_noise = False
-    env_cfg.commands.v1_goal_curriculum_enabled = True
+    env_cfg.commands.v1_goal_curriculum_enabled = False
+    env_cfg.commands.v1_performance_curriculum_enabled = True
 
     env, _ = task_registry.make_env(args.task, args=args, env_cfg=env_cfg)
     runner, _ = task_registry.make_alg_runner(
@@ -56,6 +58,9 @@ def main(argv=None):
         stage_args.resume_path,
         map_location=runner.device,
     )
+    checkpoint_payload = torch.load(stage_args.resume_path, map_location="cpu")
+    if isinstance(checkpoint_payload, dict):
+        env.set_checkpoint_state(checkpoint_payload.get("env_state"))
     print(
         "V1 model-only warm start loaded: {checkpoint} "
         "(migrated={migrated}, source_iteration={source_iteration})".format(**warm_start),

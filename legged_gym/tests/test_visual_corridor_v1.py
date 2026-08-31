@@ -39,6 +39,33 @@ class VisualCorridorV1Tests(unittest.TestCase):
         self.assertAlmostEqual(cfg.init_state.random_start_yaw, math.radians(10.0))
         self.assertFalse(cfg.maze.enabled)
         self.assertEqual(cfg.camera.depth_backend, "fallback")
+        self.assertFalse(cfg.commands.v1_performance_curriculum_enabled)
+
+    def test_v1_uses_current_goal_progress_not_path_progress(self):
+        from legged_gym.envs import task_registry
+
+        cfg = task_registry.get_cfgs("rotunbot_sru_visual_corridor_v1")[0]
+        self.assertAlmostEqual(cfg.rewards.scales.goal_progress, 20.0)
+        self.assertAlmostEqual(cfg.rewards.scales.path_progress, 0.0)
+
+    def test_v1_goal_progress_rewards_forward_and_lateral_correction(self):
+        from legged_gym.envs.rotunbot.visual_corridor_v1.rotunbot_visual_corridor_v1 import (
+            RotunbotVisualCorridorV1,
+        )
+        import torch
+
+        env = object.__new__(RotunbotVisualCorridorV1)
+        env.root_states = torch.tensor([[0.0, 0.0, 0.0]])
+        env.global_goal_xy_world = torch.tensor([[2.0, 1.0]])
+        env.previous_goal_distance = torch.linalg.vector_norm(
+            env.global_goal_xy_world[:, :2] - env.root_states[:, :2], dim=1
+        )
+        env.root_states[0, 0] = 0.5
+        forward_progress = env._reward_goal_progress()
+        env.root_states[0, 1] = 0.5
+        lateral_progress = env._reward_goal_progress()
+        self.assertGreater(float(forward_progress[0]), 0.0)
+        self.assertGreater(float(lateral_progress[0]), 0.0)
 
     def test_v1_path_progress_is_available_without_oracle_observation(self):
         from legged_gym.envs.rotunbot.visual_corridor_v1.rotunbot_visual_corridor_v1 import (

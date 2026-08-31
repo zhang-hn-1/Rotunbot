@@ -40,19 +40,21 @@ class RotunbotVisualCorridorV1Cfg(RotunbotDirectVelocityCfg):
         random_start_yaw = False
         goal_distance = (V1_CORRIDOR_LENGTH_M, V1_CORRIDOR_LENGTH_M)
         goal_bearing = (0.0, 0.0)
-        # Formal evaluation leaves this disabled and always uses the full
-        # corridor. The V1 training entry point enables it for warm-start
-        # transfer from the 0.5--2 m S2/S2B distribution.
+        # Formal evaluation leaves both curricula disabled and always uses the
+        # full corridor. The V1 training entry point enables the performance-
+        # gated sampler for warm-start transfer from the S2 distribution.
         v1_goal_curriculum_enabled = False
         v1_curriculum_start_distance = 2.0
         v1_curriculum_horizon_steps = 12000
+        v1_performance_curriculum_enabled = False
+        v1_curriculum_seed = 4
 
     class rewards(RotunbotDirectVelocityCfg.rewards):
         only_positive_rewards = False
 
         class scales(RotunbotDirectVelocityCfg.rewards.scales):
-            goal_progress = 0.0
-            path_progress = 20.0
+            goal_progress = 20.0
+            path_progress = 0.0
             wall_clearance = -0.05
 
 

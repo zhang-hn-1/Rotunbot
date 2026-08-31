@@ -104,8 +104,11 @@ Evidence:
 - The direct SRU → `(v_cmd,w_cmd)` → V62 command path, Depth observation
   contract, hidden-state reset, parallel-environment isolation, and corridor
   focused test coverage were verified.
-- Current focused audit: 109/109 tests PASS (83 direct/V62/corridor/Oracle
-  tests plus 26 Depth/visual-observation tests).
+- Current P0/P1 focused audit: 115/115 tests PASS across direct velocity,
+  V62/corridor, depth/visual observation, timing, diagnostics, and curriculum
+  tests. The repository-wide suite still contains unrelated legacy failures
+  (`test_nav` requires ROS `rospy`; one V49 integration contract is missing a
+  legacy method).
 
 This decision authorizes the V1 research probe and does not create an
 `S2B_best.pt` or rewrite any historical B3 result.
@@ -125,12 +128,12 @@ All direct policies route desired `(v,w)` through the existing V62 command proje
 
 ## Current decision and next work
 
-Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / P0 timing correction PASS, 5 Hz-aligned S2 parent PENDING / V1 formal PENDING / Maze NOT STARTED**.
+Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / P0 timing correction PASS, 5 Hz-aligned S2 parent PASS / P1-A current-goal reward PASS / P1-B curriculum foundation PASS, V1 formal PENDING / Maze NOT STARTED**.
 
-Next: compare the retained S2 checkpoint and the historical 80% S2B
-checkpoint with the same short warm-start probe, select the more stable V1
-parent, then train and formally evaluate V1 Depth Straight Corridor. The first
-The actual repository primitive clock is `sim.dt=0.005 s`, decimation `4`,
+Next: run the independent internal 30+30 episode performance evaluator every
+50 iterations, then promote or freeze V1 levels and complete the fixed 6 m
+100-episode evaluation. The actual repository primitive clock is
+`sim.dt=0.005 s`, decimation `4`,
 `env.dt=0.02 s`; therefore the corrected 5 Hz PPO macro transition uses
 `repeat=10`. The first fixed-6 m run was stopped for lack of learning evidence;
 the training entry

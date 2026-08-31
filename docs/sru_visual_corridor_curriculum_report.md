@@ -39,17 +39,17 @@ Audit evidence:
 | V62 S0A/S0B/S0C | PASS; 20/20, 20/20, 30/30; safety counters zero |
 | S1/S2 retained regression | 100/100 and 97/100 |
 | S2B historical best | 80/100; formal FAIL at 90% |
-| V1 warm-start probe A | 100 iterations from S2; 18/20 short evaluation |
+| V1 warm-start probe A | historical 100-iteration probe; 18/20 short evaluation |
 | V1 warm-start probe B | 100 iterations from historical S2B; 16/20 short evaluation |
 | Direct/V62/corridor/Oracle tests | 83/83 PASS |
 | Depth/visual-observation tests | 26/26 PASS |
-| Total current focused audit before V1 curriculum change | 109/109 PASS |
+| P0/P1 focused unit audit | 115/115 PASS |
 
 ## Stage ledger
 
 | Stage | Parent checkpoint | Current Gate | Depth ablation | Memory ablation | Decision |
 | --- | --- | --- | --- | --- | --- |
-| V1 Depth Straight Corridor | Probe A `model_100.pt` | Curriculum smoke passed; formal evaluation pending | N/A | N/A | TRAINING BLOCKED PENDING RETRAIN |
+| V1 Depth Straight Corridor | 5 Hz-aligned S2 adaptation `model_100.pt` | S1/S2 regression passed; V1 formal evaluation pending | N/A | N/A | TRAINING IN PROGRESS |
 | V2 Depth L Corridor | V1_best.pt | Blocked by V1 | N/A | N/A | NOT STARTED |
 | V3 Depth Double-Turn | V2_best.pt | Blocked by V2 | N/A | N/A | NOT STARTED |
 | V4 Depth S Corridor | V3_best.pt | Blocked by V3 | N/A | N/A | NOT STARTED |
@@ -66,10 +66,14 @@ training environments, and model-only warm start:
 | A | `logs/sru_velocity/S2/S2_best.pt` | collision/violation counts zero | 18/20; 2 timeout; no reverse command |
 | B | `logs/rotunbot_sru_direct_velocity_s2b/Aug30_23-05-08_/model_900.pt` | collision/violation counts zero | 16/20; 4 timeout; 290 raw reverse commands |
 
-Decision: select candidate A as the V1 parent. Its checkpoint is
-`logs/rotunbot_sru_direct_velocity_s2b/Aug31_15-09-05_/model_100.pt` with
-SHA256 `6583969fcf83af67f409bd06e798b66246158708938b596cb121816b51be0424`.
-The 18/20 result is a probe only and is not a formal B3 or V1 result.
+The corrected 5 Hz-aligned S2 adaptation is now the V1 parent:
+`logs/rotunbot_sru_direct_velocity_s2/Aug31_16-38-22_/model_100.pt`,
+SHA256 `bddb58bc66e6f73371cca87ca941920844abce2c39b775edaa7e4c8887483e03`.
+It was trained for 100 iterations from `logs/sru_velocity/S2/S2_best.pt`,
+with model-only warm start and a fresh optimizer. Fixed 100-episode regression
+is 100/100 on S1 and 99/100 on S2 (one timeout), with zero collision and zero
+rate/domain/hidden-projection violations. These are regression results, not a
+V1 result.
 
 ## V1 execution status
 
@@ -82,13 +86,16 @@ the issue to distance extrapolation: the selected S2 parent produced forward
 commands around a 2 m goal but reverse commands at a 6 m goal. This is a
 transfer-scale issue, not evidence that the V62 command chain is broken.
 
-The V1 training entry point now enables a bounded 2 m -> 6 m goal-distance
-curriculum over 12000 low-level steps. The task configuration keeps the
-curriculum disabled by default, so formal evaluation remains fixed at the
-full 6 m corridor. A four-environment GPU smoke completed with mean rollout
-path distance 2.008 m, finite 273-value observations, and zero collision
-rate. The V1 Gate remains `PENDING` until a converged checkpoint achieves the
-100-episode fixed 6 m evaluation and the same-checkpoint Depth ablation.
+The V1 training entry point now enables the performance-gated curriculum:
+70% uniform replay over 2.0--current-max m and 30% frontier sampling in the
+last 0.25 m. The promotion levels are 2.5, 3, 4, 5, and 6 m; promotion
+requires two consecutive 30-episode passes after at least 50 iterations,
+with frontier >=26/30, replay >=27/30, collision <=1/30, and all safety
+counters zero. Curriculum state is stored in the PPO environment checkpoint
+and restored independently of model-only warm starts. Formal evaluation keeps
+the curriculum disabled and the goal fixed at 6 m. The V1 Gate remains
+`PENDING` until a converged checkpoint achieves the 100-episode fixed 6 m
+evaluation and the same-checkpoint Depth ablation.
 
 ## P0 timing correction
 
@@ -102,7 +109,8 @@ primitive rows for two policy samples, ten rows per sample; no action is
 resampled inside a macro transition.
 
 The original 6 m failure and the clipped-goal causal result remain diagnostic
-evidence only until a 5 Hz-aligned S2 parent has passed regression.
+evidence only; the corrected 5 Hz-aligned S2 parent has now passed S1/S2
+regression, so V1 training may proceed from that parent.
 
 ## P0-A deterministic distance diagnostics
 
