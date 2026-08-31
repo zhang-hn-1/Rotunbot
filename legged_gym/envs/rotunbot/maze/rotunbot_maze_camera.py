@@ -12,7 +12,10 @@ import torch.nn.functional as F
 
 def normalize_depth_image(depth, near, far):
     """Convert Isaac Gym depth values to finite ``[0, 1]`` far-is-open values."""
-    invalid = (~torch.isfinite(depth)) | (depth < 0.0)
+    # Isaac Gym IMAGE_DEPTH uses non-positive/no-return values for invalid
+    # samples on some paths; treat zero like negative/NaN/Inf rather than
+    # clamping it to the near plane and presenting a false close obstacle.
+    invalid = (~torch.isfinite(depth)) | (depth <= 0.0)
     depth = torch.where(invalid, torch.full_like(depth, float(far)), depth)
     depth = depth.clamp(float(near), float(far))
     return ((depth - float(near)) / max(float(far) - float(near), 1.0e-6)).clamp(0.0, 1.0)
@@ -125,6 +128,25 @@ class DepthCameraMixin:
         if tuple(depth.shape[-2:]) == target:
             return depth
         return F.interpolate(depth.unsqueeze(1), size=target, mode="bilinear", align_corners=False).squeeze(1)
+
+    def depth_debug_stats(self, depth=None):
+        """Return non-mutating statistics for the tensor sent to the encoder."""
+        if depth is None:
+            depth = self.depth_observation
+        flat = depth.detach().float().reshape(-1)
+        return {
+            "shape": list(depth.shape),
+            "dtype": str(depth.dtype),
+            "min": float(flat.min().item()) if flat.numel() else None,
+            "max": float(flat.max().item()) if flat.numel() else None,
+            "mean": float(flat.mean().item()) if flat.numel() else None,
+            "std": float(flat.std(unbiased=False).item()) if flat.numel() else None,
+            "finite": bool(torch.isfinite(depth).all().item()),
+            "backend_requested": str(getattr(self, "depth_backend_requested", "unknown")),
+            "backend_actual": str(getattr(self, "depth_backend_actual", "unknown")),
+            "near_plane": float(self.cfg.camera.near_plane),
+            "far_plane": float(self.cfg.camera.far_plane),
+        }
 
     def _fallback_depth(self):
         """Cast horizontal rays against environment-provided XY AABBs."""

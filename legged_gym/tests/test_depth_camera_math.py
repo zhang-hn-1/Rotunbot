@@ -52,13 +52,14 @@ class _FallbackEnv(DepthCameraMixin):
 
 class DepthCameraMathTests(unittest.TestCase):
     def test_normalization_clamps_and_fills_invalid_values(self):
-        raw = torch.tensor([[-1.0, 0.05, 4.025, 9.0, float("nan")]])
+        raw = torch.tensor([[-1.0, 0.0, 0.05, 4.025, 9.0, float("nan")]])
         normalized = normalize_depth_image(raw, near=0.05, far=8.0)
         self.assertTrue(torch.isfinite(normalized).all())
         self.assertGreaterEqual(float(normalized.min()), 0.0)
         self.assertLessEqual(float(normalized.max()), 1.0)
         self.assertEqual(float(normalized[0, 0]), 1.0)
-        self.assertEqual(float(normalized[0, 4]), 1.0)
+        self.assertEqual(float(normalized[0, 1]), 1.0)
+        self.assertEqual(float(normalized[0, 5]), 1.0)
 
     def test_symmetric_corridor_is_symmetric(self):
         env = _FallbackEnv()
@@ -76,6 +77,31 @@ class DepthCameraMathTests(unittest.TestCase):
         self.assertEqual(tuple(provided[1].shape), (2, 2))
         self.assertEqual(env.depth_backend_requested, "fallback")
         self.assertEqual(env.depth_backend_actual, "fallback")
+
+    def test_nearer_obstacle_has_smaller_normalized_depth_than_farther_obstacle(self):
+        env = _FallbackEnv()
+        half_extents = torch.tensor([[0.05, 0.05]])
+        env._get_depth_fallback_aabbs = lambda: (
+            torch.tensor([[1.0, 0.0]]), half_extents
+        )
+        near_depth = env._fallback_depth()
+        env._get_depth_fallback_aabbs = lambda: (
+            torch.tensor([[3.0, 0.0]]), half_extents
+        )
+        far_depth = env._fallback_depth()
+        self.assertLess(float(near_depth.min()), float(far_depth.min()))
+        self.assertTrue(torch.isfinite(near_depth).all())
+        self.assertTrue(torch.isfinite(far_depth).all())
+
+    def test_debug_stats_expose_normalized_encoder_input_contract(self):
+        env = _FallbackEnv()
+        depth = torch.tensor([[[0.0, 0.5], [1.0, 0.25]]])
+        stats = env.depth_debug_stats(depth)
+        self.assertEqual(stats["shape"], [1, 2, 2])
+        self.assertEqual(stats["dtype"], "torch.float32")
+        self.assertEqual(stats["min"], 0.0)
+        self.assertEqual(stats["max"], 1.0)
+        self.assertTrue(stats["finite"])
 
 
 if __name__ == "__main__":
