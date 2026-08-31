@@ -41,15 +41,14 @@ Audit evidence:
 | S2B historical best | 80/100; formal FAIL at 90% |
 | V1 warm-start probe A | historical 100-iteration probe; 18/20 short evaluation |
 | V1 warm-start probe B | 100 iterations from historical S2B; 16/20 short evaluation |
-| Direct/V62/corridor/Oracle tests | 83/83 PASS |
-| Depth/visual-observation tests | 26/26 PASS |
-| P0/P1 focused unit audit | 115/115 PASS |
+| Direct/V62/corridor/Oracle/depth/SRU/V1 tests | 134/134 PASS |
+| P0/P1 focused unit audit | 134/134 PASS; no V1 Gate inference from unit tests |
 
 ## Stage ledger
 
 | Stage | Parent checkpoint | Current Gate | Depth ablation | Memory ablation | Decision |
 | --- | --- | --- | --- | --- | --- |
-| V1 Depth Straight Corridor | 5 Hz-aligned S2 adaptation `model_100.pt` | S1/S2 regression passed; V1 formal evaluation pending | N/A | N/A | TRAINING IN PROGRESS |
+| V1 Depth Straight Corridor | 5 Hz-aligned S2 adaptation `model_100.pt` | 30+30 FAIL; fixed 6m×100 FAIL | fallback PASS; real Isaac IMAGE_DEPTH unusable | stateless baseline verified | FAIL; do not start V2 |
 | V2 Depth L Corridor | V1_best.pt | Blocked by V1 | N/A | N/A | NOT STARTED |
 | V3 Depth Double-Turn | V2_best.pt | Blocked by V2 | N/A | N/A | NOT STARTED |
 | V4 Depth S Corridor | V3_best.pt | Blocked by V3 | N/A | N/A | NOT STARTED |
@@ -92,10 +91,60 @@ last 0.25 m. The promotion levels are 2.5, 3, 4, 5, and 6 m; promotion
 requires two consecutive 30-episode passes after at least 50 iterations,
 with frontier >=26/30, replay >=27/30, collision <=1/30, and all safety
 counters zero. Curriculum state is stored in the PPO environment checkpoint
-and restored independently of model-only warm starts. Formal evaluation keeps
+and restored independently of model-only warm starts. Training and evaluation
+are now orchestrated as separate processes; the former in-process evaluator
+path was removed after it reproduced an Isaac Gym native segmentation fault
+when a second simulation was created before the training simulation exited.
+Formal evaluation keeps
 the curriculum disabled and the goal fixed at 6 m. The V1 Gate remains
-`PENDING` until a converged checkpoint achieves the 100-episode fixed 6 m
-evaluation and the same-checkpoint Depth ablation.
+`FAIL` on the current checkpoint: the independent 30+30 curriculum gate and
+the fixed 6 m formal evaluation both failed.
+
+The first isolated external stage used
+`logs/rotunbot_sru_visual_corridor_v1/Aug31_18-11-02_/model_50.pt`. Its
+machine-readable 30+30 result is
+`logs/phase_b/v1_orchestrated_from_model50/iteration_0050/summary.json`:
+
+| Distance | Success | Collision | Timeout | Mean final distance |
+| ---: | ---: | ---: | ---: | ---: |
+| 2.5 m × 30 | 18/30 (60.0%) | 1/30 (3.3%) | 11/30 (36.7%) | 1.286 m |
+| 3.0 m × 30 | 14/30 (46.7%) | 5/30 (16.7%) | 11/30 (36.7%) | 1.481 m |
+
+The fixed formal result at
+`logs/phase_b/v1_formal_6m_seed2026/fixed_6m/summary.json` is:
+
+| Metric | Result |
+| --- | ---: |
+| Initial goal distance | 6.000 m for all 100 episodes |
+| Success | 4/100 (4.0%) |
+| SPL | 0.04 |
+| Collision | 37/100 (37.0%) |
+| Timeout | 59/100 (59.0%) |
+| Mean final goal distance | 4.704 m |
+| Median final goal distance | 5.978 m |
+| Mean episode length | 1707.97 steps |
+| Mean path length | 2.275 m |
+| Reverse-motion ratio | 5.08% |
+
+Therefore the V1 formal Gate is **FAIL**, not PASS or NEAR PASS. V2/L/
+double-turn/S curricula remain blocked.
+
+## Depth and temporal-state audit
+
+The fallback depth audit passes the normalization contract: invalid synthetic
+raw values become far-range values, the near obstacle is closer than the far
+obstacle, and the final tensor is finite in [0, 1]. The actual Isaac Gym
+`IMAGE_DEPTH` audit under the current V1 camera/scene produced `-Inf` for all
+256 raw pixels; normalization consequently produced an all-far tensor. A
+diagnostic forward-camera quaternion did not change this. Real-depth calibration
+is therefore **not PASS** and the V1 result must be described as fallback-depth
+only.
+
+The SRU audit confirms the current model is stateless: `is_recurrent=False`,
+each inference constructs a length-one sequence with a fresh zero hidden tensor,
+transition storage carries no hidden state, and `reset()` is a no-op. This is a
+verified baseline fact, not a repaired recurrent implementation; changing it
+would require a separate architecture decision and checkpoint protocol.
 
 ## P0 timing correction
 

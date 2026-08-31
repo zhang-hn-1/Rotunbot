@@ -104,11 +104,32 @@ Evidence:
 - The direct SRU → `(v_cmd,w_cmd)` → V62 command path, Depth observation
   contract, hidden-state reset, parallel-environment isolation, and corridor
   focused test coverage were verified.
-- Current P0/P1 focused audit: 115/115 tests PASS across direct velocity,
-  V62/corridor, depth/visual observation, timing, diagnostics, and curriculum
-  tests. The repository-wide suite still contains unrelated legacy failures
+- Current P0/P1 focused audit: 134/134 tests PASS across direct velocity,
+  V62/corridor, depth, timing, curriculum, evaluation, and SRU-state checks.
+  The repository-wide suite still contains unrelated legacy failures
   (`test_nav` requires ROS `rospy`; one V49 integration contract is missing a
   legacy method).
+
+The V1 visual-corridor gate was then executed on a model-only warm-start
+checkpoint using an external process for every evaluation. The 2.5m/3.0m
+30+30 evaluation reached 18/30 and 14/30 successes respectively, with 1 and
+5 collisions. The fixed 6m×100 formal evaluation used exact 6.0m initial
+goals and reached 4/100 success, SPL 0.04, 37 collisions, and 59 timeouts.
+These results are **V1 FAIL**; V2/L/double-turn/S curricula remain blocked.
+
+The fallback depth normalization contract passes, but actual Isaac Gym
+`IMAGE_DEPTH` currently returns `-Inf` for all 256 raw pixels under the V1
+camera/scene, so the visual result is fallback-depth-only and real-depth
+calibration is not passed. The SRU hidden-state audit confirms the current
+policy is intentionally stateless (`is_recurrent=False`, fresh zero hidden on
+each length-one call, no hidden state in rollout storage).
+
+The former in-process V1 evaluator was removed after it caused a native Isaac
+Gym segmentation fault when creating a second simulation before the training
+simulation exited. The replacement is
+`legged_gym/scripts/run_sru_visual_corridor_v1_curriculum.py`, which launches
+training and evaluation as sequential isolated subprocesses and persists the
+curriculum JSON between them.
 
 This decision authorizes the V1 research probe and does not create an
 `S2B_best.pt` or rewrite any historical B3 result.
@@ -118,8 +139,8 @@ This decision authorizes the V1 research probe and does not create an
 - S0 used corridor walls to validate scripted V62 spatial execution, but this is not learned obstacle avoidance.
 - The reusable depth camera, fallback depth model, corridor geometry, and procedural maze infrastructure exist in the repository.
 - The current direct-velocity task deliberately runs with `maze.enabled = False` and `scene_mode = "none"` during S1/S2/S2B.
-- V1–V6 learned depth-corridor training has not started; V1 is now authorized
-  by `VISUAL_ENTRY_GATE`, while S2B remains a formal FAIL.
+- V1 learned depth-corridor training has started but its current formal Gate is
+  FAIL; V2/L/double-turn/S are blocked. S2B remains a formal FAIL.
 - M1 5×5, M2 9×9, and M3 15×15 direct-SRU maze training have not started. Existing maze/local-depth or actuator-action policies are historical infrastructure/baselines, not results for this new SRU→velocity→V62 route.
 
 ## Safety and evaluation protocol
@@ -128,11 +149,11 @@ All direct policies route desired `(v,w)` through the existing V62 command proje
 
 ## Current decision and next work
 
-Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / P0 timing correction PASS, 5 Hz-aligned S2 parent PASS / P1-A current-goal reward PASS / P1-B curriculum foundation PASS, V1 formal PENDING / Maze NOT STARTED**.
+Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / P0 timing correction PASS, 5 Hz-aligned S2 parent PASS / P1-A current-goal reward PASS / P1-B curriculum foundation PASS / V1 formal FAIL / Maze NOT STARTED**.
 
-Next: run the independent internal 30+30 episode performance evaluator every
-50 iterations, then promote or freeze V1 levels and complete the fixed 6 m
-100-episode evaluation. The actual repository primitive clock is
+Next: improve V1 distance-transfer performance while preserving the independent
+process evaluator, then rerun the exact 30+30 gate and fixed 6 m×100 formal
+evaluation. The actual repository primitive clock is
 `sim.dt=0.005 s`, decimation `4`,
 `env.dt=0.02 s`; therefore the corrected 5 Hz PPO macro transition uses
 `repeat=10`. The first fixed-6 m run was stopped for lack of learning evidence;
