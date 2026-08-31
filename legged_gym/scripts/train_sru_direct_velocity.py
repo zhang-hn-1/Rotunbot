@@ -8,6 +8,9 @@ import sys
 import isaacgym  # noqa: F401 - must precede torch
 
 from legged_gym.envs import *  # noqa: F401,F403
+from legged_gym.dwl.actor_critic_direct_velocity import (
+    load_direct_velocity_warm_start,
+)
 from legged_gym.navigation.direct_velocity_curriculum import (
     configure_direct_velocity_stage,
 )
@@ -74,18 +77,26 @@ def main(argv=None):
         log_root="default",
     )
     if stage_args.resume_path:
-        runner.load(stage_args.resume_path)
+        warm_start = load_direct_velocity_warm_start(
+            runner.alg.actor_critic, stage_args.resume_path, map_location=runner.device
+        )
+        print(
+            "Direct-velocity warm start loaded model weights only: "
+            "{checkpoint} (migrated={migrated}, source_iteration={source_iteration}); "
+            "optimizer state was intentionally not restored.".format(**warm_start)
+        )
     runner.learn(
         num_learning_iterations=train_cfg.runner.max_iterations,
         init_at_random_ep_len=True,
     )
-    if runner.log_dir is not None and stage_args.parent_checkpoint:
+    parent_checkpoint = stage_args.parent_checkpoint or stage_args.resume_path
+    if runner.log_dir is not None and parent_checkpoint:
         checkpoint = os.path.join(
             runner.log_dir, "model_{}.pt".format(runner.current_learning_iteration)
         )
         metadata = CheckpointMetadata.from_path(
             checkpoint,
-            parent=stage_args.parent_checkpoint,
+            parent=parent_checkpoint,
             stage=stage_args.stage,
             seed=train_cfg.seed,
             iterations=runner.current_learning_iteration,

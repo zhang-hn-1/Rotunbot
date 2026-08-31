@@ -1,5 +1,8 @@
 """Direct SRU navigation policy whose action is the desired ``(v, w)``."""
 
+from pathlib import Path
+from collections.abc import Mapping
+
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
@@ -50,26 +53,32 @@ class ActorCriticDirectVelocity(nn.Module):
         self.previous_command_dim = int(previous_command_dim)
         self.depth_dim = self.depth_height * self.depth_width
         self.context_dim = self.proprio_dim + self.goal_dim + self.previous_command_dim
-        if self.num_single_obs != self.context_dim + self.depth_dim:
+        self.legacy_observation_dim = self.context_dim + self.depth_dim
+        self.has_recovery_observation = self.num_single_obs == self.legacy_observation_dim + 1
+        if self.num_single_obs not in (
+            self.legacy_observation_dim,
+            self.legacy_observation_dim + 1,
+        ):
             raise ValueError("direct velocity observation size mismatch")
         if self.num_short_obs != self.num_single_obs:
             raise ValueError("direct velocity policy requires one observation frame")
         if self.num_actions != 2:
             raise ValueError("direct velocity policy requires exactly two actions")
+        self.policy_context_dim = self.context_dim + int(self.has_recovery_observation)
 
         self.depth_encoder = DepthAttentionEncoder(
             self.depth_height,
             self.depth_width,
-            self.context_dim,
+            self.policy_context_dim,
             feature_dim=int(encoder_dim),
             heads=int(attention_heads),
         )
         self.memory = SpatialRecurrentUnit(
-            int(encoder_dim) + self.context_dim,
+            int(encoder_dim) + self.policy_context_dim,
             int(hidden_dim),
         )
         actor_layers = []
-        last_dim = int(hidden_dim) + self.context_dim
+        last_dim = int(hidden_dim) + self.policy_context_dim
         for layer_dim in actor_hidden_dims:
             actor_layers.extend((nn.Linear(last_dim, int(layer_dim)), _activation(activation)))
             last_dim = int(layer_dim)
@@ -93,10 +102,13 @@ class ActorCriticDirectVelocity(nn.Module):
     def split_observation(self, observations):
         if observations.ndim != 2 or observations.shape[-1] != self.num_single_obs:
             raise ValueError("expected [N, %d] observations" % self.num_single_obs)
-        context = observations[:, : self.context_dim]
-        depth = observations[:, self.context_dim:].reshape(
+        legacy_observation = observations[:, : self.legacy_observation_dim]
+        context = legacy_observation[:, : self.context_dim]
+        depth = legacy_observation[:, self.context_dim:].reshape(
             -1, 1, self.depth_height, self.depth_width
         )
+        if self.has_recovery_observation:
+            context = torch.cat((context, observations[:, -1:]), dim=1)
         return context, depth
 
     def _actor_features(self, observations):
@@ -143,3 +155,137 @@ class ActorCriticDirectVelocity(nn.Module):
 
     def reset(self, dones=None):
         return None
+
+
+_MIGRATABLE_INPUT_WEIGHTS = (
+    "depth_encoder.cross_query.weight",
+    "memory.input_projection.weight",
+    "memory.spatial_projection.weight",
+    "memory.gates.weight",
+    "velocity_head.0.weight",
+    "critic.0.weight",
+)
+
+
+def _migration_error(detail):
+    raise RuntimeError("unsupported direct-velocity checkpoint mismatch: " + detail)
+
+
+def _append_zero_input_column(source, target):
+    if source.ndim != 2 or target.ndim != 2:
+        _migration_error("expected two-dimensional input weight")
+    if source.shape[0] != target.shape[0] or target.shape[1] != source.shape[1] + 1:
+        _migration_error("expected one appended input column")
+    migrated = torch.zeros_like(target)
+    migrated[:, : source.shape[1]] = source
+    return migrated
+
+
+def _insert_zero_gate_input_column(source, target, old_input_dim, hidden_dim):
+    if (
+        source.ndim != 2
+        or target.ndim != 2
+        or source.shape != (2 * hidden_dim, old_input_dim + hidden_dim)
+        or target.shape != (2 * hidden_dim, old_input_dim + 1 + hidden_dim)
+    ):
+        _migration_error("unexpected SpatialRecurrentUnit gate shape")
+    migrated = torch.zeros_like(target)
+    migrated[:, :old_input_dim] = source[:, :old_input_dim]
+    migrated[:, old_input_dim + 1:] = source[:, old_input_dim:]
+    return migrated
+
+
+def migrate_direct_velocity_state_dict(source_state_dict, target_state_dict):
+    """Map the legacy 272/18 direct policy into the 273/19 observation ABI.
+
+    Only the six first-layer matrices affected by the appended recovery bit
+    may differ.  Their new recovery input columns are initialized to zero so
+    an old policy is exactly preserved when the recovery bit is zero.
+    """
+    if not isinstance(source_state_dict, Mapping) or not isinstance(target_state_dict, Mapping):
+        _migration_error("state dictionaries are required")
+    source_keys = set(source_state_dict)
+    target_keys = set(target_state_dict)
+    if source_keys != target_keys:
+        _migration_error("state-dict keys differ")
+
+    changed = {
+        key
+        for key in target_keys
+        if tuple(source_state_dict[key].shape) != tuple(target_state_dict[key].shape)
+    }
+    if not changed:
+        return {key: value.detach().clone() for key, value in source_state_dict.items()}
+    if changed != set(_MIGRATABLE_INPUT_WEIGHTS):
+        _migration_error("only recovery-input matrices may change shape")
+
+    cross_source = source_state_dict["depth_encoder.cross_query.weight"]
+    cross_target = target_state_dict["depth_encoder.cross_query.weight"]
+    if cross_source.ndim != 2 or cross_target.ndim != 2 or cross_source.shape[1] != 16 or cross_target.shape[1] != 17:
+        _migration_error("expected depth cross-query [feature, 16] -> [feature, 17]")
+    encoder_dim = cross_source.shape[0]
+    if cross_target.shape[0] != encoder_dim:
+        _migration_error("depth cross-query feature dimension changed")
+
+    input_source = source_state_dict["memory.input_projection.weight"]
+    input_target = target_state_dict["memory.input_projection.weight"]
+    spatial_source = source_state_dict["memory.spatial_projection.weight"]
+    spatial_target = target_state_dict["memory.spatial_projection.weight"]
+    hidden_dim = input_source.shape[0] if input_source.ndim == 2 else -1
+    old_memory_input = encoder_dim + 16
+    if (
+        input_source.shape != (hidden_dim, old_memory_input)
+        or input_target.shape != (hidden_dim, old_memory_input + 1)
+        or spatial_source.shape != input_source.shape
+        or spatial_target.shape != input_target.shape
+    ):
+        _migration_error("unexpected SpatialRecurrentUnit input/projection shape")
+
+    actor_source = source_state_dict["velocity_head.0.weight"]
+    actor_target = target_state_dict["velocity_head.0.weight"]
+    critic_source = source_state_dict["critic.0.weight"]
+    critic_target = target_state_dict["critic.0.weight"]
+    if actor_source.ndim != 2 or actor_target.ndim != 2 or actor_source.shape[1] != hidden_dim + 16:
+        _migration_error("unexpected actor first-layer shape")
+    if actor_target.shape != (actor_source.shape[0], hidden_dim + 17):
+        _migration_error("expected actor recovery input column")
+    if critic_source.ndim != 2 or critic_target.ndim != 2 or critic_source.shape[1] != 18:
+        _migration_error("unexpected critic first-layer shape")
+    if critic_target.shape != (critic_source.shape[0], 19):
+        _migration_error("expected critic recovery input column")
+
+    migrated = {key: value.detach().clone() for key, value in source_state_dict.items()}
+    migrated["depth_encoder.cross_query.weight"] = _append_zero_input_column(cross_source, cross_target)
+    migrated["memory.input_projection.weight"] = _append_zero_input_column(input_source, input_target)
+    migrated["memory.spatial_projection.weight"] = _append_zero_input_column(spatial_source, spatial_target)
+    migrated["memory.gates.weight"] = _insert_zero_gate_input_column(
+        source_state_dict["memory.gates.weight"],
+        target_state_dict["memory.gates.weight"],
+        old_memory_input,
+        hidden_dim,
+    )
+    migrated["velocity_head.0.weight"] = _append_zero_input_column(actor_source, actor_target)
+    migrated["critic.0.weight"] = _append_zero_input_column(critic_source, critic_target)
+    return migrated
+
+
+def load_direct_velocity_warm_start(actor_critic, checkpoint_path, map_location="cpu"):
+    """Load only compatible direct-policy weights; never restore PPO state."""
+    checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+    payload = torch.load(str(checkpoint_path), map_location=map_location)
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("model_state_dict"), Mapping):
+        _migration_error("checkpoint lacks model_state_dict")
+    source = payload["model_state_dict"]
+    target = actor_critic.state_dict()
+    migrated = any(
+        tuple(source[key].shape) != tuple(target[key].shape)
+        for key in source.keys() & target.keys()
+    )
+    actor_critic.load_state_dict(
+        migrate_direct_velocity_state_dict(source, target), strict=True
+    )
+    return {
+        "checkpoint": str(checkpoint_path),
+        "migrated": migrated,
+        "source_iteration": int(payload.get("iter", 0)),
+    }

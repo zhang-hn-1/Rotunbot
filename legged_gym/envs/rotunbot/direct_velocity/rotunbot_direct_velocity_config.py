@@ -15,11 +15,11 @@ class RotunbotDirectVelocityCfg(RotunbotVelSRU50SafeYawResidualV62TransitionCfg)
     class env(RotunbotVelSRU50SafeYawResidualV62TransitionCfg.env):
         num_envs = 64
         num_actions = 2
-        num_single_obs = 272
-        num_short_obs = 272
-        num_observations = 272
-        num_privileged_obs = 18
-        single_num_privileged_obs = 18
+        num_single_obs = 273
+        num_short_obs = 273
+        num_observations = 273
+        num_privileged_obs = 19
+        single_num_privileged_obs = 19
         depth_height = 8
         depth_width = 32
         depth_dim = 256
