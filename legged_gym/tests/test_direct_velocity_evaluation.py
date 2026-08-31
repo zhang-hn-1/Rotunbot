@@ -20,6 +20,7 @@ from legged_gym.navigation.direct_velocity_evaluation import (
     build_fixed_goal_specs,
     evaluate_b_gate_chain,
     evaluate_stage_gate,
+    evaluate_visual_entry_gate,
     load_checkpoint_identity,
     summarize_evaluation,
     write_failure_artifacts,
@@ -27,6 +28,77 @@ from legged_gym.navigation.direct_velocity_evaluation import (
 
 
 class DirectVelocityEvaluationTests(unittest.TestCase):
+    def _visual_entry_evidence(self):
+        return {
+            "bottom_level": {
+                "straight": {
+                    "gate": {"pass": True},
+                    "collision_rate": 0.0,
+                    "rate_violation_count": 0,
+                    "feasible_domain_violation_count": 0,
+                    "hidden_projection_jump_count": 0,
+                },
+                "l": {
+                    "gate": {"pass": True},
+                    "collision_rate": 0.0,
+                    "rate_violation_count": 0,
+                    "feasible_domain_violation_count": 0,
+                    "hidden_projection_jump_count": 0,
+                },
+                "double_turn": {
+                    "gate": {"pass": True},
+                    "collision_rate": 0.0,
+                    "rate_violation_count": 0,
+                    "feasible_domain_violation_count": 0,
+                    "hidden_projection_jump_count": 0,
+                },
+            },
+            "s1": {"success_rate": 1.0},
+            "s2": {"success_rate": 0.97},
+            "s2b": {
+                "success_rate": 0.80,
+                "gate": {"regression_pass": True},
+                "collision_count": 0,
+                "rate_violation_count": 0,
+                "feasible_domain_violation_count": 0,
+                "hidden_projection_jump_count": 0,
+            },
+            "infrastructure": {
+                "command_chain_verified": True,
+                "depth_observation_verified": True,
+                "hidden_state_reset_verified": True,
+                "parallel_env_isolation_verified": True,
+                "focused_tests_pass": True,
+            },
+        }
+
+    def test_visual_entry_gate_can_pass_while_strict_s2b_gate_fails(self):
+        evidence = self._visual_entry_evidence()
+
+        result = evaluate_visual_entry_gate(evidence)
+
+        self.assertTrue(result["pass"])
+        self.assertFalse(result["s2b_formal_pass"])
+        self.assertEqual(result["s2b_best_percent"], 80.0)
+
+    def test_visual_entry_gate_requires_explicit_safety_counts(self):
+        evidence = self._visual_entry_evidence()
+        del evidence["s2b"]["hidden_projection_jump_count"]
+
+        result = evaluate_visual_entry_gate(evidence)
+
+        self.assertFalse(result["pass"])
+        self.assertIn("s2b: missing hidden_projection_jump_count", result["failures"])
+
+    def test_visual_entry_gate_requires_verified_direct_chain_and_depth(self):
+        evidence = self._visual_entry_evidence()
+        evidence["infrastructure"]["command_chain_verified"] = False
+
+        result = evaluate_visual_entry_gate(evidence)
+
+        self.assertFalse(result["pass"])
+        self.assertIn("infrastructure: command_chain_verified is false", result["failures"])
+
     def test_s2b_formal_set_is_deterministic_exact_mixture_from_fixed_seeds(self):
         first = build_fixed_goal_specs("S2B", episodes=100)
         second = build_fixed_goal_specs("S2B", episodes=100)

@@ -38,7 +38,7 @@ Freeze Point 1 passed. Evidence is under `logs/formal_s0a`, `logs/formal_s0b_fin
 
 The first S2 attempt reached only 82–86% because goal-side turn direction was not stable. A causal `goal_turn_alignment` shaping term was added and tested; the final S2 result passed without changing the V62 actuator path.
 
-## Stage S2B status on 2026-08-30
+## Stage S2B status on 2026-08-31
 
 - Objective: open-space direct-velocity goal tracking over 0.5–2.0 m and ±45°, with 70% S2B, 20% S2, and 10% S1 replay.
 - Required Gate: S2B SR >= 90%, S2 regression >= 90%, S1 regression >= 93%, and all bottom-level violation counts zero.
@@ -47,7 +47,13 @@ The first S2 attempt reached only 82–86% because goal-side turn direction was 
 - Latest full evaluation: 79/100 success, 21 timeout, 0 collision; mean terminal distance 0.4260 m.
 - Targeted 0.5–1.0 m, ±45° hard-set evaluation: 46/50 success, 4 timeout, 0 collision (92%). This is diagnostic only and is not the S2B Gate.
 - Failure mode: large initial bearing produces a long-timeout orbit. Failed trajectories can finish with the goal 100–146° behind the robot even though the yaw-command sign remains goal-aligned.
-- Decision: **FAIL**. No `S2B_best.pt` was created and S3 is not authorized to start.
+- Decision: **FAIL**. No `S2B_best.pt` was created; the strict B3 checkpoint
+  chain remains unavailable.
+
+The best complete formal S2B artifact remains `logs/phase_b/S2B_clean_model900`:
+80/100 success, 20 timeouts, 0 collisions, and zero rate, feasible-domain, and
+hidden-projection-jump violations. The recovery-aware 66/100 and reverse-lateral
+68/100 experiments also failed B3 and are not selected as a parent checkpoint.
 
 The S2B experiment sequence was:
 
@@ -63,28 +69,60 @@ The S2B experiment sequence was:
 | `Aug30_20-53-11_` | near/high-bearing hard-case curriculum | 77% | 0% | 23% |
 | `Aug30_21-01-46_` | explicit hard-case recovery reward | 79% | 0% | 21% |
 
-The first two rows predate the complete V62 curvature-projection alignment and are retained only as historical evidence. The corrected-interface best full-distribution result is 79%, not 86%.
+The first two rows predate the complete V62 curvature-projection alignment and are retained only as historical evidence. The retained best complete
+full-distribution result is 80%, not the earlier 86% diagnostic result.
 
-## Important compliance note
+## Visual Entry Decision
 
-The fixed specification requires `v_cmd >= 0` throughout S1–S8. The latest hard-case experiments added reverse-recovery shaping to diagnose the orbiting failure. Those changes are experimental and cannot become the accepted S2B solution. Before formal continuation, the direct action mapping must enforce the forward-only contract and S1/S2/S2B must be revalidated under that exact mapping.
+The strict B3/S2B Gate remains independent and failed:
 
-The direct-policy evaluator currently reports success, collision, timeout, terminal distance, initial/final bearing, and command diagnostics. It does not yet emit the complete required `rate_violation`, `feasible_domain_violation`, `hidden_projection_jump`, manager activation, command correction, CSV, and trajectory artifact set. Therefore the direct-navigation Gate is not complete even if SR alone later crosses 90%.
+```text
+S2B formal status: FAIL
+best formal/diagnostic SR: 80/100
+```
+
+The new research-stage gate was evaluated from the current artifacts and the
+2026-08-31 audit:
+
+```text
+VISUAL_ENTRY_GATE: PASS
+```
+
+Evidence:
+
+- S0A straight, S0B L, and S0C double-turn are all PASS with zero collision,
+  rate, feasible-domain, and hidden-projection-jump violations.
+- S1 is 100/100 and S2 is 97/100 in the retained fixed evaluation artifacts;
+  the complete S2B regression chain is PASS.
+- Best S2B is 80%, above the visual-entry floor of 75%, while its formal 90%
+  gate remains FAIL.
+- The direct SRU → `(v_cmd,w_cmd)` → V62 command path, Depth observation
+  contract, hidden-state reset, parallel-environment isolation, and corridor
+  focused test coverage were verified.
+- Current focused audit: 109/109 tests PASS (83 direct/V62/corridor/Oracle
+  tests plus 26 Depth/visual-observation tests).
+
+This decision authorizes the V1 research probe and does not create an
+`S2B_best.pt` or rewrite any historical B3 result.
 
 ## Obstacle avoidance and maze status
 
 - S0 used corridor walls to validate scripted V62 spatial execution, but this is not learned obstacle avoidance.
 - The reusable depth camera, fallback depth model, corridor geometry, and procedural maze infrastructure exist in the repository.
 - The current direct-velocity task deliberately runs with `maze.enabled = False` and `scene_mode = "none"` during S1/S2/S2B.
-- S3–S8 learned depth-corridor avoidance has not started because S2B is FAIL.
+- V1–V6 learned depth-corridor training has not started; V1 is now authorized
+  by `VISUAL_ENTRY_GATE`, while S2B remains a formal FAIL.
 - M1 5×5, M2 9×9, and M3 15×15 direct-SRU maze training have not started. Existing maze/local-depth or actuator-action policies are historical infrastructure/baselines, not results for this new SRU→velocity→V62 route.
 
 ## Safety and evaluation protocol
 
-All direct policies route desired `(v,w)` through the existing V62 command projection and transition manager. No direct SRU-to-actuator path was added. Evaluation disables observation/domain randomization and uses a fixed 16-environment protocol; single-env and hard-only results are not mixed with the full-distribution Gate. S0 supplied complete zero-violation evidence; the direct-policy evaluator still needs the missing safety fields described above.
+All direct policies route desired `(v,w)` through the existing V62 command projection and transition manager. No direct SRU-to-actuator path was added. Evaluation disables observation/domain randomization and uses a fixed 16-environment protocol; single-env and hard-only results are not mixed with the full-distribution Gate. The evaluator now records independent rate, feasible-domain, and hidden-projection-jump counters plus transition/governor/projection activation and command-correction telemetry. Failed episodes retain replay artifacts.
 
 ## Current decision and next work
 
-Current milestone: **S2B FAIL / S3 NOT STARTED / Maze NOT STARTED**.
+Current milestone: **S2B formal FAIL / VISUAL_ENTRY_GATE PASS / V1 NOT STARTED / Maze NOT STARTED**.
 
-The next accepted implementation should first restore the S1–S8 forward-only action contract, then complete the shared evaluator and rerun S1/S2 regression before attempting a new forward-only S2B curriculum. Only a full S2B PASS can unlock S3 depth-corridor training.
+Next: compare the retained S2 checkpoint and the historical 80% S2B
+checkpoint with the same short warm-start probe, select the more stable V1
+parent, then train and formally evaluate V1 Depth Straight Corridor. Oracle
+waypoints remain diagnostic/reference only and are not actor inputs.

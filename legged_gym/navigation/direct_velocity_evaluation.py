@@ -4,6 +4,7 @@ import math
 import hashlib
 import json
 import random
+from collections.abc import Mapping
 from pathlib import Path
 
 from legged_gym.navigation.corridor_artifacts import EpisodeLogger, GateResult
@@ -260,6 +261,106 @@ def evaluate_b_gate_chain(b3_summary, b2_summary, b1_summary):
         "regression_pass": details["B2/S2"]["pass"] and details["B1/S1"]["pass"],
         "failures": failures,
         "details": details,
+    }
+
+
+_VISUAL_ENTRY_SAFETY_KEYS = (
+    "rate_violation_count",
+    "feasible_domain_violation_count",
+    "hidden_projection_jump_count",
+)
+_VISUAL_ENTRY_BOTTOM_LEVELS = ("straight", "l", "double_turn")
+_VISUAL_ENTRY_INFRASTRUCTURE_KEYS = (
+    "command_chain_verified",
+    "depth_observation_verified",
+    "hidden_state_reset_verified",
+    "parallel_env_isolation_verified",
+    "focused_tests_pass",
+)
+
+
+def evaluate_visual_entry_gate(evidence):
+    """Evaluate the research-stage entry gate without weakening formal B3.
+
+    ``evidence`` is intentionally explicit: callers must provide the current
+    bottom-level summaries, direct-velocity stage summaries, and independent
+    infrastructure checks.  The result can pass with a sub-90% S2B result,
+    but only when the documented visual-entry floor and all safety/interface
+    evidence are present.
+    """
+    if not isinstance(evidence, Mapping):
+        raise TypeError("visual-entry evidence must be a mapping")
+
+    failures = []
+
+    bottom_level = evidence.get("bottom_level", {})
+    for family in _VISUAL_ENTRY_BOTTOM_LEVELS:
+        summary = bottom_level.get(family)
+        if not isinstance(summary, Mapping):
+            failures.append("bottom_level: missing %s summary" % family)
+            continue
+        summary_gate = summary.get("gate", summary)
+        if not isinstance(summary_gate, Mapping) or summary_gate.get("pass") is not True:
+            failures.append("bottom_level: %s gate is not PASS" % family)
+        collision_rate = summary.get("collision_rate")
+        if collision_rate is None:
+            failures.append("bottom_level/%s: missing collision_rate" % family)
+        elif float(collision_rate) != 0.0:
+            failures.append("bottom_level/%s: collision_rate is nonzero" % family)
+        for key in _VISUAL_ENTRY_SAFETY_KEYS:
+            value = summary.get(key)
+            if value is None:
+                failures.append("bottom_level/%s: missing %s" % (family, key))
+            elif int(value) != 0:
+                failures.append("bottom_level/%s: %s is nonzero" % (family, key))
+
+    s1 = evidence.get("s1", {})
+    s2 = evidence.get("s2", {})
+    s2b = evidence.get("s2b", {})
+    for name, summary, threshold in (("s1", s1, 0.93), ("s2", s2, 0.90)):
+        value = summary.get("success_rate") if isinstance(summary, Mapping) else None
+        if value is None:
+            failures.append("%s: missing success_rate" % name)
+        elif float(value) < threshold:
+            failures.append(
+                "%s: success_rate=%s failed >= %s" % (name, value, threshold)
+            )
+
+    if not isinstance(s2b, Mapping):
+        s2b = {}
+        failures.append("s2b: missing summary")
+    s2b_rate = s2b.get("success_rate")
+    if s2b_rate is None:
+        failures.append("s2b: missing success_rate")
+        s2b_best_percent = None
+    else:
+        s2b_best_percent = float(s2b_rate) * 100.0
+        if float(s2b_rate) < 0.75:
+            failures.append("s2b: success_rate=%s failed >= 0.75" % s2b_rate)
+    for key in _VISUAL_ENTRY_SAFETY_KEYS:
+        value = s2b.get(key)
+        if value is None:
+            failures.append("s2b: missing %s" % key)
+        elif int(value) != 0:
+            failures.append("s2b: %s is nonzero" % key)
+    s2b_gate = s2b.get("gate")
+    if not isinstance(s2b_gate, Mapping) or s2b_gate.get("regression_pass") is not True:
+        failures.append("s2b: regression gate is not PASS")
+
+    infrastructure = evidence.get("infrastructure", {})
+    for key in _VISUAL_ENTRY_INFRASTRUCTURE_KEYS:
+        if not isinstance(infrastructure, Mapping) or key not in infrastructure:
+            failures.append("infrastructure: missing %s" % key)
+        elif infrastructure[key] is not True:
+            failures.append("infrastructure: %s is false" % key)
+
+    formal_s2b = evaluate_stage_gate(s2b, "S2B")
+    return {
+        "pass": not failures,
+        "s2b_formal_pass": bool(formal_s2b["pass"]),
+        "s2b_formal_gate": formal_s2b,
+        "s2b_best_percent": s2b_best_percent,
+        "failures": failures,
     }
 
 
