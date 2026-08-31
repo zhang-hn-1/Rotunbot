@@ -63,9 +63,14 @@ def validate_approved_s2b_checkpoint(checkpoint, gate_summary=None):
         payload = json.loads(summary.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError("invalid S2B gate summary: %s" % summary) from error
-    if payload.get("stage") != "S2B" or payload.get("gate", {}).get("stage") != "S2B":
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid S2B gate summary payload: %s" % summary)
+    gate = payload.get("gate")
+    if not isinstance(gate, dict):
+        raise RuntimeError("S2B gate must be an object: %s" % summary)
+    if payload.get("stage") != "S2B" or gate.get("stage") != "S2B":
         raise RuntimeError("gate summary is not an S2B artifact: %s" % summary)
-    if payload.get("gate", {}).get("pass") is not True:
+    if gate.get("pass") is not True:
         raise RuntimeError("S2B gate did not pass: %s" % summary)
     try:
         artifact_checkpoint = Path(payload["checkpoint"]).expanduser().resolve()
@@ -76,7 +81,8 @@ def validate_approved_s2b_checkpoint(checkpoint, gate_summary=None):
     if payload.get("checkpoint_sha256") != _sha256(checkpoint):
         raise RuntimeError("gate checkpoint SHA256 does not match requested checkpoint")
     for field in _SAFETY_COUNT_FIELDS:
-        if payload.get(field) != 0:
+        count = payload.get(field)
+        if type(count) is not int or count != 0:
             raise RuntimeError("S2B gate safety count %s is not zero" % field)
     return summary
 

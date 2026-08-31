@@ -29,6 +29,9 @@ class CorridorWaypointOracle:
             raise ValueError("bearing_limit_deg must be in (0, 180]")
         if self.lookahead_m <= 0.0:
             raise ValueError("lookahead_m must be positive")
+        self._corridor_half_width_m = 0.5 * float(scenario.width_m)
+        if self._corridor_half_width_m <= 0.0:
+            raise ValueError("scenario.width_m must be positive")
 
         self._centerline = np.asarray(scenario.centerline, dtype=np.float64)
         if self._centerline.ndim != 2 or self._centerline.shape[1] != 2:
@@ -91,17 +94,50 @@ class CorridorWaypointOracle:
                 )
         return target
 
+    def _is_in_corridor(self, point_xy):
+        """Whether a point is in the centerline tube bounded by scenario.width_m."""
+        relative = point_xy.reshape(1, 2) - self._centerline[:-1]
+        fractions = np.clip(
+            np.sum(relative * self._segment_delta, axis=1)
+            / np.square(self._segment_lengths),
+            0.0,
+            1.0,
+        )
+        projections = self._centerline[:-1] + fractions[:, None] * self._segment_delta
+        nearest_distance = float(np.min(np.linalg.norm(projections - point_xy, axis=1)))
+        return nearest_distance <= self._corridor_half_width_m + 1.0e-12
+
+    def _constrain_fallback_to_corridor(self, position_xy, fallback_xy):
+        """Shrink a bounded fallback ray until it remains inside the corridor."""
+        if not self._is_in_corridor(position_xy):
+            raise ValueError("pose must be inside the scenario corridor")
+        if self._is_in_corridor(fallback_xy):
+            return fallback_xy
+        direction = fallback_xy - position_xy
+        low, high = 0.0, 1.0
+        for _ in range(48):
+            middle = 0.5 * (low + high)
+            point = position_xy + middle * direction
+            if self._is_in_corridor(point):
+                low = middle
+            else:
+                high = middle
+        return position_xy + low * direction
+
     def _cap_to_local_goal_capability(self, position_xy, yaw, candidate_xy):
         delta = candidate_xy - position_xy
         distance = float(np.linalg.norm(delta))
         if distance <= 1.0e-12:
             return candidate_xy.copy()
-        distance = min(distance, self.local_distance_limit)
         bearing = math.atan2(float(delta[1]), float(delta[0])) - float(yaw)
         bearing = (bearing + math.pi) % (2.0 * math.pi) - math.pi
+        if distance <= self.local_distance_limit and abs(bearing) <= self.bearing_limit_rad:
+            return candidate_xy.copy()
+        distance = min(distance, self.local_distance_limit)
         bearing = float(np.clip(bearing, -self.bearing_limit_rad, self.bearing_limit_rad))
         heading = float(yaw) + bearing
-        return position_xy + distance * np.asarray((math.cos(heading), math.sin(heading)))
+        fallback = position_xy + distance * np.asarray((math.cos(heading), math.sin(heading)))
+        return self._constrain_fallback_to_corridor(position_xy, fallback)
 
     def next_waypoint(self, pose):
         """Return one finite world-frame XY waypoint, never a control command."""

@@ -94,6 +94,30 @@ class CorridorWaypointOracleTests(unittest.TestCase):
         self.assertGreater(abs(float(waypoint[1])), 0.1)
         self.assertLessEqual(np.linalg.norm(waypoint - np.array((1.0, 0.0))), 0.4 + 1.0e-8)
 
+    def test_heading_fallback_stays_in_each_straight_corridor_width(self):
+        """Catch a capability-clamped ray that crosses a corridor wall."""
+        distance_limit = 1.0
+        bearing_limit_deg = 45.0
+        for width_m in (1.8, 1.6, 1.4, 1.2):
+            with self.subTest(width_m=width_m):
+                scenario = make_straight_scenario(width_m, 5.0, seed=60)
+                oracle = CorridorWaypointOracle(
+                    scenario,
+                    local_distance_limit=distance_limit,
+                    bearing_limit_deg=bearing_limit_deg,
+                )
+                pose = np.array((1.0, width_m / 2.0 - 0.05, math.pi / 2.0))
+
+                waypoint = oracle.next_waypoint(pose)
+                delta = waypoint - pose[:2]
+                bearing = math.atan2(float(delta[1]), float(delta[0])) - pose[2]
+                bearing = (bearing + math.pi) % (2.0 * math.pi) - math.pi
+
+                self.assertTrue(np.isfinite(waypoint).all())
+                self.assertLessEqual(np.linalg.norm(delta), distance_limit + 1.0e-8)
+                self.assertLessEqual(abs(bearing), math.radians(bearing_limit_deg) + 1.0e-8)
+                self.assertLessEqual(abs(float(waypoint[1])), width_m / 2.0 + 1.0e-8)
+
     def test_adapter_exposes_only_a_world_waypoint_not_an_actuator_command(self):
         scenario = make_straight_scenario(2.0, 5.0, seed=5)
         oracle = CorridorWaypointOracle(

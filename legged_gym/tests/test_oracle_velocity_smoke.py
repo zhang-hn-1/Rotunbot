@@ -60,6 +60,49 @@ class OracleVelocitySmokeGateTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "rate_violation_count"):
                 validate_approved_s2b_checkpoint(checkpoint, summary)
 
+    def test_rejects_malformed_gate_payload_types_with_controlled_error(self):
+        """Catch unchecked JSON shapes that previously leaked AttributeError."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "model.pt"
+            checkpoint.write_bytes(b"approved checkpoint")
+            summary = Path(temp_dir) / "approved_s2b.json"
+            malformed_gates = (
+                [],
+                {"stage": "S2B", "pass": 1},
+                {"stage": "s2b", "pass": True},
+            )
+
+            for malformed_gate in malformed_gates:
+                with self.subTest(gate=malformed_gate):
+                    payload = self._approved_summary(checkpoint)
+                    payload["gate"] = malformed_gate
+                    summary.write_text(json.dumps(payload))
+
+                    with self.assertRaisesRegex(RuntimeError, "gate"):
+                        validate_approved_s2b_checkpoint(checkpoint, summary)
+
+    def test_rejects_boolean_safety_counts_with_controlled_error(self):
+        """Catch JSON booleans accepted accidentally as integer zero counts."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "model.pt"
+            checkpoint.write_bytes(b"approved checkpoint")
+            summary = Path(temp_dir) / "approved_s2b.json"
+
+            for field in (
+                "collision_count",
+                "divergence_count",
+                "feasible_domain_violation_count",
+                "hidden_projection_jump_count",
+                "rate_violation_count",
+            ):
+                with self.subTest(field=field):
+                    payload = self._approved_summary(checkpoint)
+                    payload[field] = False
+                    summary.write_text(json.dumps(payload))
+
+                    with self.assertRaisesRegex(RuntimeError, field):
+                        validate_approved_s2b_checkpoint(checkpoint, summary)
+
 
 if __name__ == "__main__":
     unittest.main()
