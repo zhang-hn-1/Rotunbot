@@ -45,6 +45,27 @@ Task 5: complete (formal S0C 30/30, zero safety violations)
 Task 6: complete (commits `b37bf60..17de2bb` and focused tests)
 Task 7: in progress — B1/S1 PASS, B2/S2 PASS, B3/S2B FAIL at 79/100 with 21 timeouts and 0 collisions.
 
+Latest continuation on 2026-08-31:
+
+- The recovery-aware observation migration is implemented and independently
+  reviewed: actor observation 272 -> 273 and critic observation 18 -> 19,
+  with model-only warm starts and a fresh optimizer.
+- A 300-iteration recovery-aware S2B run from S2 reached 66/100 on the fixed
+  100-episode gate, with zero collision, divergence, rate, domain, and hidden
+  projection violations; S1/S2 regression passed.
+- A bounded recovery action-prior experiment was rejected by evidence: it
+  reached only 50/100 and introduced 778 feasible-domain violations. The
+  experiment was fully reverted from the code path; its artifacts remain under
+  `logs/phase_b/S2B_recoveryprior_model300`.
+- A second 300-iteration run from the former best S2B `model_900.pt`, using an
+  experimental reverse-lateral reward sign, reached 68/100 with zero safety
+  violations. It also failed the B3 gate and the experimental sign change was
+  reverted. The prior best formal result remains 80/100 at
+  `logs/rotunbot_sru_direct_velocity_s2b/Aug30_23-05-08_/model_900.pt`.
+- Task 8 Oracle centerline infrastructure and fail-closed smoke checks passed
+  independent review. The GPU smoke is intentionally not run with a synthetic
+  gate artifact; it awaits an approved B3 checkpoint.
+
 Root cause finding: failed S2B episodes already yaw toward the goal, but keep advancing after the goal enters the rear half-plane and form an orbit. The existing infeasible-turn detector omits the factor of two in `R = d/(2 sin(|b|))`, so it under-detects targets inside the direct-turn circle. A stateless countersteer probe also failed, confirming that B3 needs a learned/stateful multi-phase maneuver rather than another same-side yaw bonus.
 
 Review of `b33eca5`: needs fixes. The evaluator aliases hidden projection jumps to rate violations, terminal episodes can omit the triggering post-step telemetry, and tests do not cover negative commands through the real V62 projection/transition boundary. Fix round 1 is assigned to the resumed implementer before any B3 gate claim.
