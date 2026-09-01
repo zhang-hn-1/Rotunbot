@@ -1875,6 +1875,46 @@ class RotunbotVel(LeggedRobot):
                 self.tracking_error_integral[discontinuous_ids] = 0.0
         self.command_targets[env_ids] = targets
 
+    def set_governed_command_targets(self, target_commands, governor, env_ids=None):
+        """Apply the opt-in measured-reachability governor before latching targets."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        elif not torch.is_tensor(env_ids):
+            env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        else:
+            env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        if env_ids.numel() == 0:
+            return []
+        targets = target_commands.to(device=self.device, dtype=self.command_targets.dtype)
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(0).expand(env_ids.numel(), -1)
+        if targets.shape != (env_ids.numel(), 2):
+            raise ValueError("target_commands must have shape (len(env_ids), 2)")
+        enabled = bool(getattr(self.cfg.commands, "dynamic_governor_enabled", False))
+        if not enabled:
+            self.set_command_targets(targets, env_ids)
+            return []
+        from legged_gym.navigation.v49_dynamic_reachability import ReachabilityState
+
+        previous = getattr(self, "commands", self.command_targets)[env_ids, :2]
+        decisions = []
+        selected = []
+        for row, env_id in enumerate(env_ids.detach().cpu().tolist()):
+            state = ReachabilityState(
+                current_forward_velocity=float(self.tracking_lin_vel[env_id, 0]),
+                current_yaw_rate=float(self.tracking_ang_vel[env_id, 2]),
+            )
+            decision = governor.select_command(
+                state, targets[row], previous[row]
+            )
+            decisions.append(decision)
+            selected.append(decision.command)
+        selected_tensor = torch.as_tensor(
+            selected, dtype=self.command_targets.dtype, device=self.device
+        )
+        self.set_command_targets(selected_tensor, env_ids)
+        return decisions
+
     def _reset_root_states(self, env_ids):
         super()._reset_root_states(env_ids)
         if not bool(self.cfg.init_state.randomize_initial_velocity):

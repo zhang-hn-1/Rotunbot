@@ -48,8 +48,8 @@ Audit evidence:
 
 | Stage | Parent checkpoint | Current Gate | Depth ablation | Memory ablation | Decision |
 | --- | --- | --- | --- | --- | --- |
-| V1 Depth Straight Corridor | auditable velocity teacher | teacher PASS; 1.0 m student smoke PASS; formal student Gate pending | real IMAGE_DEPTH dataset collected; finite | recurrent SRU ABI/rollout/imitation PASS | multi-distance closed-loop validation next |
-| V2 Depth L Corridor | V1_best.pt | Blocked by V1 | N/A | N/A | NOT STARTED |
+| V1 Depth Straight Corridor | auditable velocity teacher | Straight Exit PASS: 80/80 across 1.0/1.5/2.0/2.5 m | real IMAGE_DEPTH dataset collected; finite | recurrent SRU ABI/rollout/imitation PASS | closed |
+| V2 Depth L Corridor | balanced V1 mixed BC | L teacher PASS; L student PASS: 40/40 | real IMAGE_DEPTH dataset collected; finite | local-waypoint recurrent rollout PASS | T-junction decision pending |
 | V3 Depth Double-Turn | V2_best.pt | Blocked by V2 | N/A | N/A | NOT STARTED |
 | V4 Depth S Corridor | V3_best.pt | Blocked by V3 | N/A | N/A | NOT STARTED |
 | V5 Narrow Curriculum | V4_best.pt | Blocked by V4 | N/A | N/A | NOT STARTED |
@@ -193,6 +193,43 @@ success, zero collision, zero timeout, with `depth_backend_actual=isaacgym`.
 The smoke still contains 4.96% reverse commands, so it is evidence that the
 visual channel and recurrent rollout are connected, not a V1 formal pass;
 multi-distance closed-loop validation must resolve that command-domain gap.
+
+## Straight Exit and L-turn MVP gates — 2026-09-02
+
+The Straight Exit sanity gate is recorded at
+`logs/phase_c/straight_exit_20260901/straight_exit_gate.json` with current
+HEAD `b1fb526`: 80/80 success across 1.0, 1.5, 2.0, and 2.5 m, zero collision,
+zero timeout, real Isaac Gym depth, and recurrent hidden-state checks passing.
+Detailed reverse diagnostics show 6.64% raw reverse command steps overall,
+all near-goal, maximum consecutive reverse duration 0.8 s, and zero reverse
+episodes associated with collision, timeout, or negative progress. This is a
+sanity gate, not a 6 m formal claim.
+
+The fixed wide mirrored L MVP uses width 3.0 m, 1.5 m approach/post-turn
+segments, turn radius 2.0 m, and a minimal waypoint manager. The real-depth
+teacher dataset is
+`logs/phase_c/l_turn_teacher_dataset_v1_20260901.pt`: 40 episodes, 8,880
+macro steps, T=16, all terminal done, ordered and finite. The teacher gate is
+10/10 for each of L_LEFT and L_RIGHT with zero collision and timeout.
+
+The mixed recurrent BC checkpoint is
+`logs/phase_c/v1_imitation_straight_l_balanced_20260901.pt`. It uses the
+Straight dataset plus 10x L re-sampling, 30 epochs, 800 effective episodes,
+6,965 sequences, normalized command MAE 0.07395, and finite outputs. The
+student gate is
+`logs/phase_c/l_turn_student_final_20260901/l_turn_student_gate.json`:
+L_LEFT 20/20 and L_RIGHT 20/20, zero collision/timeout/wrong-turn, 100%
+turn completion, minimum wall distance about 1.00 m (left) and 1.02 m
+(right), and post-turn positive-v ratio 1.0. A short 1+1 settling smoke also
+passed before the formal 20+20 run.
+
+The L student required a 50 s evaluation horizon because the left-turn policy
+was consistently within about 1.2 cm of the 0.35 m terminal radius at 45 s;
+the environment horizon is now explicitly synchronized with the evaluator.
+The old 45 s baseline is retained as diagnostic evidence, not overwritten.
+T-junction, S-shape, double-turn, and maze training remain unstarted. The
+next decision is whether to enter a T-junction MVP; no T-junction code or
+training is implied by this report update.
 
 ## P0 timing correction
 
