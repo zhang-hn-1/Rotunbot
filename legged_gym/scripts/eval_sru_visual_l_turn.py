@@ -190,7 +190,7 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
                         if not state["turn_started"]:
                             state["turn_started"] = True
                             state["turn_start_error_m"] = abs(float(current[0]) - geometry.waypoints[1, 0])
-                        wrong = geometry.turn_direction * float(held_requested[0, 1]) < -0.005
+                        wrong = geometry.turn_direction * actual_w < -0.005
                         state["wrong_turn_steps"] += int(wrong)
                         # Ignore isolated near-zero transients; require two
                         # seconds of opposing turn commands before labeling a
