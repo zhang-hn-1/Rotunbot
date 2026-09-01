@@ -41,7 +41,7 @@ def _parse_args(argv):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--max-steps", type=int, default=2250)
+    parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--output-dir", required=True)
     parsed, remaining = parser.parse_known_args(argv)
@@ -268,6 +268,9 @@ def main(argv=None):
     args.seed = int(stage_args.seed)
     env_cfg, train_cfg = task_registry.get_cfgs(args.task)
     env_cfg.env.num_envs = 1
+    env_cfg.env.episode_length_s = float(stage_args.max_steps) * float(
+        env_cfg.sim.dt * env_cfg.control.decimation
+    )
     env_cfg.enable_camera_sensors_in_headless = True
     env_cfg.camera.depth_backend = "isaacgym"
     env_cfg.camera.add_noise = False
