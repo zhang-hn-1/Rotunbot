@@ -130,9 +130,9 @@
 
 - [x] Write failing tests for dataset schema, chronological sequence grouping, done-boundary splitting, and reproducible seed ordering.
 - [x] Implement collection with preprocessed real IMAGE_DEPTH, goal, proprioception, previous command, previous actual velocity, teacher command, done, and metadata fields.
-- [ ] Implement recurrent imitation over ordered sequences with masked MSE/Huber velocity loss and explicit command-domain checks.
-- [ ] Run dataset/schema tests and a synthetic imitation convergence test.
-- [ ] Run a short real-depth imitation smoke only after Task 2 PASS; record sequence metadata and teacher-vs-student command correction.
+- [x] Implement recurrent imitation over ordered sequences with masked MSE/Huber velocity loss and explicit command-domain checks.
+- [x] Run dataset/schema tests and a synthetic imitation convergence test.
+- [x] Run a short real-depth imitation smoke only after Task 2 PASS; record sequence metadata and teacher-vs-student command correction. The 1.0m×20 smoke is 20/20 with zero collision/timeout, but retains 4.96% reverse commands and is not the formal V1 Gate.
 
 ### Task 7: Closed-loop recurrent validation, then PPO fine-tuning and V1 Gate
 

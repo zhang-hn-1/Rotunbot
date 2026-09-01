@@ -48,7 +48,7 @@ Audit evidence:
 
 | Stage | Parent checkpoint | Current Gate | Depth ablation | Memory ablation | Decision |
 | --- | --- | --- | --- | --- | --- |
-| V1 Depth Straight Corridor | auditable velocity teacher | 1.0/1.5/2.0/2.5 m teacher Gate PASS (100 each) | real IMAGE_DEPTH dataset collected; finite | recurrent SRU ABI/rollout PASS | teacher data ready; imitation next |
+| V1 Depth Straight Corridor | auditable velocity teacher | teacher PASS; 1.0 m student smoke PASS; formal student Gate pending | real IMAGE_DEPTH dataset collected; finite | recurrent SRU ABI/rollout/imitation PASS | multi-distance closed-loop validation next |
 | V2 Depth L Corridor | V1_best.pt | Blocked by V1 | N/A | N/A | NOT STARTED |
 | V3 Depth Double-Turn | V2_best.pt | Blocked by V2 | N/A | N/A | NOT STARTED |
 | V4 Depth S Corridor | V3_best.pt | Blocked by V3 | N/A | N/A | NOT STARTED |
@@ -183,6 +183,16 @@ and 400 terminal done markers. The validated depth tensor shape is `[T,8,32]`;
 all stored depth/state/label tensors are finite, episode step ids are ordered,
 and no episode is concatenated with another. Metadata records
 `depth_backend_actual=isaacgym`.
+
+The first recurrent imitation checkpoint is
+`logs/phase_c/v1_imitation_20260901.pt`, trained for 20 epochs from the
+5 Hz-aligned recurrent parent. Dataset-wide masked Huber loss fell from
+0.0213 to 0.00122; the final normalized command MAE audit is 0.0637 and all
+outputs are finite. The real-depth closed-loop smoke at 1.0 m × 20 is 20/20
+success, zero collision, zero timeout, with `depth_backend_actual=isaacgym`.
+The smoke still contains 4.96% reverse commands, so it is evidence that the
+visual channel and recurrent rollout are connected, not a V1 formal pass;
+multi-distance closed-loop validation must resolve that command-domain gap.
 
 ## P0 timing correction
 

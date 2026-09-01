@@ -181,6 +181,22 @@ class V1EvaluationTests(unittest.TestCase):
         wrapped = {"v1_performance_curriculum": plain}
         self.assertEqual(curriculum_state_payload(wrapped), wrapped)
 
+    def test_recurrent_evaluator_resets_only_finished_environment_hidden(self):
+        from legged_gym.scripts.eval_sru_visual_corridor_v1 import reset_recurrent_hidden
+
+        class Policy:
+            def __init__(self):
+                self.masks = []
+
+            def reset(self, dones):
+                self.masks.append(dones.clone())
+
+        policy = Policy()
+        done = torch.tensor([True, False, True])
+        reset_recurrent_hidden(policy, done)
+        self.assertEqual(len(policy.masks), 1)
+        self.assertTrue(torch.equal(policy.masks[0], done))
+
     def test_fixed_distance_specs_are_reproducible_and_auditable(self):
         from legged_gym.navigation.v1_evaluation import build_fixed_distance_specs
 

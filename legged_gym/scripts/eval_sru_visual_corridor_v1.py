@@ -58,6 +58,13 @@ def close_environment(env):
         env.gym.destroy_sim(sim)
 
 
+def reset_recurrent_hidden(actor_critic, done_mask):
+    """Reset only finished vectorized environments between episode actions."""
+    reset = getattr(actor_critic, "reset", None)
+    if callable(reset):
+        reset(done_mask.flatten().bool())
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--checkpoint", required=True)
@@ -67,6 +74,9 @@ def _parse_args(argv):
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--num_envs", type=int, default=16)
     parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument(
+        "--depth-backend", choices=("fallback", "isaacgym"), default="fallback"
+    )
     parser.add_argument("--output-dir", required=True)
     parsed, remaining = parser.parse_known_args(argv)
     return parsed, remaining
@@ -168,6 +178,7 @@ def evaluate_distance(
     output_dir,
     num_envs=16,
     max_steps=None,
+    depth_backend="fallback",
     framework_args=(),
 ):
     """Run one independent fixed-distance set and write episode artifacts."""
@@ -189,6 +200,9 @@ def evaluate_distance(
     env_cfg.domain_rand.randomize_base_mass = False
     env_cfg.domain_rand.push_robots = False
     env_cfg.init_state.randomize_initial_velocity = False
+    env_cfg.camera.depth_backend = str(depth_backend)
+    if env_cfg.camera.depth_backend == "isaacgym":
+        env_cfg.enable_camera_sensors_in_headless = True
     train_cfg.seed = int(seed)
     train_cfg.runner.resume = False
     formal_steps = int(
@@ -205,7 +219,12 @@ def evaluate_distance(
         )
         runner.load(str(checkpoint), load_optimizer=False)
         policy = runner.get_inference_policy(device=env.device)
+        actor_critic = runner.alg.actor_critic
         obs, _ = env.reset()
+        reset_recurrent_hidden(
+            actor_critic,
+            torch.ones(env.num_envs, dtype=torch.bool, device=env.device),
+        )
         held_actions = torch.zeros(env.num_envs, 2, device=env.device)
         held_raw = torch.zeros_like(held_actions)
         held_requested = torch.zeros_like(held_actions)
@@ -336,6 +355,7 @@ def evaluate_distance(
                         active[env_index] = _episode_state(env, spec, env_index)
                     if len(records) >= episodes:
                         break
+                reset_recurrent_hidden(actor_critic, done_mask)
                 if next_spec > 0 and not active:
                     break
                 env.compute_observations()
@@ -378,6 +398,7 @@ def main(argv=None):
             root / name,
             num_envs=stage_args.num_envs,
             max_steps=stage_args.max_steps,
+            depth_backend=stage_args.depth_backend,
             framework_args=remaining,
         )
     result = {"targets": summaries, "seed": stage_args.seed}
