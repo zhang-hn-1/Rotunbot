@@ -5,6 +5,8 @@ import torch
 
 from legged_gym.navigation.v1_velocity_teacher import (
     V1VelocityTeacherConfig,
+    evaluate_teacher_gate,
+    summarize_teacher_episodes,
     teacher_velocity_command,
     teacher_velocity_diagnostics,
 )
@@ -61,6 +63,65 @@ class V1VelocityTeacherTests(unittest.TestCase):
             cfg,
         )
         self.assertTrue(torch.isfinite(command).all())
+
+    def test_teacher_summary_contains_auditable_velocity_and_tracking_metrics(self):
+        records = [
+            {
+                "success": True,
+                "collision": False,
+                "timeout": False,
+                "initial_goal_distance_m": 1.0,
+                "terminal_goal_distance_m": 0.2,
+                "path_length_m": 1.1,
+                "steps": 10,
+                "spl": 1.0 / 1.1,
+                "teacher_command_count": 10,
+                "reverse_command_count": 0,
+                "projection_activation_count": 2,
+                "governor_modification_count": 3,
+                "tracking_v_abs_error_sum": 0.4,
+                "tracking_w_abs_error_sum": 0.2,
+                "tracking_sample_count": 10,
+                "teacher_v_sum": 1.0,
+                "teacher_v_sq_sum": 0.12,
+                "teacher_v_min": 0.05,
+                "teacher_v_max": 0.15,
+                "teacher_w_sum": 0.2,
+                "teacher_w_sq_sum": 0.01,
+                "teacher_w_min": -0.01,
+                "teacher_w_max": 0.04,
+                "projection_correction_sum": 0.03,
+                "projection_correction_max": 0.02,
+            }
+        ]
+        summary = summarize_teacher_episodes(records)
+        for key in (
+            "success_rate", "collision_rate", "timeout_rate", "spl",
+            "path_efficiency", "mean_teacher_v_mps", "std_teacher_v_mps",
+            "mean_teacher_w_rps", "std_teacher_w_rps",
+            "reverse_command_ratio", "projection_activation_ratio",
+            "governor_modification_ratio", "tracking_v_mae_mps",
+            "tracking_w_mae_rps", "finite",
+        ):
+            self.assertIn(key, summary)
+        self.assertAlmostEqual(summary["tracking_v_mae_mps"], 0.04)
+        self.assertAlmostEqual(summary["tracking_w_mae_rps"], 0.02)
+        self.assertTrue(summary["finite"])
+
+    def test_teacher_gate_enforces_distance_specific_success_and_safety(self):
+        summary = {
+            "episodes": 100,
+            "success_rate": 0.98,
+            "collision_rate": 0.0,
+            "timeout_rate": 0.02,
+            "reverse_command_ratio": 0.0,
+            "mean_projection_correction_norm": 0.01,
+            "finite": True,
+        }
+        self.assertTrue(evaluate_teacher_gate(summary, 0.98)["pass"])
+        self.assertFalse(evaluate_teacher_gate(summary, 0.99)["pass"])
+        failed = dict(summary, collision_rate=0.01)
+        self.assertFalse(evaluate_teacher_gate(failed, 0.98)["pass"])
 
 
 if __name__ == "__main__":

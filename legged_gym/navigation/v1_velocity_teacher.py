@@ -1,6 +1,7 @@
 """Explainable V1 velocity teacher in the measured V62 command domain."""
 
 from dataclasses import dataclass
+import math
 
 import torch
 
@@ -27,6 +28,120 @@ class V1VelocityTeacherConfig:
     # V1's centered side-wall clearance is about 0.60--0.70 m.  Treat that
     # as open corridor; only clearance approaching the robot radius brakes.
     obstacle_slow_distance: float = 0.70
+
+
+def _aggregate_scalar(records, sum_key, count_key):
+    total = sum(float(record.get(sum_key, 0.0)) for record in records)
+    count = sum(float(record.get(count_key, 0.0)) for record in records)
+    return total / count if count > 0.0 else 0.0
+
+
+def _aggregate_distribution(records, prefix, count_key):
+    count = sum(float(record.get(count_key, 0.0)) for record in records)
+    total = sum(float(record.get(prefix + "_sum", 0.0)) for record in records)
+    square_total = sum(
+        float(record.get(prefix + "_sq_sum", 0.0)) for record in records
+    )
+    mean = total / count if count > 0.0 else 0.0
+    variance = max(square_total / count - mean * mean, 0.0) if count > 0.0 else 0.0
+    minimums = [record[prefix + "_min"] for record in records if prefix + "_min" in record]
+    maximums = [record[prefix + "_max"] for record in records if prefix + "_max" in record]
+    return {
+        "mean": mean,
+        "std": math.sqrt(variance),
+        "min": min(minimums) if minimums else 0.0,
+        "max": max(maximums) if maximums else 0.0,
+    }
+
+
+def summarize_teacher_episodes(records):
+    """Aggregate episode and command-path evidence for the formal teacher gate."""
+    records = list(records)
+    if not records:
+        raise ValueError("at least one teacher episode record is required")
+    count = float(len(records))
+    successes = sum(bool(record.get("success", False)) for record in records)
+    collisions = sum(bool(record.get("collision", False)) for record in records)
+    timeouts = sum(bool(record.get("timeout", False)) for record in records)
+    initial = [
+        float(record["initial_goal_distance_m"] if "initial_goal_distance_m" in record else record["distance_m"])
+        for record in records
+    ]
+    final = [float(record["terminal_goal_distance_m"]) for record in records]
+    paths = [float(record.get("path_length_m", 0.0)) for record in records]
+    spl_values = [
+        (goal / max(path, goal)) if bool(record.get("success", False)) else 0.0
+        for record, goal, path in zip(records, initial, paths)
+    ]
+    teacher_commands = sum(float(record.get("teacher_command_count", 0.0)) for record in records)
+    projection_count = sum(float(record.get("projection_activation_count", 0.0)) for record in records)
+    governor_count = sum(float(record.get("governor_modification_count", 0.0)) for record in records)
+    projection_sum = sum(float(record.get("projection_correction_sum", 0.0)) for record in records)
+    projection_max = max((float(record.get("projection_correction_max", 0.0)) for record in records), default=0.0)
+    reverse_count = sum(float(record.get("reverse_command_count", 0.0)) for record in records)
+    tracking_count = sum(float(record.get("tracking_sample_count", 0.0)) for record in records)
+    v_stats = _aggregate_distribution(records, "teacher_v", "teacher_command_count")
+    w_stats = _aggregate_distribution(records, "teacher_w", "teacher_command_count")
+    summary = {
+        "episodes": len(records),
+        "success_count": successes,
+        "success_rate": successes / count,
+        "collision_count": collisions,
+        "collision_rate": collisions / count,
+        "timeout_count": timeouts,
+        "timeout_rate": timeouts / count,
+        "mean_final_goal_distance_m": sum(final) / count,
+        "mean_path_length_m": sum(paths) / count,
+        "path_efficiency": sum(min(1.0, goal / path) for goal, path in zip(initial, paths) if path > 0.0) / max(sum(path > 0.0 for path in paths), 1),
+        "spl": sum(spl_values) / count,
+        "mean_teacher_v_mps": v_stats["mean"],
+        "std_teacher_v_mps": v_stats["std"],
+        "min_teacher_v_mps": v_stats["min"],
+        "max_teacher_v_mps": v_stats["max"],
+        "mean_teacher_w_rps": w_stats["mean"],
+        "std_teacher_w_rps": w_stats["std"],
+        "min_teacher_w_rps": w_stats["min"],
+        "max_teacher_w_rps": w_stats["max"],
+        "teacher_command_count": int(teacher_commands),
+        "reverse_command_count": int(reverse_count),
+        "reverse_command_ratio": reverse_count / max(teacher_commands, 1.0),
+        "projection_activation_count": int(projection_count),
+        "projection_activation_ratio": projection_count / max(teacher_commands, 1.0),
+        "mean_projection_correction_norm": projection_sum / max(teacher_commands, 1.0),
+        "max_projection_correction_norm": projection_max,
+        "governor_modification_count": int(governor_count),
+        "governor_modification_ratio": governor_count / max(tracking_count, 1.0),
+        "tracking_sample_count": int(tracking_count),
+        "tracking_v_mae_mps": _aggregate_scalar(records, "tracking_v_abs_error_sum", "tracking_sample_count"),
+        "tracking_w_mae_rps": _aggregate_scalar(records, "tracking_w_abs_error_sum", "tracking_sample_count"),
+    }
+    numeric = [value for value in summary.values() if isinstance(value, (int, float))]
+    summary["finite"] = all(math.isfinite(float(value)) for value in numeric)
+    return summary
+
+
+def evaluate_teacher_gate(
+    summary,
+    success_threshold,
+    collision_threshold=0.0,
+    reverse_threshold=0.01,
+    projection_correction_threshold=0.05,
+):
+    """Apply the short-distance formal teacher gate and return explainable checks."""
+    threshold = float(success_threshold)
+    checks = {
+        "finite": bool(summary.get("finite", False)),
+        "success_rate": float(summary.get("success_rate", -1.0)) >= threshold,
+        "collision_rate": float(summary.get("collision_rate", 1.0)) <= float(collision_threshold),
+        "reverse_command_ratio": float(summary.get("reverse_command_ratio", 1.0)) <= float(reverse_threshold),
+        "mean_projection_correction_norm": float(summary.get("mean_projection_correction_norm", math.inf)) <= float(projection_correction_threshold),
+    }
+    return {
+        "pass": all(checks.values()),
+        "success_threshold": threshold,
+        "checks": checks,
+        "failures": [name for name, passed in checks.items() if not passed],
+    }
 
 
 def _validate_inputs(goal_xy_robot, actual_velocity, obstacle_distance):

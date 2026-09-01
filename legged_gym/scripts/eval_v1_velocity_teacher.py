@@ -15,6 +15,8 @@ import torch
 from legged_gym.envs import *  # noqa: F401,F403
 from legged_gym.navigation.v1_velocity_teacher import (
     V1VelocityTeacherConfig,
+    evaluate_teacher_gate,
+    summarize_teacher_episodes,
     teacher_velocity_diagnostics,
 )
 from legged_gym.utils import get_args, task_registry
@@ -55,17 +57,40 @@ def _assign_fixed_goal(env, env_index, distance):
 
 
 def _record_episode(state, env, env_index, status, forced_timeout=False):
+    path_length = float(state["path_length_m"])
+    distance = float(state["distance_m"])
     return {
         "episode_id": int(state["episode_id"]),
-        "distance_m": float(state["distance_m"]),
+        "distance_m": distance,
+        "initial_goal_distance_m": distance,
         "success": bool(status["success"]),
         "collision": bool(status["collision"]),
         "timeout": bool(forced_timeout or status["timeout"]),
         "steps": int(state["steps"]),
-        "path_length_m": float(state["path_length_m"]),
+        "path_length_m": path_length,
+        "spl": (distance / max(path_length, distance)) if status["success"] else 0.0,
         "terminal_goal_distance_m": float(status["goal_distance"]),
+        "teacher_command_count": int(state["teacher_command_count"]),
+        "reverse_command_count": int(state["reverse_command_count"]),
+        "projection_activation_count": int(state["projection_activation_count"]),
+        "projection_correction_sum": float(state["projection_correction_sum"]),
+        "projection_correction_max": float(state["projection_correction_max"]),
+        "governor_modification_count": int(state["governor_modification_count"]),
+        "tracking_sample_count": int(state["tracking_sample_count"]),
+        "tracking_v_abs_error_sum": float(state["tracking_v_abs_error_sum"]),
+        "tracking_w_abs_error_sum": float(state["tracking_w_abs_error_sum"]),
+        "teacher_v_sum": float(state["teacher_v_sum"]),
+        "teacher_v_sq_sum": float(state["teacher_v_sq_sum"]),
+        "teacher_v_min": float(state["teacher_v_min"]),
+        "teacher_v_max": float(state["teacher_v_max"]),
+        "teacher_w_sum": float(state["teacher_w_sum"]),
+        "teacher_w_sq_sum": float(state["teacher_w_sq_sum"]),
+        "teacher_w_min": float(state["teacher_w_min"]),
+        "teacher_w_max": float(state["teacher_w_max"]),
+        # Retain the legacy per-episode fields for compatibility with quick
+        # inspection tools that predate the formal teacher summary.
         "mean_projection_correction_norm": float(
-            state["projection_correction_sum"] / max(state["steps"], 1)
+            state["projection_correction_sum"] / max(state["teacher_command_count"], 1)
         ),
         "max_projection_correction_norm": float(
             state["projection_correction_max"]
@@ -74,6 +99,59 @@ def _record_episode(state, env, env_index, status, forced_timeout=False):
             state["actual_speed_sum"] / max(state["steps"], 1)
         ),
     }
+
+
+def _new_episode_state(env, index, episode_id, distance):
+    return {
+        "episode_id": episode_id,
+        "distance_m": distance,
+        "steps": 0,
+        "path_length_m": 0.0,
+        "previous_position": env.root_states[index, :2].detach().clone(),
+        "projection_correction_sum": 0.0,
+        "projection_correction_max": 0.0,
+        "teacher_command_count": 0,
+        "reverse_command_count": 0,
+        "projection_activation_count": 0,
+        "governor_modification_count": 0,
+        "tracking_sample_count": 0,
+        "tracking_v_abs_error_sum": 0.0,
+        "tracking_w_abs_error_sum": 0.0,
+        "teacher_v_sum": 0.0,
+        "teacher_v_sq_sum": 0.0,
+        "teacher_v_min": math.inf,
+        "teacher_v_max": -math.inf,
+        "teacher_w_sum": 0.0,
+        "teacher_w_sq_sum": 0.0,
+        "teacher_w_min": math.inf,
+        "teacher_w_max": -math.inf,
+        "actual_speed_sum": 0.0,
+    }
+
+
+def _record_teacher_decisions(active, teacher):
+    """Accumulate one 5 Hz teacher decision per active environment."""
+    applied = teacher["applied_command"].detach()
+    correction = teacher["projection_correction_norm"].detach()
+    projected = correction > 1.0e-5
+    for index, state in active.items():
+        v = float(applied[index, 0].item())
+        w = float(applied[index, 1].item())
+        state["teacher_command_count"] += 1
+        state["reverse_command_count"] += int(v < -1.0e-5)
+        state["projection_activation_count"] += int(projected[index].item())
+        state["projection_correction_sum"] += float(correction[index].item())
+        state["projection_correction_max"] = max(
+            state["projection_correction_max"], float(correction[index].item())
+        )
+        state["teacher_v_sum"] += v
+        state["teacher_v_sq_sum"] += v * v
+        state["teacher_v_min"] = min(state["teacher_v_min"], v)
+        state["teacher_v_max"] = max(state["teacher_v_max"], v)
+        state["teacher_w_sum"] += w
+        state["teacher_w_sq_sum"] += w * w
+        state["teacher_w_min"] = min(state["teacher_w_min"], w)
+        state["teacher_w_max"] = max(state["teacher_w_max"], w)
 
 
 def evaluate_distance(
@@ -86,6 +164,7 @@ def evaluate_distance(
     args.task = "rotunbot_sru_visual_corridor_v1"
     args.seed = int(seed)
     env_cfg, _ = task_registry.get_cfgs(args.task)
+    env_cfg.seed = int(seed)
     env_cfg.env.num_envs = min(max(1, int(num_envs)), int(episodes))
     env_cfg.camera.depth_backend = "fallback"
     env_cfg.camera.add_noise = False
@@ -117,19 +196,10 @@ def evaluate_distance(
         active = {}
         for index in range(env.num_envs):
             _assign_fixed_goal(env, index, distance)
-            active[index] = {
-                "episode_id": episode_counter,
-                "distance_m": distance,
-                "steps": 0,
-                "path_length_m": 0.0,
-                "previous_position": env.root_states[index, :2].detach().clone(),
-                "projection_correction_sum": 0.0,
-                "projection_correction_max": 0.0,
-                "actual_speed_sum": 0.0,
-            }
+            active[index] = _new_episode_state(env, index, episode_counter, distance)
             episode_counter += 1
         held_actions = torch.zeros(env.num_envs, 2, device=env.device)
-        held_projection = torch.zeros(env.num_envs, device=env.device)
+        held_teacher = torch.zeros(env.num_envs, 2, device=env.device)
         with torch.inference_mode():
             while len(records) < int(episodes):
                 if env.common_step_counter % env.upper_level_command_interval_steps == 0:
@@ -139,10 +209,11 @@ def evaluate_distance(
                     teacher = teacher_velocity_diagnostics(
                         env._goal_xy_robot(), actual, env.obstacle_clearance, teacher_cfg
                     )
-                    held_actions[:, 0] = teacher["applied_command"][:, 0] / teacher_cfg.max_forward_speed
-                    held_actions[:, 1] = teacher["applied_command"][:, 1] / teacher_cfg.max_yaw_rate
+                    held_teacher.copy_(teacher["applied_command"])
+                    held_actions[:, 0] = held_teacher[:, 0] / teacher_cfg.max_forward_speed
+                    held_actions[:, 1] = held_teacher[:, 1] / teacher_cfg.max_yaw_rate
                     held_actions.clamp_(-1.0, 1.0)
-                    held_projection = teacher["projection_correction_norm"].detach().clone()
+                    _record_teacher_decisions(active, teacher)
                 previous_positions = env.root_states[:, :2].detach().clone()
                 _, _, _, dones, _ = env.step(held_actions)
                 done_mask = dones.flatten().bool()
@@ -155,16 +226,40 @@ def evaluate_distance(
                         torch.linalg.vector_norm(position - state["previous_position"]).item()
                     )
                     state["previous_position"] = position
-                    state["projection_correction_sum"] += float(held_projection[index].item())
-                    state["projection_correction_max"] = max(
-                        state["projection_correction_max"], float(held_projection[index].item())
+                    is_done = bool(done_mask[index].item())
+                    actual_velocity = (
+                        env.terminal_tracking_velocity[index]
+                        if is_done
+                        else torch.stack(
+                            (env.tracking_lin_vel[index, 0], env.tracking_ang_vel[index, 2])
+                        )
                     )
-                    actual_speed = env.terminal_tracking_velocity[index, 0] if bool(done_mask[index].item()) else env.tracking_lin_vel[index, 0]
+                    applied_v62 = (
+                        env.terminal_applied_feasible_command[index]
+                        if is_done
+                        else env.applied_feasible_command[index]
+                    )
+                    state["tracking_sample_count"] += 1
+                    state["tracking_v_abs_error_sum"] += abs(
+                        float(actual_velocity[0].item())
+                        - float(held_teacher[index, 0].item())
+                    )
+                    state["tracking_w_abs_error_sum"] += abs(
+                        float(actual_velocity[1].item())
+                        - float(held_teacher[index, 1].item())
+                    )
+                    state["governor_modification_count"] += int(
+                        torch.linalg.vector_norm(
+                            applied_v62 - held_teacher[index]
+                        ).item()
+                        > 1.0e-5
+                    )
+                    actual_speed = actual_velocity[0]
                     state["actual_speed_sum"] += float(actual_speed.item())
-                    forced_timeout = state["steps"] >= max_steps and not bool(done_mask[index].item())
-                    if not bool(done_mask[index].item()) and not forced_timeout:
+                    forced_timeout = state["steps"] >= max_steps and not is_done
+                    if not is_done and not forced_timeout:
                         continue
-                    if bool(done_mask[index].item()):
+                    if is_done:
                         status = {
                             "success": bool(env.terminal_success[index].item()),
                             "collision": bool(env.terminal_collision[index].item()),
@@ -184,36 +279,29 @@ def evaluate_distance(
                     if forced_timeout:
                         env.reset_idx(torch.as_tensor([index], device=env.device, dtype=torch.long))
                     _assign_fixed_goal(env, index, distance)
-                    active[index] = {
-                        "episode_id": episode_counter,
-                        "distance_m": distance,
-                        "steps": 0,
-                        "path_length_m": 0.0,
-                        "previous_position": env.root_states[index, :2].detach().clone(),
-                        "projection_correction_sum": 0.0,
-                        "projection_correction_max": 0.0,
-                        "actual_speed_sum": 0.0,
-                    }
+                    active[index] = _new_episode_state(env, index, episode_counter, distance)
                     episode_counter += 1
         fields = list(records[0]) if records else ["distance_m", "success"]
         with (output_dir / "episodes.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(records)
-        summary = {
-            "distance_m": float(distance),
-            "episodes": len(records),
-            "successes": sum(int(row["success"]) for row in records),
-            "collisions": sum(int(row["collision"]) for row in records),
-            "timeouts": sum(int(row["timeout"]) for row in records),
-            "success_rate": sum(int(row["success"]) for row in records) / max(len(records), 1),
-            "mean_projection_correction_norm": sum(row["mean_projection_correction_norm"] for row in records) / max(len(records), 1),
-            "teacher_config": teacher_cfg.__dict__,
-            "max_steps": max_steps,
-            "seed": int(seed),
-            "wall_clock_seconds": time.monotonic() - started,
-            "depth_backend": env.depth_backend_actual,
-        }
+        summary = summarize_teacher_episodes(records)
+        summary.update(
+            {
+                "distance_m": float(distance),
+                "successes": summary["success_count"],
+                "collisions": summary["collision_count"],
+                "timeouts": summary["timeout_count"],
+                "teacher_config": teacher_cfg.__dict__,
+                "max_steps": max_steps,
+                "seed": int(seed),
+                "wall_clock_seconds": time.monotonic() - started,
+                "depth_backend": env.depth_backend_actual,
+            }
+        )
+        threshold = 0.98 if float(distance) <= 1.5 else 0.95
+        summary["gate"] = evaluate_teacher_gate(summary, threshold)
         (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
         return summary
     finally:
@@ -242,9 +330,14 @@ def main(argv=None):
         )
     root = Path(stage_args.output_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    (root / "summary.json").write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return result
+    formal_pass = all(summary.get("gate", {}).get("pass", False) for summary in result.values())
+    payload = {
+        "formal_gate_pass": formal_pass,
+        "distances": result,
+    }
+    (root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return payload
 
 
 if __name__ == "__main__":
