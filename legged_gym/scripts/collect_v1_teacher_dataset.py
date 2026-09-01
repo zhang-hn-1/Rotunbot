@@ -76,7 +76,12 @@ def collect_distance(
     teacher_cfg,
     max_steps,
 ):
-    env.reset()
+    # The environment buffers are updated by the real-camera step under
+    # inference mode.  Keep reset in the same context when reusing the env
+    # between distance buckets; otherwise torch rejects the in-place buffer
+    # update as an inference-tensor write from normal mode.
+    with torch.inference_mode():
+        env.reset()
     if env.depth_backend_actual != "isaacgym":
         raise RuntimeError(
             "teacher dataset requires real IMAGE_DEPTH; got %s"
