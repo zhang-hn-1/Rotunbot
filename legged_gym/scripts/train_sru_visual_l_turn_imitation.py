@@ -23,6 +23,7 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--straight-dataset", required=True)
     parser.add_argument("--l-dataset", required=True)
+    parser.add_argument("--l-repeats", type=int, default=10)
     parser.add_argument("--output", required=True)
     parser.add_argument("--parent-checkpoint", required=True)
     parser.add_argument("--epochs", type=int, default=20)
@@ -42,10 +43,12 @@ def main(argv=None):
     device = torch.device(args.device)
     straight = load_teacher_dataset(args.straight_dataset)
     l_turn = load_teacher_dataset(args.l_dataset)
+    if int(args.l_repeats) <= 0:
+        raise ValueError("--l-repeats must be positive")
     for name, dataset in (("straight", straight), ("l_turn", l_turn)):
         if dataset.get("metadata", {}).get("depth_backend_actual") != "isaacgym":
             raise RuntimeError("%s dataset is not real Isaac Gym IMAGE_DEPTH" % name)
-    dataset = merge_teacher_datasets([straight, l_turn])
+    dataset = merge_teacher_datasets([straight] + [l_turn] * int(args.l_repeats))
     model = build_v1_imitation_policy(device)
     warm_start = load_direct_velocity_warm_start(
         model, args.parent_checkpoint, map_location=device
@@ -73,6 +76,7 @@ def main(argv=None):
             "straight": str(Path(args.straight_dataset).resolve()),
             "l_turn": str(Path(args.l_dataset).resolve()),
         },
+        "l_repeats": int(args.l_repeats),
         "merged_dataset_metadata": dataset["metadata"],
         "seed": int(args.seed),
         "epochs": int(args.epochs),

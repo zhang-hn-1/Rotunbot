@@ -120,6 +120,7 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
             "reverse_run": 0,
             "max_reverse_run": 0,
             "wrong_turn": False,
+            "wrong_turn_steps": 0,
             "turn_start_error_m": 0.0,
             "turn_started": False,
             "post_turn_positive": 0,
@@ -158,11 +159,22 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
                 previous = env.root_states[0, :2].detach().cpu().clone()
                 _, _, _, dones, _ = env.step(held_action)
                 state["steps"] += 1
-                current = env.root_states[0, :2].detach().cpu().clone()
+                done_now = bool(dones.flatten()[0].item())
+                current = (
+                    env.terminal_position[0, :2].detach().cpu().clone()
+                    if done_now
+                    else env.root_states[0, :2].detach().cpu().clone()
+                )
                 state["path"] += float(torch.linalg.vector_norm(current - previous).item())
                 state["min_wall"] = min(state["min_wall"], float(env.obstacle_clearance[0].item()))
-                actual_v = float(env.tracking_lin_vel[0, 0].item())
-                actual_w = float(env.tracking_ang_vel[0, 2].item())
+                actual_v = float(
+                    env.terminal_tracking_velocity[0, 0].item()
+                    if done_now else env.tracking_lin_vel[0, 0].item()
+                )
+                actual_w = float(
+                    env.terminal_tracking_velocity[0, 1].item()
+                    if done_now else env.tracking_ang_vel[0, 2].item()
+                )
                 state["v_sum"] += actual_v
                 state["abs_w_sum"] += abs(actual_w)
                 reverse = actual_v < -3.0e-6
@@ -178,7 +190,12 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
                         if not state["turn_started"]:
                             state["turn_started"] = True
                             state["turn_start_error_m"] = abs(float(current[0]) - geometry.waypoints[1, 0])
-                        state["wrong_turn"] |= geometry.turn_direction * float(held_requested[0, 1]) < -0.005
+                        wrong = geometry.turn_direction * float(held_requested[0, 1]) < -0.005
+                        state["wrong_turn_steps"] += int(wrong)
+                        # Ignore isolated near-zero transients; require two
+                        # seconds of opposing turn commands before labeling a
+                        # real wrong-turn failure.
+                        state["wrong_turn"] |= state["wrong_turn_steps"] >= 20
                 if manager.current_index >= 3:
                     state["post_turn_samples"] += 1
                     state["post_turn_positive"] += int(actual_v > 0.02)
@@ -189,7 +206,10 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
                     "scene_type": scene,
                     "x": float(current[0]),
                     "y": float(current[1]),
-                    "goal_distance": float(env.goal_dist[0].item()),
+                    "goal_distance": float(
+                        env.terminal_goal_distance[0].item()
+                        if done_now else env.goal_dist[0].item()
+                    ),
                     "waypoint_index": manager.current_index,
                     "raw_v_cmd": float(held_raw[0, 0]),
                     "raw_w_cmd": float(held_raw[0, 1]),
@@ -200,7 +220,7 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
                     "v_actual": actual_v,
                     "w_actual": actual_w,
                 })
-                done = bool(dones.flatten()[0].item())
+                done = done_now
             pose = _pose(env)
             manager.update(pose)
         forced_timeout = not done
@@ -223,6 +243,7 @@ def _evaluate_scene(env, policy, actor_critic, scene, geometry, episodes, max_st
             "max_consecutive_reverse_steps": state["max_reverse_run"],
             "turn_completion": manager.current_index >= 3,
             "wrong_turn": bool(state["wrong_turn"]),
+            "wrong_turn_steps": state["wrong_turn_steps"],
             "turn_start_error_m": state["turn_start_error_m"],
             "max_corner_deviation_m": state["corner_deviation"],
             "post_turn_positive_v_ratio": state["post_turn_positive"] / max(state["post_turn_samples"], 1),
