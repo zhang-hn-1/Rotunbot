@@ -113,8 +113,8 @@
 - [x] Set teacher limits from the current reliable executed V62 command domain (`0.25 m/s`, `0.10 rad/s`, `R=2.0 m`, envelope 1.0).
 - [x] Implement a bounded proportional-heading teacher with explicit minimum-turn-radius-compatible speed reduction and no reverse output.
 - [x] Test raw teacher commands through the unchanged Feasible Projection and record bounded projection correction diagnostics.
-- [ ] Run the final teacher-only 1.0m×100, 1.5m×100, 2.0m×100, and 2.5m×100 evaluations with fixed goals and episode-level CSV/JSON artifacts. Smoke evidence is 1.0/1.5/2.0m at 3/3; 2.5m requires the full 45s horizon rather than the 10s smoke cap.
-- [ ] Do not start imitation if any short-distance teacher set fails its declared success/safety threshold; fix teacher first.
+- [x] Run the final teacher-only 1.0m×100, 1.5m×100, 2.0m×100, and 2.5m×100 evaluations with fixed goals and episode-level CSV/JSON artifacts. Final seed-2026 results are 100/100, 100/100, 100/100, and 100/100 with zero collisions/timeouts; the first 2.5m attempt (93/100) is retained as a diagnostic failure artifact.
+- [x] Do not start imitation if any short-distance teacher set fails its declared success/safety threshold; the teacher was corrected and re-gated before dataset work.
 
 ### Task 6: Add teacher-label collection and recurrent imitation warm start
 

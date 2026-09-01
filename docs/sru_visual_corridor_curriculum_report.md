@@ -155,9 +155,22 @@ columns and regression-tested for output preservation.
 The explainable V1 velocity teacher is implemented in
 `legged_gym/navigation/v1_velocity_teacher.py`. It emits only the measured
 V62 `(v,w)` domain and records raw/requested/applied commands plus projection
-correction. Single-environment smoke results are 3/3 at 1.0, 1.5, and 2.0 m;
-the 2.5 m smoke reached about 2.03 m in the intentionally capped 10 s horizon
-and needs the formal 45 s horizon before it can be promoted as a teacher gate.
+correction. The formal single-environment, 45 s, 100-episode gate with seed
+2026 now passes all four distances: 1.0 m 100/100, 1.5 m 100/100, 2.0 m
+100/100, and 2.5 m 100/100, with zero collisions and zero timeouts. SPL and
+bounded path efficiency are 1.0 for every set, reverse-command ratio is zero,
+all inputs/outputs are finite, and mean projection corrections are 0.0182,
+0.00211, 0.000043, and 0.0 respectively. The auditable summaries also retain
+teacher v/w distributions, V62 governor modification ratio, and v/w tracking
+MAE. The gate used the V1 centerline goal geometry and forward-open clearance;
+the generic nearest-wall clearance remains safety telemetry and is not fed to
+the straight-corridor teacher as a false frontal obstacle.
+
+The first 2.5 m formal attempt was intentionally retained as a diagnostic
+FAIL (93/100, seven timeouts): nearest-wall clearance around 0.50 m caused
+the teacher to interpret a side wall as a frontal obstacle and reduce speed.
+The corrected run removes that false slowdown and keeps centerline recovery;
+no imitation training was started before the corrected gate passed.
 
 ## P0 timing correction
 

@@ -46,6 +46,18 @@ class V1VelocityTeacherTests(unittest.TestCase):
         self.assertGreaterEqual(float(command[0]), 0.15)
         self.assertGreaterEqual(float(command[1]), 0.075)
 
+    def test_goal_approach_does_not_settle_outside_success_disk(self):
+        diagnostics = teacher_velocity_diagnostics(
+            torch.tensor([[0.38, 0.0]]),
+            torch.zeros(1, 2),
+            torch.tensor([2.0]),
+            self.cfg,
+        )
+        # The plant has command/velocity lag.  At 0.38 m, the teacher must
+        # still issue a measurable approach command rather than asymptotically
+        # settling outside V1's 0.35 m success disk.
+        self.assertGreater(float(diagnostics["applied_command"][0, 0]), 0.05)
+
     def test_diagnostics_are_finite_and_projected_into_v62_domain(self):
         goals = torch.tensor([[2.0, 1.0], [1.0, -0.5], [0.35, 0.0]])
         actual = torch.tensor([[0.10, 0.01], [0.0, -0.01], [0.2, 0.0]])

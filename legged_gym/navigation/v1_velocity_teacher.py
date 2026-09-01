@@ -19,9 +19,9 @@ class V1VelocityTeacherConfig:
     minimum_turn_radius: float = 2.0
     feasible_envelope_fraction: float = 1.0
     goal_radius: float = 0.35
-    goal_stop_margin: float = 0.05
+    goal_stop_margin: float = 0.15
     stopping_distance: float = 0.80
-    heading_gain: float = 1.25
+    heading_gain: float = 0.35
     yaw_rate_damping: float = 0.35
     velocity_feedback_gain: float = 0.20
     obstacle_stop_distance: float = 0.45

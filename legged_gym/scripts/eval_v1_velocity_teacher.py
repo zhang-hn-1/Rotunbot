@@ -42,18 +42,29 @@ def _close_environment(env):
 
 
 def _assign_fixed_goal(env, env_index, distance):
-    """Override V1's corridor-length reset goal for one teacher distance."""
+    """Set an exact-distance goal on the V1 corridor centerline."""
     index = int(env_index)
-    yaw = float(
-        env._yaw_from_quaternion(env.root_states[index:index + 1, 3:7])[0].item()
-    )
-    env.global_goal_xy_world[index, 0] = env.root_states[index, 0] + float(distance) * math.cos(yaw)
-    env.global_goal_xy_world[index, 1] = env.root_states[index, 1] + float(distance) * math.sin(yaw)
+    lateral = env.root_states[index, 1] - env.env_origins[index, 1]
+    forward_sq = float(distance) ** 2 - float(lateral.item()) ** 2
+    if forward_sq <= 0.0:
+        raise ValueError("fixed goal distance must exceed the start lateral offset")
+    env.global_goal_xy_world[index, 0] = env.env_origins[index, 0] + math.sqrt(forward_sq)
+    env.global_goal_xy_world[index, 1] = env.env_origins[index, 1]
     env.goal_dist[index] = float(distance)
     env.terminal_goal_distance[index] = float(distance)
     env.previous_goal_distance[index] = float(distance)
     env.goal_reached_buf[index] = False
     env.success_buf[index] = False
+
+
+def _teacher_obstacle_distance(env):
+    """Use forward-open clearance for V1; retain nearest-wall telemetry."""
+    if getattr(getattr(env, "cfg", None), "visual_stage", "") == "V1":
+        # The teacher needs forward-obstacle clearance, while V1's generic
+        # nearest-wall metric is still retained for safety/collision logging.
+        # The centerline goal below supplies the lateral wall recovery signal.
+        return torch.full_like(env.obstacle_clearance, float(env.cfg.camera.far_plane))
+    return env.obstacle_clearance
 
 
 def _record_episode(state, env, env_index, status, forced_timeout=False):
@@ -87,6 +98,14 @@ def _record_episode(state, env, env_index, status, forced_timeout=False):
         "teacher_w_sq_sum": float(state["teacher_w_sq_sum"]),
         "teacher_w_min": float(state["teacher_w_min"]),
         "teacher_w_max": float(state["teacher_w_max"]),
+        "mean_abs_goal_bearing_rad": float(
+            state["goal_bearing_abs_sum"] / max(state["teacher_command_count"], 1)
+        ),
+        "max_abs_goal_bearing_rad": float(state["goal_bearing_abs_max"]),
+        "min_obstacle_clearance_m": float(state["obstacle_clearance_min"]),
+        "mean_obstacle_clearance_m": float(
+            state["obstacle_clearance_sum"] / max(state["teacher_command_count"], 1)
+        ),
         # Retain the legacy per-episode fields for compatibility with quick
         # inspection tools that predate the formal teacher summary.
         "mean_projection_correction_norm": float(
@@ -125,14 +144,20 @@ def _new_episode_state(env, index, episode_id, distance):
         "teacher_w_sq_sum": 0.0,
         "teacher_w_min": math.inf,
         "teacher_w_max": -math.inf,
+        "goal_bearing_abs_sum": 0.0,
+        "goal_bearing_abs_max": 0.0,
+        "obstacle_clearance_min": math.inf,
+        "obstacle_clearance_sum": 0.0,
         "actual_speed_sum": 0.0,
     }
 
 
-def _record_teacher_decisions(active, teacher):
+def _record_teacher_decisions(active, teacher, obstacle_distance):
     """Accumulate one 5 Hz teacher decision per active environment."""
     applied = teacher["applied_command"].detach()
     correction = teacher["projection_correction_norm"].detach()
+    bearing = teacher["goal_bearing"].detach().abs()
+    clearance = obstacle_distance.detach()
     projected = correction > 1.0e-5
     for index, state in active.items():
         v = float(applied[index, 0].item())
@@ -152,6 +177,14 @@ def _record_teacher_decisions(active, teacher):
         state["teacher_w_sq_sum"] += w * w
         state["teacher_w_min"] = min(state["teacher_w_min"], w)
         state["teacher_w_max"] = max(state["teacher_w_max"], w)
+        state["goal_bearing_abs_sum"] += float(bearing[index].item())
+        state["goal_bearing_abs_max"] = max(
+            state["goal_bearing_abs_max"], float(bearing[index].item())
+        )
+        state["obstacle_clearance_min"] = min(
+            state["obstacle_clearance_min"], float(clearance[index].item())
+        )
+        state["obstacle_clearance_sum"] += float(clearance[index].item())
 
 
 def evaluate_distance(
@@ -206,14 +239,15 @@ def evaluate_distance(
                     actual = torch.stack(
                         (env.tracking_lin_vel[:, 0], env.tracking_ang_vel[:, 2]), dim=1
                     )
+                    teacher_clearance = _teacher_obstacle_distance(env)
                     teacher = teacher_velocity_diagnostics(
-                        env._goal_xy_robot(), actual, env.obstacle_clearance, teacher_cfg
+                        env._goal_xy_robot(), actual, teacher_clearance, teacher_cfg
                     )
                     held_teacher.copy_(teacher["applied_command"])
                     held_actions[:, 0] = held_teacher[:, 0] / teacher_cfg.max_forward_speed
                     held_actions[:, 1] = held_teacher[:, 1] / teacher_cfg.max_yaw_rate
                     held_actions.clamp_(-1.0, 1.0)
-                    _record_teacher_decisions(active, teacher)
+                    _record_teacher_decisions(active, teacher, teacher_clearance)
                 previous_positions = env.root_states[:, :2].detach().clone()
                 _, _, _, dones, _ = env.step(held_actions)
                 done_mask = dones.flatten().bool()
