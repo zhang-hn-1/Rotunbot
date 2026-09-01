@@ -23,6 +23,7 @@ from legged_gym.navigation.v1_evaluation import (
     curriculum_gate,
     summarize_v1_episodes,
 )
+from legged_gym.navigation.straight_exit_gate import summarize_reverse_diagnostics
 from legged_gym.scripts.evaluate_sru_direct_velocity import (
     _assign_goal,
     _parse_framework_args,
@@ -154,6 +155,7 @@ def _trajectory_row(
     return {
         "episode_id": int(episode_id),
         "step": int(step),
+        "macro_step": int((int(step) - 1) // 10),
         "time_s": float(step) * float(dt),
         "distance_m": float(distance_m),
         "x": float(position[0]),
@@ -372,6 +374,20 @@ def evaluate_distance(
             "wall_clock_seconds": time.monotonic() - started,
             "artifact_root": str(output_dir),
         })
+        summary["reverse_diagnostics"] = summarize_reverse_diagnostics(
+            trajectories,
+            {
+                int(record["episode_id"]): float(record["initial_goal_distance_m"])
+                for record in records
+            },
+            collision_episodes={
+                int(record["episode_id"]) for record in records if record["collision"]
+            },
+            timeout_episodes={
+                int(record["episode_id"]) for record in records if record["timeout"]
+            },
+            dt=float(env.dt) * 10.0,
+        )
         (output_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
         )
