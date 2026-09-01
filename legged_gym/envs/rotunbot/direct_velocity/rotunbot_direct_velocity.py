@@ -40,6 +40,10 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.num_single_obs = int(self.cfg.env.num_single_obs)
         self.num_short_obs = int(self.cfg.env.num_short_obs)
         self.global_goal_xy_world = torch.zeros(self.num_envs, 2, device=self.device)
+        self.observation_goal_xy_world = torch.zeros_like(self.global_goal_xy_world)
+        self.observation_goal_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
         self.previous_goal_distance = torch.zeros(self.num_envs, device=self.device)
         self.base_euler_tensor = torch.zeros(self.num_envs, 3, device=self.device)
         self.previous_velocity_command = torch.zeros(
@@ -130,10 +134,31 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         )
 
     def _goal_xy_robot(self):
+        goal_world = torch.where(
+            self.observation_goal_active.unsqueeze(1),
+            self.observation_goal_xy_world,
+            self.global_goal_xy_world,
+        )
+        delta = goal_world - self.root_states[:, :2]
+        yaw = self._yaw_from_quaternion()
+        c, s = torch.cos(yaw), torch.sin(yaw)
+        return torch.stack((c * delta[:, 0] + s * delta[:, 1], -s * delta[:, 0] + c * delta[:, 1]), dim=1)
+
+    def _global_goal_xy_robot(self):
         delta = self.global_goal_xy_world - self.root_states[:, :2]
         yaw = self._yaw_from_quaternion()
         c, s = torch.cos(yaw), torch.sin(yaw)
         return torch.stack((c * delta[:, 0] + s * delta[:, 1], -s * delta[:, 0] + c * delta[:, 1]), dim=1)
+
+    def set_observation_goal_world(self, goal_world, env_ids=None):
+        """Expose a local waypoint to the policy without changing final-goal termination."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        goal_world = torch.as_tensor(goal_world, dtype=self.root_states.dtype, device=self.device)
+        if goal_world.ndim == 1:
+            goal_world = goal_world.unsqueeze(0)
+        self.observation_goal_xy_world[env_ids] = goal_world
+        self.observation_goal_active[env_ids] = True
 
     def _proprioception(self):
         return torch.cat(
@@ -367,7 +392,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
             ]
             self.terminal_position[env_ids] = self.root_states[env_ids, :2]
             self.terminal_command_target[env_ids] = self.command_targets[env_ids]
-            self.terminal_goal_xy_robot[env_ids] = self._goal_xy_robot()[env_ids]
+            self.terminal_goal_xy_robot[env_ids] = self._global_goal_xy_robot()[env_ids]
             self.terminal_transition_active[env_ids] = self.transition_active[env_ids]
             self.terminal_transition_state[env_ids] = self.transition_state[env_ids]
             self.terminal_goal_recovery_active[env_ids] = self.goal_recovery_active[
@@ -401,6 +426,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.previous_velocity_command[env_ids] = 0.0
         self.previous_actual_velocity[env_ids] = 0.0
         self.last_velocity_command[env_ids] = 0.0
+        self.observation_goal_active[env_ids] = False
         self.goal_recovery_active[env_ids] = False
         self.goal_recovery_activation_count[env_ids] = 0
         self.previous_goal_distance[env_ids] = torch.linalg.vector_norm(

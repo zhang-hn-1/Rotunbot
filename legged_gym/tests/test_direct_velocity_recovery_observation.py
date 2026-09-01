@@ -104,6 +104,22 @@ class DirectVelocityRecoveryObservationTests(unittest.TestCase):
         self.assertTrue(torch.equal(env.privileged_obs_buf[:, :18], expected_critic_prefix))
         self.assertTrue(torch.equal(env.privileged_obs_buf[:, 18], torch.tensor([0.0, 1.0])))
 
+    def test_observation_goal_can_be_local_while_global_goal_remains_termination_goal(self):
+        env = RotunbotDirectVelocity.__new__(RotunbotDirectVelocity)
+        env.num_envs = 1
+        env.device = torch.device("cpu")
+        env.root_states = torch.zeros(1, 13)
+        env.root_states[:, 3:7] = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+        env.base_quat = env.root_states[:, 3:7]
+        env.global_goal_xy_world = torch.tensor([[4.0, 0.0]])
+        env.observation_goal_xy_world = torch.zeros(1, 2)
+        env.observation_goal_active = torch.zeros(1, dtype=torch.bool)
+
+        self.assertTrue(torch.equal(env._goal_xy_robot(), torch.tensor([[4.0, 0.0]])))
+        env.set_observation_goal_world(torch.tensor([[1.0, 2.0]]))
+        self.assertTrue(torch.equal(env._goal_xy_robot(), torch.tensor([[1.0, 2.0]])))
+        self.assertTrue(torch.equal(env._global_goal_xy_robot(), torch.tensor([[4.0, 0.0]])))
+
     def test_generic_resume_is_rejected_before_direct_velocity_runner_creation(self):
         with self.assertRaisesRegex(ValueError, "--resume is not supported"):
             reject_generic_direct_velocity_resume(

@@ -152,3 +152,51 @@ def load_teacher_dataset(path):
     if not dataset.get("episodes"):
         raise ValueError("teacher dataset contains no episodes")
     return dataset
+
+
+def merge_teacher_datasets(datasets):
+    """Merge compatible CPU datasets and assign fresh episode ids."""
+    datasets = list(datasets)
+    if not datasets:
+        raise ValueError("at least one teacher dataset is required")
+    sequence_length = int(datasets[0].get("sequence_length", 0))
+    if sequence_length <= 0:
+        raise ValueError("teacher dataset sequence length must be positive")
+    episodes = []
+    sources = []
+    for source_index, dataset in enumerate(datasets):
+        if dataset.get("schema_version") != 1:
+            raise ValueError("unsupported teacher dataset schema")
+        if tuple(dataset.get("step_fields", ())) != REQUIRED_STEP_FIELDS:
+            raise ValueError("teacher dataset step schema mismatch")
+        if int(dataset.get("sequence_length", 0)) != sequence_length:
+            raise ValueError("teacher datasets must use the same sequence length")
+        start = len(episodes)
+        for episode in dataset.get("episodes", ()):
+            copied = {
+                key: value.clone() if isinstance(value, torch.Tensor) else value
+                for key, value in episode.items()
+            }
+            copied["episode_id"] = len(episodes)
+            if "episode_ids" in copied:
+                copied["episode_ids"] = torch.full_like(
+                    copied["episode_ids"], len(episodes)
+                )
+            episodes.append(copied)
+        sources.append(
+            {
+                "source_index": source_index,
+                "metadata": dict(dataset.get("metadata", {})),
+                "episode_start": start,
+                "episode_end": len(episodes),
+            }
+        )
+    if not episodes:
+        raise ValueError("teacher datasets contain no episodes")
+    return {
+        "schema_version": 1,
+        "step_fields": list(REQUIRED_STEP_FIELDS),
+        "sequence_length": sequence_length,
+        "episodes": episodes,
+        "metadata": {"merged_sources": sources},
+    }

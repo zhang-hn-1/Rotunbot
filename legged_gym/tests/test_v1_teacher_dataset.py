@@ -8,6 +8,7 @@ from legged_gym.navigation.v1_teacher_dataset import (
     REQUIRED_STEP_FIELDS,
     TeacherSequenceWriter,
     load_teacher_dataset,
+    merge_teacher_datasets,
 )
 from legged_gym.navigation.v1_velocity_imitation import (
     build_imitation_observations,
@@ -69,6 +70,20 @@ class V1TeacherDatasetTests(unittest.TestCase):
             loaded = load_teacher_dataset(path)
         self.assertEqual(loaded["metadata"]["depth_backend"], "isaacgym")
         self.assertEqual(loaded["episodes"][0]["teacher_command"].shape, (1, 2))
+
+    def test_merge_rekeys_episodes_and_preserves_source_ranges(self):
+        first = TeacherSequenceWriter(sequence_length=2)
+        first.append(self._step(10, 0, done=True))
+        second = TeacherSequenceWriter(sequence_length=2)
+        second.append(self._step(20, 0, done=True))
+        merged = merge_teacher_datasets([first.finalize(), second.finalize()])
+        self.assertEqual([item["episode_id"] for item in merged["episodes"]], [0, 1])
+        self.assertEqual(merged["episodes"][1]["episode_ids"].tolist(), [1])
+        sources = merged["metadata"]["merged_sources"]
+        self.assertEqual(
+            [(item["episode_start"], item["episode_end"]) for item in sources],
+            [(0, 1), (1, 2)],
+        )
 
     def test_imitation_observation_uses_current_v1_abi_layout(self):
         episode = TeacherSequenceWriter._materialize(

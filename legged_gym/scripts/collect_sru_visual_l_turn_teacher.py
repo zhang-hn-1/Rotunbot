@@ -20,6 +20,7 @@ from legged_gym.navigation.v1_velocity_teacher import (
     teacher_velocity_diagnostics,
 )
 from legged_gym.navigation.v1_waypoint_manager import V1WaypointManager
+from legged_gym.navigation.v1_teacher_dataset import TeacherSequenceWriter
 from legged_gym.utils import get_args, task_registry
 
 
@@ -129,7 +130,17 @@ def _finish_state(state, env, manager, success, collision, timeout):
     }
 
 
-def evaluate_scene(env, scene, episodes, seed, max_steps, teacher_cfg, geometry):
+def evaluate_scene(
+    env,
+    scene,
+    episodes,
+    seed,
+    max_steps,
+    teacher_cfg,
+    geometry,
+    dataset_writer=None,
+    episode_offset=0,
+):
     with torch.inference_mode():
         env.reset()
     if env.depth_backend_actual != "isaacgym":
@@ -143,9 +154,12 @@ def evaluate_scene(env, scene, episodes, seed, max_steps, teacher_cfg, geometry)
     episode_id = 0
     primitive_steps = 0
     next_teacher_step = int(env.common_step_counter)
+    pending_dataset_row = None
     with torch.inference_mode():
         while len(records) < int(episodes):
             if env.common_step_counter >= next_teacher_step:
+                if pending_dataset_row is not None and dataset_writer is not None:
+                    dataset_writer.append(pending_dataset_row)
                 position, yaw = _local_pose(env)
                 pose = (
                     float(position[0].item()),
@@ -188,6 +202,24 @@ def evaluate_scene(env, scene, episodes, seed, max_steps, teacher_cfg, geometry)
                     int(env.common_step_counter)
                     + int(env.upper_level_command_interval_steps)
                 )
+                if dataset_writer is not None:
+                    pending_dataset_row = {
+                        "episode_id": int(episode_offset + episode_id),
+                        "step_id": int(state["steps"] // 10),
+                        "depth": env.depth_observation[0].detach().clone(),
+                        "goal_xy_robot": goal_xy[0].detach().clone(),
+                        "proprioception": env._proprioception()[0].detach().clone(),
+                        "previous_command": env.previous_velocity_command[0].detach().clone(),
+                        "previous_actual_velocity": env.previous_actual_velocity[0].detach().clone(),
+                        "teacher_command": teacher["applied_command"][0].detach().clone(),
+                        "actual_velocity": actual[0].detach().clone(),
+                        "governor_command": env.applied_feasible_command[0].detach().clone(),
+                        "projection_command": teacher["applied_command"][0].detach().clone(),
+                        "done": False,
+                        "success": False,
+                        "collision": False,
+                        "goal_distance": torch.linalg.vector_norm(goal_xy[0]).detach().cpu(),
+                    }
             previous_position = env.root_states[0, :2].detach().cpu().clone()
             _, _, _, dones, _ = env.step(held_actions)
             primitive_steps += 1
@@ -205,6 +237,20 @@ def evaluate_scene(env, scene, episodes, seed, max_steps, teacher_cfg, geometry)
             )
             done = bool(dones.flatten()[0].item())
             timeout = primitive_steps >= int(max_steps) and not done
+            if (done or timeout) and pending_dataset_row is not None and dataset_writer is not None:
+                pending_dataset_row.update(
+                    {
+                        "done": True,
+                        "success": bool(env.terminal_success[0].item()) if done else False,
+                        "collision": bool(env.terminal_collision[0].item()) if done else False,
+                        "goal_distance": torch.tensor(
+                            float(env.terminal_goal_distance[0].item())
+                            if done else float(env.goal_dist[0].item())
+                        ),
+                    }
+                )
+                dataset_writer.append(pending_dataset_row)
+                pending_dataset_row = None
             if not done and not timeout:
                 continue
             success = bool(env.terminal_success[0].item()) if done else False
@@ -233,6 +279,7 @@ def main(argv=None):
     parser.add_argument("--max-steps", type=int, default=2250)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--dataset-output", default=None)
     stage_args, remaining = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
     args = _parse_framework_args(remaining)
     args.task = "rotunbot_sru_visual_corridor_v1"
@@ -263,6 +310,11 @@ def main(argv=None):
     scene_results = {}
     all_records = []
     all_trajectories = []
+    dataset_writer = (
+        TeacherSequenceWriter(sequence_length=16)
+        if stage_args.dataset_output
+        else None
+    )
     for scene in ("L_LEFT", "L_RIGHT"):
         geometry = build_l_turn_geometry("left" if scene == "L_LEFT" else "right")
         env_cfg.corridor_width_m = geometry.scenario.width_m
@@ -280,6 +332,10 @@ def main(argv=None):
                 stage_args.max_steps,
                 teacher_cfg,
                 geometry,
+                dataset_writer=dataset_writer,
+                episode_offset=sum(
+                    int(item.get("episodes", 0)) for item in scene_results.values()
+                ),
             )
         finally:
             _close_environment(env)
@@ -336,6 +392,23 @@ def main(argv=None):
         "scenes": scene_results,
         "overall_success_rate": sum(bool(item["success"]) for item in all_records) / max(total, 1),
     }
+    if dataset_writer is not None:
+        dataset_path = Path(stage_args.dataset_output).resolve()
+        dataset_writer.save(
+            dataset_path,
+            metadata={
+                "schema_name": "V1-compatible L-turn teacher dataset",
+                "depth_backend_requested": "isaacgym",
+                "depth_backend_actual": "isaacgym",
+                "depth_representation": "normalized IMAGE_DEPTH, far-is-open",
+                "scene_types": ["L_LEFT", "L_RIGHT"],
+                "episodes_per_scene": int(stage_args.episodes),
+                "sequence_length": 16,
+                "seed": int(stage_args.seed),
+                "geometry": payload["geometry"],
+            },
+        )
+        payload["dataset"] = str(dataset_path)
     (output / "l_turn_teacher_gate.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
