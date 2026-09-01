@@ -28,6 +28,11 @@ class V1VelocityTeacherConfig:
     # V1's centered side-wall clearance is about 0.60--0.70 m.  Treat that
     # as open corridor; only clearance approaching the robot radius brakes.
     obstacle_slow_distance: float = 0.70
+    # When the goal bearing is large, cosine speed reduction combined with the
+    # measured |w| <= v/R envelope can create a low-speed turn deadlock.  In
+    # open space, retain enough speed for the feasible yaw command to recover.
+    turn_recovery_bearing: float = 0.65
+    turn_recovery_speed_fraction: float = 0.80
 
 
 def _aggregate_scalar(records, sum_key, count_key):
@@ -224,6 +229,26 @@ def teacher_velocity_diagnostics(
         * approach
         * heading_factor
         * obstacle_scale
+    )
+    recovery_start = _parameter(config, "turn_recovery_bearing", 0.65)
+    recovery_progress = torch.clamp(
+        (torch.abs(bearing) - recovery_start)
+        / (math.pi / 2.0 - recovery_start),
+        0.0,
+        1.0,
+    )
+    recovery_speed = (
+        _parameter(config, "max_forward_speed")
+        * _parameter(config, "turn_recovery_speed_fraction", 0.80)
+        * recovery_progress
+        * approach
+    )
+    # Do not accelerate toward a close obstacle merely to turn.  The V1
+    # straight corridor has no internal obstacle, while future obstacle-aware
+    # stages retain the braking behavior above.
+    desired_speed = torch.maximum(
+        desired_speed,
+        torch.where(obstacle_scale >= 0.999, recovery_speed, torch.zeros_like(recovery_speed)),
     )
     # Feedback is deliberately braking-only.  It uses measured velocity to
     # slow an overspeeding plant without making normal acceleration request a

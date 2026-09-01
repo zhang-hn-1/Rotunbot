@@ -34,6 +34,18 @@ class V1VelocityTeacherTests(unittest.TestCase):
         self.assertGreater(float(command[0, 0]), float(command[1, 0]))
         self.assertLessEqual(float(command[1, 0]), self.cfg.max_forward_speed)
 
+    def test_open_space_large_bearing_retains_turn_authority(self):
+        goal = torch.tensor([[0.2, 2.0]])
+        diagnostics = teacher_velocity_diagnostics(
+            goal, torch.zeros(1, 2), torch.tensor([2.0]), self.cfg
+        )
+        command = diagnostics["applied_command"][0]
+        # With |w| <= v/R, reducing v to cos(bearing) would also remove the
+        # yaw authority needed to recover.  Open-space recovery keeps enough
+        # forward speed for the measured feasible turn envelope.
+        self.assertGreaterEqual(float(command[0]), 0.15)
+        self.assertGreaterEqual(float(command[1]), 0.075)
+
     def test_diagnostics_are_finite_and_projected_into_v62_domain(self):
         goals = torch.tensor([[2.0, 1.0], [1.0, -0.5], [0.35, 0.0]])
         actual = torch.tensor([[0.10, 0.01], [0.0, -0.01], [0.2, 0.0]])
