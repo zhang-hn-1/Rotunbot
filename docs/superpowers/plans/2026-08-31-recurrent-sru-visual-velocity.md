@@ -128,8 +128,8 @@
 - Consumes: finite real-depth sequences, teacher commands, recurrent hidden initialization, and fixed 5 Hz macro timing.
 - Produces: deterministic sequence dataset and recurrent checkpoint with teacher-command loss and command/projection audit metrics.
 
-- [ ] Write failing tests for dataset schema, chronological sequence grouping, done-boundary splitting, and reproducible seed ordering.
-- [ ] Implement collection with raw depth, goal, proprioception, previous command, previous actual velocity, teacher command, done, and metadata fields.
+- [x] Write failing tests for dataset schema, chronological sequence grouping, done-boundary splitting, and reproducible seed ordering.
+- [x] Implement collection with preprocessed real IMAGE_DEPTH, goal, proprioception, previous command, previous actual velocity, teacher command, done, and metadata fields.
 - [ ] Implement recurrent imitation over ordered sequences with masked MSE/Huber velocity loss and explicit command-domain checks.
 - [ ] Run dataset/schema tests and a synthetic imitation convergence test.
 - [ ] Run a short real-depth imitation smoke only after Task 2 PASS; record sequence metadata and teacher-vs-student command correction.

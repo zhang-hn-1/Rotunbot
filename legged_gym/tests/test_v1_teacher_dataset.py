@@ -9,6 +9,15 @@ from legged_gym.navigation.v1_teacher_dataset import (
     TeacherSequenceWriter,
     load_teacher_dataset,
 )
+from legged_gym.navigation.v1_velocity_imitation import (
+    build_imitation_observations,
+    collate_imitation_sequences,
+    iter_imitation_sequences,
+    masked_huber_loss,
+    imitation_loss,
+    teacher_command_to_action,
+    train_imitation_epoch,
+)
 
 
 class V1TeacherDatasetTests(unittest.TestCase):
@@ -60,6 +69,81 @@ class V1TeacherDatasetTests(unittest.TestCase):
             loaded = load_teacher_dataset(path)
         self.assertEqual(loaded["metadata"]["depth_backend"], "isaacgym")
         self.assertEqual(loaded["episodes"][0]["teacher_command"].shape, (1, 2))
+
+    def test_imitation_observation_uses_current_v1_abi_layout(self):
+        episode = TeacherSequenceWriter._materialize(
+            {"episode_id": 2, "rows": [self._step(2, 0, done=True)]}, 16
+        )
+        observation = build_imitation_observations(episode)
+        self.assertEqual(tuple(observation.shape), (1, 275))
+        self.assertTrue(torch.equal(observation[:, :12], episode["proprioception"]))
+        self.assertTrue(torch.equal(observation[:, 12:14], episode["goal_xy_robot"] / 8.0))
+        self.assertTrue(torch.equal(observation[:, 14:16], episode["previous_command"]))
+        self.assertTrue(torch.equal(observation[:, 16:18], episode["previous_actual_velocity"]))
+        self.assertTrue(torch.equal(observation[:, 18:274].reshape(1, 8, 32), episode["depth"]))
+        self.assertTrue(torch.equal(observation[:, 274], torch.zeros(1)))
+
+    def test_imitation_sequences_are_padded_without_crossing_episode_done(self):
+        writer = TeacherSequenceWriter(sequence_length=2)
+        for episode_id in (4, 9):
+            writer.append(self._step(episode_id, 0))
+            writer.append(self._step(episode_id, 1, done=True))
+        dataset = writer.finalize()
+        sequences = list(iter_imitation_sequences(dataset, sequence_length=2))
+        batch = collate_imitation_sequences(sequences, device="cpu")
+        self.assertEqual(tuple(batch["observations"].shape), (2, 2, 275))
+        self.assertEqual(batch["episode_ids"].tolist(), [4, 9])
+        self.assertTrue(torch.equal(batch["valid_mask"], torch.ones(2, 2, dtype=torch.bool)))
+        self.assertTrue(torch.equal(batch["done"][-1], torch.ones(2, dtype=torch.bool)))
+        self.assertTrue(torch.equal(batch["recurrent_masks"][0], torch.zeros(2)))
+
+    def test_teacher_commands_map_to_bounded_actor_domain_and_mask_loss(self):
+        physical = torch.tensor([[0.25, 0.10], [0.0, 0.0]])
+        action = teacher_command_to_action(physical, 0.25, 0.10)
+        self.assertTrue(torch.allclose(action, torch.tensor([[1.0, 1.0], [0.0, 0.0]])))
+        prediction = torch.zeros(2, 2, 2)
+        target = torch.ones(2, 2, 2)
+        mask = torch.tensor([[True, False], [True, False]])
+        self.assertAlmostEqual(float(masked_huber_loss(prediction, target, mask)), 0.5)
+
+    def test_synthetic_recurrent_imitation_converges(self):
+        class TinySRUPolicy(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                from legged_gym.dwl.actor_critic_depth import SpatialRecurrentUnit
+
+                self.encoder = torch.nn.Linear(275, 8)
+                self.memory = SpatialRecurrentUnit(8, 8)
+                self.head = torch.nn.Linear(8, 2)
+
+            def _mean(self, observations, hidden_states=None, masks=None, update_state=False):
+                steps, batch, _ = observations.shape
+                encoded = self.encoder(observations.reshape(steps * batch, -1))
+                encoded = encoded.reshape(steps, batch, -1).transpose(0, 1)
+                recurrent, _ = self.memory(
+                    encoded,
+                    hidden=hidden_states,
+                    masks=masks.transpose(0, 1),
+                    return_sequence=True,
+                )
+                return torch.tanh(self.head(recurrent)).transpose(0, 1)
+
+        torch.manual_seed(7)
+        writer = TeacherSequenceWriter(sequence_length=4)
+        for step in range(4):
+            row = self._step(1, step, done=step == 3)
+            row["teacher_command"] = torch.tensor([0.20, 0.05])
+            writer.append(row)
+        dataset = writer.finalize()
+        policy = TinySRUPolicy()
+        sequences = list(iter_imitation_sequences(dataset, sequence_length=4))
+        batch = collate_imitation_sequences(sequences, hidden_dim=8)
+        initial = float(imitation_loss(policy, batch).detach())
+        optimizer = torch.optim.Adam(policy.parameters(), lr=0.02)
+        for epoch in range(25):
+            train_imitation_epoch(policy, dataset, optimizer, batch_size=1, seed=epoch)
+        final = float(imitation_loss(policy, batch).detach())
+        self.assertLess(final, initial * 0.25)
 
 
 if __name__ == "__main__":

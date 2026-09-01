@@ -9,10 +9,10 @@ Depth + goal_xy_robot + proprioception + previous (v,w) + approved state bit
     -> Depth Encoder -> single-step SRU block -> (v_cmd,w_cmd) -> frozen V62 -> actuator
 ```
 
-The current temporal model is stateless: each policy call constructs a
-length-one sequence and resets the SRU block's hidden tensor. It is not a
-persistent recurrent SRU. The current training backend is fallback depth:
-32 horizontal rays replicated across 8 rows, not a calibrated 2D depth image.
+The current temporal model is a persistent recurrent SRU at the 5 Hz macro
+decision boundary, with selective done resets and chronological PPO sequences.
+The teacher dataset path uses normalized calibrated Isaac Gym IMAGE_DEPTH; the
+fallback ray backend remains available only for diagnostics and legacy tests.
 
 `CorridorWaypointOracle` is restricted to geometry diagnostics, upper-bound
 reference, and future teacher-data generation. It is not an actor input and it
@@ -48,7 +48,7 @@ Audit evidence:
 
 | Stage | Parent checkpoint | Current Gate | Depth ablation | Memory ablation | Decision |
 | --- | --- | --- | --- | --- | --- |
-| V1 Depth Straight Corridor | 5 Hz-aligned S2 adaptation `model_100.pt` | 30+30 FAIL; fixed 6m×100 FAIL | fallback PASS; real Isaac IMAGE_DEPTH unusable | stateless baseline verified | FAIL; do not start V2 |
+| V1 Depth Straight Corridor | auditable velocity teacher | 1.0/1.5/2.0/2.5 m teacher Gate PASS (100 each) | real IMAGE_DEPTH dataset collected; finite | recurrent SRU ABI/rollout PASS | teacher data ready; imitation next |
 | V2 Depth L Corridor | V1_best.pt | Blocked by V1 | N/A | N/A | NOT STARTED |
 | V3 Depth Double-Turn | V2_best.pt | Blocked by V2 | N/A | N/A | NOT STARTED |
 | V4 Depth S Corridor | V3_best.pt | Blocked by V3 | N/A | N/A | NOT STARTED |
@@ -126,8 +126,10 @@ The fixed formal result at
 | Mean path length | 2.275 m |
 | Reverse-motion ratio | 5.08% |
 
-Therefore the V1 formal Gate is **FAIL**, not PASS or NEAR PASS. V2/L/
-double-turn/S curricula remain blocked.
+That table is the historical policy baseline, not the current teacher Gate.
+The current V1 teacher formal Gate is PASS; student imitation is the next
+permitted step. V2/L/double-turn/S curricula remain blocked until the student
+passes its own closed-loop gates.
 
 ## Depth and temporal-state audit
 
@@ -171,6 +173,16 @@ FAIL (93/100, seven timeouts): nearest-wall clearance around 0.50 m caused
 the teacher to interpret a side wall as a frontal obstacle and reduce speed.
 The corrected run removes that false slowdown and keeps centerline recovery;
 no imitation training was started before the corrected gate passed.
+
+## Real-depth teacher dataset
+
+The formal ordered dataset is
+`logs/phase_c/teacher_dataset_real_depth_20260901.pt`: 400 episodes, 100 at
+each of 1.0/1.5/2.0/2.5 m, 18,871 macro steps, sequence length metadata T=16,
+and 400 terminal done markers. The validated depth tensor shape is `[T,8,32]`;
+all stored depth/state/label tensors are finite, episode step ids are ordered,
+and no episode is concatenated with another. Metadata records
+`depth_backend_actual=isaacgym`.
 
 ## P0 timing correction
 
