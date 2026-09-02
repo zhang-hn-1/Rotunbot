@@ -36,6 +36,13 @@ def has_wrong_turn_command(yaw_rate, scenario, deadband_rps=1.0e-4):
     return expected_branch_yaw_sign(scenario) * yaw_rate < 0.0
 
 
+def record_t_branch_occupancy(occupancies, local_xy):
+    """Append one actual local branch occupancy without discarding prior steps."""
+    from legged_gym.navigation.v1_t_junction import classify_t_branch
+
+    return tuple(occupancies) + (classify_t_branch(local_xy),)
+
+
 def classify_t_episode_progress(
     scenario,
     local_xy=None,
@@ -218,8 +225,22 @@ def _new_state(scene, episode_id, env):
         ),
         "initial_yaw": float(yaw.item()),
         "observed_branches": [],
+        "branch_occupancy": [],
+        "wrong_turn": False,
         "failure_events": [],
     }
+
+
+def _record_branch_occupancy(state, scenario, local_xy):
+    """Persist physical branch occupancy and latch a wrong-side traversal."""
+    occupancy = record_t_branch_occupancy(state["branch_occupancy"], local_xy)
+    branch = occupancy[-1]
+    state["branch_occupancy"] = list(occupancy)
+    if branch in ("LEFT", "RIGHT"):
+        state["observed_branches"].append(branch)
+        if branch != _EXPECTED_BRANCH[_scenario(scenario)]:
+            state["wrong_turn"] = True
+    return branch
 
 
 def _dataset_row(env, torch, episode_id, step_id, teacher, actual, goal_xy):
@@ -289,11 +310,7 @@ def evaluate_scene(
                 actions[:, 1] = teacher["applied_command"][:, 1] / teacher_cfg.max_yaw_rate
                 actions.clamp_(-1.0, 1.0)
                 state["macro_steps"] += 1
-                observed = classify_t_episode_progress(
-                    scene, (pose[0], pose[1]), observed_branches=state["observed_branches"]
-                )["branch_prediction"]
-                if observed in ("LEFT", "RIGHT"):
-                    state["observed_branches"].append(observed)
+                _record_branch_occupancy(state, scene, (pose[0], pose[1]))
                 state["failure_events"].append(
                     {
                         "macro_step": state["macro_steps"],
@@ -316,6 +333,12 @@ def evaluate_scene(
             _, _, _, dones, _ = env.step(actions)
             state["episode_steps"] += 1
             done = bool(dones.flatten()[0].item())
+            if done:
+                primitive_local_xy = terminal_local_xy(env)
+            else:
+                position, _ = _local_pose(env)
+                primitive_local_xy = (float(position[0].item()), float(position[1].item()))
+            _record_branch_occupancy(state, scene, primitive_local_xy)
             forced_timeout = state["episode_steps"] >= int(max_steps) and not done
             if not done and not forced_timeout:
                 continue
@@ -334,6 +357,7 @@ def evaluate_scene(
                 exit_reached=success,
                 observed_branches=state["observed_branches"],
             )
+            progress["wrong_turn"] = bool(state["wrong_turn"] or progress["wrong_turn"])
             if pending is not None and dataset_writer is not None:
                 pending.update(
                     {

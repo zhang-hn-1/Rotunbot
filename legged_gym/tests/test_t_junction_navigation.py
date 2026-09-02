@@ -1,3 +1,4 @@
+import copy
 import math
 import importlib
 import unittest
@@ -44,17 +45,24 @@ def _dataset_step(episode_id, step_id, done=False):
     }
 
 
+def _materialized_episode(episode_id, rows):
+    """Build the V1 episode shape emitted by TeacherSequenceWriter."""
+    return {
+        "episode_id": episode_id,
+        "episode_ids": [episode_id] * len(rows),
+        "sequence_length": len(rows),
+        "num_sequences": int(math.ceil(len(rows) / 16)),
+        **{
+            key: [row[key] for row in rows]
+            for key in rows[0]
+            if key != "episode_id"
+        },
+    }
+
+
 def _t_dataset():
     first = _dataset_step(0, 0, done=True)
     second = _dataset_step(1, 0, done=True)
-
-    def episode(episode_id, row):
-        return {
-            "episode_id": episode_id,
-            "episode_ids": [episode_id],
-            "sequence_length": 1,
-            **{key: [value] for key, value in row.items() if key != "episode_id"},
-        }
 
     dataset = {
         "schema_version": 1,
@@ -76,7 +84,10 @@ def _t_dataset():
             "goal_distance",
         ],
         "sequence_length": 16,
-        "episodes": [episode(0, first), episode(1, second)],
+        "episodes": [
+            _materialized_episode(0, [first]),
+            _materialized_episode(1, [second]),
+        ],
         "metadata": {
             "depth_backend_requested": "isaacgym",
             "depth_backend_actual": "isaacgym",
@@ -239,6 +250,21 @@ class TJunctionNavigationTests(unittest.TestCase):
         self.assertTrue(progress["wrong_turn"])
         self.assertTrue(progress["turn_completed"])
 
+    def test_t_teacher_preserves_primitive_wrong_branch_excursion_after_recovery(self):
+        """Breaks if a wrong branch between macro boundaries can be forgotten."""
+        collector = _collector_module()
+        observed = collector.record_t_branch_occupancy((), (2.5, -1.0))
+        observed = collector.record_t_branch_occupancy(observed, (2.5, 1.0))
+        progress = collector.classify_t_episode_progress(
+            "T_LEFT",
+            (2.5, 1.0),
+            waypoint_index=2,
+            exit_reached=True,
+            observed_branches=observed,
+        )
+        self.assertEqual(observed, ("RIGHT", "LEFT"))
+        self.assertTrue(progress["wrong_turn"])
+
     def test_t_teacher_installs_waypoint_goal_before_capture(self):
         """Breaks if stored waypoint goals diverge from actor observations."""
         collector = _collector_module()
@@ -373,6 +399,65 @@ class TJunctionNavigationTests(unittest.TestCase):
         cases.append(none_value)
 
         for malformed in cases:
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(ValueError):
+                    audit.audit_t_teacher_dataset(malformed)
+
+    def test_t_dataset_audit_requires_writer_num_sequences_for_each_episode(self):
+        """Breaks if a malformed writer materialization can pass the T audit."""
+        audit = _audit_module()
+        cases = []
+
+        missing = _t_dataset()
+        del missing["episodes"][0]["num_sequences"]
+        cases.append(missing)
+
+        non_integral = _t_dataset()
+        non_integral["episodes"][0]["num_sequences"] = 1.0
+        cases.append(non_integral)
+
+        wrong_count = _t_dataset()
+        rows = [_dataset_step(0, step, done=step == 16) for step in range(17)]
+        wrong_count["episodes"][0] = _materialized_episode(0, rows)
+        wrong_count["episodes"][0]["num_sequences"] = 1
+        cases.append(wrong_count)
+
+        for malformed in cases:
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(ValueError):
+                    audit.audit_t_teacher_dataset(malformed)
+
+    def test_t_dataset_audit_rejects_duplicate_or_non_increasing_episode_ids(self):
+        """Breaks if provenance coverage can collapse multiple episodes onto one ID."""
+        audit = _audit_module()
+        duplicate_ids = _t_dataset()
+        left, right = duplicate_ids["episodes"]
+        duplicate_ids["episodes"] = [
+            copy.deepcopy(left),
+            copy.deepcopy(left),
+            copy.deepcopy(right),
+            copy.deepcopy(right),
+        ]
+        duplicate_ids["metadata"]["episodes_per_scene"] = 2
+        duplicate_ids["metadata"]["episode_scenarios"] = [
+            "T_LEFT", "T_LEFT", "T_RIGHT", "T_RIGHT"
+        ]
+
+        decreasing_ids = _t_dataset()
+        decreasing_ids["episodes"] = [
+            copy.deepcopy(decreasing_ids["episodes"][1]),
+            copy.deepcopy(decreasing_ids["episodes"][0]),
+        ]
+        decreasing_ids["episodes"][0]["episode_id"] = 1
+        decreasing_ids["episodes"][0]["episode_ids"] = [1]
+        decreasing_ids["episodes"][1]["episode_id"] = 0
+        decreasing_ids["episodes"][1]["episode_ids"] = [0]
+        decreasing_ids["metadata"]["episode_provenance"] = {
+            "1": copy.deepcopy(_t_dataset()["metadata"]["episode_provenance"]["0"]),
+            "0": copy.deepcopy(_t_dataset()["metadata"]["episode_provenance"]["1"]),
+        }
+
+        for malformed in (duplicate_ids, decreasing_ids):
             with self.subTest(malformed=malformed):
                 with self.assertRaises(ValueError):
                     audit.audit_t_teacher_dataset(malformed)

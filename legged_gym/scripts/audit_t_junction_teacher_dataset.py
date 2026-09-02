@@ -144,13 +144,14 @@ def _validate_provenance(metadata, episodes, episode_scenarios):
     provenance = metadata["episode_provenance"]
     if not isinstance(provenance, Mapping):
         raise ValueError("episode_provenance must map episode ids to evidence")
-    episode_ids = [int(episode["episode_id"]) for episode in episodes]
-    expected_keys = {str(episode_id) for episode_id in episode_ids}
-    if {str(key) for key in provenance} != expected_keys:
+    episode_ids = [_require_integral(episode["episode_id"], "episode_id") for episode in episodes]
+    if len(provenance) != len(episode_ids) or any(
+        str(episode_id) not in provenance for episode_id in episode_ids
+    ):
         raise ValueError("episode_provenance must cover each dataset episode exactly once")
     for index, episode in enumerate(episodes):
-        episode_id = int(episode["episode_id"])
-        entry = provenance.get(str(episode_id), provenance.get(episode_id))
+        episode_id = _require_integral(episode["episode_id"], "episode_id")
+        entry = provenance[str(episode_id)]
         if not isinstance(entry, Mapping):
             raise ValueError("episode_provenance[%d] must be a mapping" % episode_id)
         required = {"scenario", "goal", "initial_pose", "initial_yaw", "horizon"}
@@ -201,12 +202,16 @@ def audit_t_teacher_dataset(dataset):
         raise ValueError("episode_scenarios must only contain T_LEFT or T_RIGHT")
 
     macro_steps = 0
+    previous_episode_id = None
     for index, episode in enumerate(episodes):
         if not isinstance(episode, Mapping):
             raise ValueError("dataset episode %d must be a mapping" % index)
         if "episode_id" not in episode:
             raise ValueError("dataset episode %d is missing episode_id" % index)
         episode_id = _require_integral(episode["episode_id"], "episodes[%d].episode_id" % index)
+        if previous_episode_id is not None and episode_id <= previous_episode_id:
+            raise ValueError("dataset episode ids must increase strictly")
+        previous_episode_id = episode_id
         missing_fields = [field for field in _V1_STEP_FIELDS if field not in ("episode_id",) and field not in episode]
         if missing_fields:
             raise ValueError(
@@ -223,6 +228,13 @@ def audit_t_teacher_dataset(dataset):
         ) != len(step_ids):
             raise ValueError("dataset episode %d sequence length mismatch" % index)
         expected_length = len(step_ids)
+        if "num_sequences" not in episode:
+            raise ValueError("dataset episode %d is missing writer num_sequences" % index)
+        expected_num_sequences = int(math.ceil(expected_length / 16))
+        if _require_integral(
+            episode["num_sequences"], "episodes[%d].num_sequences" % index
+        ) != expected_num_sequences:
+            raise ValueError("dataset episode %d num_sequences mismatch" % index)
         if "episode_ids" not in episode:
             raise ValueError("dataset episode %d is missing writer episode_ids" % index)
         episode_ids = _to_list(episode["episode_ids"], "episodes[%d].episode_ids" % index)

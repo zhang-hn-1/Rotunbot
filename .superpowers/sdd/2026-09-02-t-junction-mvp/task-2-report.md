@@ -128,3 +128,53 @@
   smoke could not start.  The IsaacGym gymtorch/Ninja extension path therefore
   was not reached, and no real IsaacGym rollout, generated dataset audit, or
   20-per-side formal gate was executed here.
+
+---
+
+# Task 2 fix round 2: strict materialization and primitive branch evidence
+
+## Scope
+
+- Modified only the Task 2 T collector, T dataset audit, and T-junction
+  contract tests.  No SRU, encoder, V62 controller, V1 writer/schema, or
+  existing log content was modified.
+
+## Fixes
+
+- The audit now requires every materialized episode to include integral
+  `num_sequences`, and validates it against `ceil(len(step_id) / 16)`.
+  Missing, non-integral, and mismatched values are rejected.
+- Episode IDs are required to be strictly increasing before provenance is
+  inspected.  Provenance coverage now uses one canonical string key for each
+  already-unique stored ID, with matching cardinality; it no longer converts
+  IDs or keys to sets.
+- The collector records branch occupancy at macro boundaries and after every
+  primitive `env.step`.  Non-terminal steps use current `root_states`; done
+  steps use `terminal_position`.  A physical visit to the wrong branch latches
+  `state["wrong_turn"]` immediately and this latch is preserved in terminal
+  progress, even after a later recovery to the expected branch.
+- The macro waypoint ABI path is unchanged: each macro command installs the
+  active observation waypoint and recomputes observations; global goal remains
+  terminal-only.
+
+## TDD evidence
+
+1. Added the failing pure-helper regression for a wrong-side excursion followed
+   by recovery, plus audit counterexamples for missing/float/mismatched
+   `num_sequences`, duplicate IDs, and decreasing IDs.
+2. RED was observed directly against the pre-change implementation: the helper
+   was absent and the audit accepted an episode with missing `num_sequences`.
+3. The same focused behaviors pass after the implementation change.
+
+## Verification
+
+- Source-level focused unittest harness: `3` tests passed.  It reuses the
+  three newly added test methods against the production audit and collector
+  helpers without IsaacGym/Torch, including all five audit counterexamples and
+  the wrong-branch recovery case.
+- `python3 -m py_compile legged_gym/scripts/collect_sru_visual_t_junction_teacher.py legged_gym/scripts/audit_t_junction_teacher_dataset.py`: passed.
+- `git diff --check`: passed.
+- The normal T-junction unittest remains blocked before collection because this
+  shell has neither `isaacgym` nor `torch`; it cannot reach the gymtorch/Ninja
+  extension stage.  No real IsaacGym rollout or formal 20-per-side gate was
+  run in this environment.
