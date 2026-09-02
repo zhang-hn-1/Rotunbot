@@ -13,6 +13,18 @@ from legged_gym.navigation.v1_t_junction import (
 from legged_gym.navigation.v1_t_junction_metrics import aggregate_t_gate
 
 
+def _trainer_module():
+    return importlib.import_module(
+        "legged_gym.scripts.train_sru_visual_t_junction_imitation"
+    )
+
+
+def _student_module():
+    return importlib.import_module(
+        "legged_gym.scripts.eval_sru_visual_t_junction"
+    )
+
+
 def _collector_module():
     return importlib.import_module(
         "legged_gym.scripts.collect_sru_visual_t_junction_teacher"
@@ -199,11 +211,88 @@ class TJunctionNavigationTests(unittest.TestCase):
             )
         )
 
+    def test_t_mixed_bc_sampler_enforces_integer_1_3_5_ratio(self):
+        """Breaks if mixed BC silently uses an unweighted or fractional sampler."""
+        trainer = _trainer_module()
+        datasets = {
+            "straight": {"sequence_length": 16, "episodes": [{"episode_id": 0}]},
+            "l_turn": {"sequence_length": 16, "episodes": [{"episode_id": 0}]},
+            "t_junction": {"sequence_length": 16, "episodes": [{"episode_id": 0}]},
+        }
+        sampled = trainer.build_weighted_dataset(datasets)
+        self.assertEqual(sampled["effective_sample_distribution"], {
+            "straight": 1, "l_turn": 3, "t_junction": 5,
+        })
+        self.assertEqual(
+            [item["source"] for item in sampled["samples"]],
+            ["straight"] + ["l_turn"] * 3 + ["t_junction"] * 5,
+        )
+        with self.assertRaises(ValueError):
+            trainer.build_weighted_dataset({**datasets, "t_junction": {
+                "sequence_length": 15, "episodes": [{"episode_id": 0}]
+            }})
+
+    def test_t_student_episode_record_and_goal_modes_are_auditable(self):
+        """Breaks if student evaluation loses release evidence or ablation meaning."""
+        student = _student_module()
+        record = student.make_t_student_episode_record(
+            scenario="T_RIGHT", episode_id=3, pair_id="pair-03", seed=7,
+            goal=(2.5, -2.5), initial_pose=(0.0, 0.0, 0.28), initial_yaw=0.0,
+            horizon=2250, episode_steps=42, success=True, collision=False,
+            timeout=False, branch_prediction="RIGHT", wrong_turn=False,
+            turn_completion=True, exit_reached=True, failure_trace=[],
+        )
+        self.assertEqual(record["policy_role"], "student")
+        self.assertEqual(record["expected_branch"], "RIGHT")
+        self.assertTrue({
+            "scenario", "episode_id", "pair_id", "seed", "goal", "initial_pose",
+            "initial_yaw", "horizon", "success", "collision", "timeout",
+            "wrong_turn", "turn_completion", "exit", "failure_trace",
+            "depth_backend_actual",
+        }.issubset(record))
+        self.assertEqual(student.goal_for_observation((2.5, 2.5), (2.5, -2.5), "normal"), (2.5, 2.5))
+        self.assertEqual(student.goal_for_observation((2.5, 2.5), (2.5, -2.5), "zero"), (0.0, 0.0))
+        self.assertEqual(student.goal_for_observation((2.5, 2.5), (2.5, -2.5), "swapped"), (2.5, -2.5))
+        with self.assertRaises(ValueError):
+            student.goal_for_observation((2.5, 2.5), (2.5, -2.5), "bad")
+
+    def test_t_student_pair_builder_requires_exact_complete_coverage(self):
+        """Breaks if paired counterfactuals reuse or omit gate records."""
+        student = _student_module()
+        records = []
+        for index in range(20):
+            records.extend([
+                {
+                    "episode_id": "L-%02d" % index, "scenario": "T_LEFT",
+                    "pair_id": "p-%02d" % index, "seed": 2026,
+                    "initial_pose": (0.0, 0.0, 0.4), "initial_yaw": 0.0,
+                    "horizon": 2250,
+                },
+                {
+                    "episode_id": "R-%02d" % index, "scenario": "T_RIGHT",
+                    "pair_id": "p-%02d" % index, "seed": 2026,
+                    "initial_pose": (0.0, 0.0, 0.4), "initial_yaw": 0.0,
+                    "horizon": 2250,
+                },
+            ])
+        pairs = student.build_counterfactual_pairs(records)
+        self.assertEqual(len(pairs), 20)
+        self.assertEqual({item for pair in pairs for item in pair}, {
+            record["episode_id"] for record in records
+        })
+        with self.assertRaises(ValueError):
+            student.build_counterfactual_pairs(records[:-1])
+
     def test_t_teacher_branch_commands_require_opposite_yaw_signs(self):
         """Breaks if a T_LEFT turn is commanded with the T_RIGHT yaw sign."""
         collector = _collector_module()
         self.assertEqual(collector.expected_branch_yaw_sign("T_LEFT"), 1)
         self.assertEqual(collector.expected_branch_yaw_sign("T_RIGHT"), -1)
+        geometry = build_t_junction_geometry("T_LEFT")
+        waypoints = collector.t_navigation_waypoints(geometry)
+        self.assertEqual(waypoints.shape, (4, 2))
+        np.testing.assert_allclose(waypoints[-1], geometry.scenario.goal_xy)
+        self.assertTrue(np.allclose(waypoints[2], (1.75, 2.5)))
         self.assertFalse(collector.has_wrong_turn_command(0.03, "T_LEFT"))
         self.assertTrue(collector.has_wrong_turn_command(-0.03, "T_LEFT"))
         self.assertFalse(collector.has_wrong_turn_command(-0.03, "T_RIGHT"))
@@ -494,9 +583,12 @@ class TJunctionNavigationTests(unittest.TestCase):
         expected_centers = {
             (1.25, 1.5),
             (1.25, -1.5),
-            (1.0, 2.0),
-            (1.0, -2.0),
-            (4.0, 0.0),
+            (1.0, 2.75),
+            (4.0, 2.75),
+            (2.5, 4.0),
+            (1.0, -2.75),
+            (4.0, -2.75),
+            (2.5, -4.0),
         }
         self.assertEqual(set(wall_actor_centers(geometry.wall_segments, 3.0)), expected_centers)
         self.assertEqual(len(geometry.wall_segments), len(geometry.obstacle_aabbs))
@@ -507,14 +599,15 @@ class TJunctionNavigationTests(unittest.TestCase):
             self.assertEqual(len(center), 2)
             self.assertTrue(all(value > 0.0 for value in half_extent))
 
-        # This uses the same fixed-actor centre/AABB occupancy convention as
-        # corridor_explicit_wall_segments: the positive-x stem is traversable
-        # through its junction, but its forward continuation is closed at x=4.
+        # The stem is traversable through the junction, while both branch
+        # corridors remain open between their side walls and terminate at caps.
         for x in np.linspace(0.0, 2.5, 11):
             with self.subTest(stem_x=x):
                 self.assertFalse(_aabb_occupies(geometry.obstacle_aabbs, (x, 0.0)))
         self.assertFalse(_aabb_occupies(geometry.obstacle_aabbs, (2.5, 0.0)))
-        self.assertTrue(_aabb_occupies(geometry.obstacle_aabbs, (4.0, 0.0)))
+        self.assertFalse(_aabb_occupies(geometry.obstacle_aabbs, (2.5, 2.5)))
+        self.assertFalse(_aabb_occupies(geometry.obstacle_aabbs, (2.5, -2.5)))
+        self.assertTrue(_aabb_occupies(geometry.obstacle_aabbs, (2.5, 4.01)))
 
     def test_geometry_has_fixed_dimensions_and_finite_values(self):
         geometry = build_t_junction_geometry("left")

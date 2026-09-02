@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 
 _SCENARIOS = ("T_LEFT", "T_RIGHT")
 _EXPECTED_BRANCH = {"T_LEFT": "LEFT", "T_RIGHT": "RIGHT"}
@@ -41,6 +43,27 @@ def record_t_branch_occupancy(occupancies, local_xy):
     from legged_gym.navigation.v1_t_junction import classify_t_branch
 
     return tuple(occupancies) + (classify_t_branch(local_xy),)
+
+
+def t_navigation_waypoints(geometry, turn_x_m=1.75):
+    """Return a safe local route while preserving the terminal global goal.
+
+    The frozen V62 minimum-radius projection can overshoot the outer branch
+    wall when the final diagonal goal is used directly.  An intermediate point
+    on the branch centreline makes the turn and the final lateral approach
+    explicit without changing the published T geometry or terminal goal.
+    """
+    turn_x = float(turn_x_m)
+    if not math.isfinite(turn_x) or turn_x <= 0.0:
+        raise ValueError("turn_x_m must be finite and positive")
+    goal = np.asarray(geometry.scenario.goal_xy, dtype=np.float64)
+    start = np.asarray(geometry.scenario.start_xy, dtype=np.float64)
+    junction = np.asarray((turn_x, 0.0), dtype=np.float64)
+    branch = np.asarray((turn_x, goal[1]), dtype=np.float64)
+    waypoints = np.asarray((start, junction, branch, goal), dtype=np.float64)
+    if not np.isfinite(waypoints).all():
+        raise ValueError("T navigation waypoints must be finite")
+    return waypoints
 
 
 def classify_t_episode_progress(
@@ -283,7 +306,8 @@ def evaluate_scene(
         env.reset()
     require_isaacgym_depth_backend(env.depth_backend_actual)
     _assign_final_goal(env, geometry, torch)
-    manager = waypoint_manager_cls(geometry.waypoints, reach_radius=geometry.reach_radius_m)
+    waypoints = t_navigation_waypoints(geometry)
+    manager = waypoint_manager_cls(waypoints, reach_radius=geometry.reach_radius_m)
     actions = torch.zeros(1, 2, device=env.device)
     records = []
     next_teacher_step = int(env.common_step_counter)
@@ -479,7 +503,9 @@ def main(argv=None):
         env = None
         try:
             env, _ = task_registry.make_env(args.task, args=args, env_cfg=env_cfg)
-            require_isaacgym_depth_backend(env.depth_backend_actual)
+            # ``depth_backend_actual`` becomes ``isaacgym`` after the first
+            # reset/step captures IMAGE_DEPTH; evaluate_scene performs the
+            # fail-closed check at that point.
             scene_records = evaluate_scene(
                 env, scene, stage_args.episodes, stage_args.seed, stage_args.max_steps,
                 teacher_cfg, geometry, torch, V1WaypointManager,

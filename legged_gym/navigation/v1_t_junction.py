@@ -90,12 +90,19 @@ def build_t_junction_geometry(
     # segment rather than applying the legacy two-sided offset convention.
     inner_x = stem - half_width
     outer_x = stem + half_width
+    branch_end = branch_length + half_width
     segments = (
+        # Stem side walls terminate at the junction opening.
         (np.asarray((0.0, half_width)), np.asarray((stem, half_width))),
         (np.asarray((0.0, -half_width)), np.asarray((stem, -half_width))),
-        (np.asarray((inner_x, half_width)), np.asarray((inner_x, branch_length))),
-        (np.asarray((inner_x, -half_width)), np.asarray((inner_x, -branch_length))),
-        (np.asarray((outer_x, -branch_length)), np.asarray((outer_x, branch_length))),
+        # Positive-y branch side walls and cap.
+        (np.asarray((inner_x, half_width)), np.asarray((inner_x, branch_end))),
+        (np.asarray((outer_x, half_width)), np.asarray((outer_x, branch_end))),
+        (np.asarray((inner_x, branch_end)), np.asarray((outer_x, branch_end))),
+        # Negative-y branch side walls and cap.
+        (np.asarray((inner_x, -half_width)), np.asarray((inner_x, -branch_end))),
+        (np.asarray((outer_x, -half_width)), np.asarray((outer_x, -branch_end))),
+        (np.asarray((inner_x, -branch_end)), np.asarray((outer_x, -branch_end))),
     )
     scenario = CorridorScenario(
         family="t_junction",
