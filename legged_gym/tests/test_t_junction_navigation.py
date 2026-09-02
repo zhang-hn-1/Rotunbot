@@ -1,4 +1,5 @@
 import math
+import importlib
 import unittest
 
 import numpy as np
@@ -9,6 +10,86 @@ from legged_gym.navigation.v1_t_junction import (
     wall_actor_centers,
 )
 from legged_gym.navigation.v1_t_junction_metrics import aggregate_t_gate
+
+
+def _collector_module():
+    return importlib.import_module(
+        "legged_gym.scripts.collect_sru_visual_t_junction_teacher"
+    )
+
+
+def _audit_module():
+    return importlib.import_module(
+        "legged_gym.scripts.audit_t_junction_teacher_dataset"
+    )
+
+
+def _dataset_step(episode_id, step_id, done=False):
+    return {
+        "episode_id": episode_id,
+        "step_id": step_id,
+        "depth": [[0.5]],
+        "goal_xy_robot": [1.0, 0.0],
+        "proprioception": [0.0] * 12,
+        "previous_command": [0.0, 0.0],
+        "previous_actual_velocity": [0.0, 0.0],
+        "teacher_command": [0.2, 0.0],
+        "actual_velocity": [0.0, 0.0],
+        "governor_command": [0.0, 0.0],
+        "projection_command": [0.2, 0.0],
+        "done": done,
+        "success": done,
+        "collision": False,
+        "goal_distance": 0.3,
+    }
+
+
+def _t_dataset():
+    first = _dataset_step(0, 0, done=True)
+    second = _dataset_step(1, 0, done=True)
+
+    def episode(episode_id, row):
+        return {
+            "episode_id": episode_id,
+            "sequence_length": 1,
+            **{key: [value] for key, value in row.items() if key != "episode_id"},
+        }
+
+    dataset = {
+        "schema_version": 1,
+        "step_fields": [
+            "episode_id",
+            "step_id",
+            "depth",
+            "goal_xy_robot",
+            "proprioception",
+            "previous_command",
+            "previous_actual_velocity",
+            "teacher_command",
+            "actual_velocity",
+            "governor_command",
+            "projection_command",
+            "done",
+            "success",
+            "collision",
+            "goal_distance",
+        ],
+        "sequence_length": 16,
+        "episodes": [episode(0, first), episode(1, second)],
+        "metadata": {
+            "depth_backend_requested": "isaacgym",
+            "depth_backend_actual": "isaacgym",
+            "scenarios": ["T_LEFT", "T_RIGHT"],
+            "episode_scenarios": ["T_LEFT", "T_RIGHT"],
+            "seed": 2026,
+            "geometry": {"width_m": 3.0},
+            "command_ranges": {
+                "v_cmd": [-0.25, 0.25],
+                "w_cmd": [-0.10, 0.10],
+            },
+        },
+    }
+    return dataset
 
 
 class _TorchLikeFinite:
@@ -78,6 +159,117 @@ def _aabb_occupies(aabbs, point):
 
 
 class TJunctionNavigationTests(unittest.TestCase):
+    def test_t_teacher_collector_module_is_available(self):
+        """Breaks if the requested T teacher entrypoint is not shipped."""
+        self.assertIsNotNone(
+            importlib.util.find_spec(
+                "legged_gym.scripts.collect_sru_visual_t_junction_teacher"
+            )
+        )
+
+    def test_t_teacher_branch_commands_require_opposite_yaw_signs(self):
+        """Breaks if a T_LEFT turn is commanded with the T_RIGHT yaw sign."""
+        collector = _collector_module()
+        self.assertEqual(collector.expected_branch_yaw_sign("T_LEFT"), 1)
+        self.assertEqual(collector.expected_branch_yaw_sign("T_RIGHT"), -1)
+        self.assertFalse(collector.has_wrong_turn_command(0.03, "T_LEFT"))
+        self.assertTrue(collector.has_wrong_turn_command(-0.03, "T_LEFT"))
+        self.assertFalse(collector.has_wrong_turn_command(-0.03, "T_RIGHT"))
+        self.assertTrue(collector.has_wrong_turn_command(0.03, "T_RIGHT"))
+
+    def test_t_teacher_classifies_wrong_turn_turn_completion_and_exit(self):
+        """Breaks if branch selection or terminal progress are misclassified."""
+        collector = _collector_module()
+        left = collector.classify_t_episode_progress(
+            "T_LEFT", (2.5, 1.0), waypoint_index=2, exit_reached=True
+        )
+        self.assertEqual(left["branch_prediction"], "LEFT")
+        self.assertFalse(left["wrong_turn"])
+        self.assertTrue(left["turn_completed"])
+        self.assertTrue(left["exit_reached"])
+        wrong = collector.classify_t_episode_progress(
+            "T_RIGHT", (2.5, 1.0), waypoint_index=1, exit_reached=False
+        )
+        self.assertEqual(wrong["branch_prediction"], "LEFT")
+        self.assertTrue(wrong["wrong_turn"])
+        self.assertFalse(wrong["turn_completed"])
+        self.assertFalse(wrong["exit_reached"])
+
+    def test_t_teacher_episode_record_contains_auditable_required_fields(self):
+        """Breaks if a T run omits a release-gate field from episode evidence."""
+        collector = _collector_module()
+        record = collector.make_t_episode_record(
+            scenario="T_LEFT",
+            episode_id=4,
+            seed=2026,
+            goal=(2.5, 2.5),
+            initial_pose=(0.0, 0.0, 0.28),
+            initial_yaw=0.0,
+            horizon=2250,
+            episode_steps=111,
+            macro_steps=12,
+            success=True,
+            collision=False,
+            timeout=False,
+            progress={
+                "branch_prediction": "LEFT",
+                "wrong_turn": False,
+                "turn_completed": True,
+                "exit_reached": True,
+            },
+        )
+        self.assertTrue(
+            {
+                "timeout",
+                "turn_completed",
+                "exit_reached",
+                "scenario",
+                "seed",
+                "goal",
+                "initial_pose",
+                "episode_steps",
+                "macro_steps",
+                "failure_trace",
+            }.issubset(record)
+        )
+        self.assertEqual(record["expected_branch"], "LEFT")
+        self.assertEqual(record["policy_role"], "teacher")
+
+    def test_t_teacher_rejects_non_isaacgym_depth_backend(self):
+        """Breaks if the collector could silently label fallback depth."""
+        collector = _collector_module()
+        self.assertEqual(collector.require_isaacgym_depth_backend("isaacgym"), "isaacgym")
+        with self.assertRaises(RuntimeError):
+            collector.require_isaacgym_depth_backend("fallback")
+
+    def test_t_dataset_audit_checks_v1_schema_finite_terminal_chronology_and_counts(self):
+        """Breaks if the audit accepts malformed or non-real-depth T labels."""
+        audit = _audit_module()
+        result = audit.audit_t_teacher_dataset(_t_dataset())
+        self.assertTrue(result["finite"])
+        self.assertTrue(result["terminal_done"])
+        self.assertTrue(result["chronological_step_ids"])
+        self.assertEqual(result["scenario_counts"], {"T_LEFT": 1, "T_RIGHT": 1})
+        self.assertEqual(result["macro_steps"], 2)
+        malformed = _t_dataset()
+        malformed["metadata"]["depth_backend_actual"] = "fallback"
+        with self.assertRaises(ValueError):
+            audit.audit_t_teacher_dataset(malformed)
+        nonfinite = _t_dataset()
+        nonfinite["episodes"][0]["depth"][0][0][0] = math.nan
+        with self.assertRaises(ValueError):
+            audit.audit_t_teacher_dataset(nonfinite)
+        early_done = _t_dataset()
+        episode = early_done["episodes"][0]
+        for field, values in episode.items():
+            if isinstance(values, list):
+                values.append(values[-1])
+        episode["step_id"] = [0, 1]
+        episode["done"] = [True, True]
+        episode["sequence_length"] = 2
+        with self.assertRaises(ValueError):
+            audit.audit_t_teacher_dataset(early_done)
+
     def test_left_and_right_share_walls_but_mirror_goals(self):
         left = build_t_junction_geometry("T_LEFT")
         right = build_t_junction_geometry("T_RIGHT")
