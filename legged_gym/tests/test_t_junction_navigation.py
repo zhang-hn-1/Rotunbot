@@ -28,7 +28,7 @@ def _dataset_step(episode_id, step_id, done=False):
     return {
         "episode_id": episode_id,
         "step_id": step_id,
-        "depth": [[0.5]],
+        "depth": [[0.5] * 32 for _ in range(8)],
         "goal_xy_robot": [1.0, 0.0],
         "proprioception": [0.0] * 12,
         "previous_command": [0.0, 0.0],
@@ -51,6 +51,7 @@ def _t_dataset():
     def episode(episode_id, row):
         return {
             "episode_id": episode_id,
+            "episode_ids": [episode_id],
             "sequence_length": 1,
             **{key: [value] for key, value in row.items() if key != "episode_id"},
         }
@@ -82,10 +83,30 @@ def _t_dataset():
             "scenarios": ["T_LEFT", "T_RIGHT"],
             "episode_scenarios": ["T_LEFT", "T_RIGHT"],
             "seed": 2026,
-            "geometry": {"width_m": 3.0},
+            "episodes_per_scene": 1,
+            "geometry": {
+                "T_LEFT": {"goal_xy": [2.5, 2.5], "width_m": 3.0},
+                "T_RIGHT": {"goal_xy": [2.5, -2.5], "width_m": 3.0},
+            },
             "command_ranges": {
                 "v_cmd": [-0.25, 0.25],
                 "w_cmd": [-0.10, 0.10],
+            },
+            "episode_provenance": {
+                "0": {
+                    "scenario": "T_LEFT",
+                    "goal": [2.5, 2.5],
+                    "initial_pose": [0.0, 0.0, 0.28],
+                    "initial_yaw": 0.0,
+                    "horizon": 2250,
+                },
+                "1": {
+                    "scenario": "T_RIGHT",
+                    "goal": [2.5, -2.5],
+                    "initial_pose": [0.0, 0.0, 0.28],
+                    "initial_yaw": 0.0,
+                    "horizon": 2250,
+                },
             },
         },
     }
@@ -195,6 +216,54 @@ class TJunctionNavigationTests(unittest.TestCase):
         self.assertFalse(wrong["turn_completed"])
         self.assertFalse(wrong["exit_reached"])
 
+    def test_t_teacher_uses_terminal_snapshot_and_observed_branch_evidence(self):
+        """Breaks if automatic reset root pose can erase terminal branch evidence."""
+        collector = _collector_module()
+
+        class FakeTerminalEnv:
+            env_origins = np.asarray([[10.0, -4.0, 0.0]])
+            terminal_position = np.asarray([[12.5, -3.0]])
+            root_states = np.asarray([[10.0, -4.0, 0.28]])
+
+        self.assertEqual(
+            collector.terminal_local_xy(FakeTerminalEnv()), (2.5, 1.0)
+        )
+        progress = collector.classify_t_episode_progress(
+            "T_RIGHT",
+            terminal_local_xy=(2.5, -1.0),
+            waypoint_index=2,
+            exit_reached=True,
+            observed_branches=("LEFT",),
+        )
+        self.assertEqual(progress["branch_prediction"], "RIGHT")
+        self.assertTrue(progress["wrong_turn"])
+        self.assertTrue(progress["turn_completed"])
+
+    def test_t_teacher_installs_waypoint_goal_before_capture(self):
+        """Breaks if stored waypoint goals diverge from actor observations."""
+        collector = _collector_module()
+
+        class FakeObservationEnv:
+            def __init__(self):
+                self.calls = []
+
+            def set_observation_goal_world(self, goal_world):
+                self.calls.append(("set", np.asarray(goal_world).copy()))
+
+            def compute_observations(self):
+                self.calls.append(("compute", None))
+
+            def _goal_xy_robot(self):
+                return np.asarray([[1.25, -0.5]])
+
+        env = FakeObservationEnv()
+        goal_xy_robot = collector.install_observation_goal(env, np.asarray([12.5, -3.0]))
+        self.assertEqual(env.calls[0][0], "set")
+        np.testing.assert_allclose(env.calls[0][1], [[12.5, -3.0]])
+        self.assertEqual(env.calls[1], ("compute", None))
+        self.assertIsNotNone(goal_xy_robot)
+        np.testing.assert_allclose(goal_xy_robot, [[1.25, -0.5]])
+
     def test_t_teacher_episode_record_contains_auditable_required_fields(self):
         """Breaks if a T run omits a release-gate field from episode evidence."""
         collector = _collector_module()
@@ -269,6 +338,58 @@ class TJunctionNavigationTests(unittest.TestCase):
         episode["sequence_length"] = 2
         with self.assertRaises(ValueError):
             audit.audit_t_teacher_dataset(early_done)
+
+    def test_t_dataset_audit_rejects_non_t16_lengths_shapes_and_scalar_values(self):
+        """Breaks if malformed V1 fields can pass a nominal T dataset audit."""
+        audit = _audit_module()
+        cases = []
+
+        non_t16 = _t_dataset()
+        non_t16["sequence_length"] = 15
+        cases.append(non_t16)
+
+        mismatched_length = _t_dataset()
+        mismatched_length["episodes"][0]["teacher_command"].append([0.2, 0.0])
+        cases.append(mismatched_length)
+
+        string_episode_length = _t_dataset()
+        string_episode_length["episodes"][0]["sequence_length"] = "1"
+        cases.append(string_episode_length)
+
+        wrong_depth_shape = _t_dataset()
+        wrong_depth_shape["episodes"][0]["depth"] = [[[0.5] * 32 for _ in range(7)]]
+        cases.append(wrong_depth_shape)
+
+        wrong_command_shape = _t_dataset()
+        wrong_command_shape["episodes"][0]["projection_command"] = [[0.2]]
+        cases.append(wrong_command_shape)
+
+        string_value = _t_dataset()
+        string_value["episodes"][0]["teacher_command"][0][0] = "0.2"
+        cases.append(string_value)
+
+        none_value = _t_dataset()
+        none_value["episodes"][0]["goal_xy_robot"][0][1] = None
+        cases.append(none_value)
+
+        for malformed in cases:
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(ValueError):
+                    audit.audit_t_teacher_dataset(malformed)
+
+    def test_t_dataset_audit_rejects_swapped_episode_provenance_side_or_goal(self):
+        """Breaks if a dataset episode can be attributed to the opposite T side."""
+        audit = _audit_module()
+
+        swapped_side = _t_dataset()
+        swapped_side["metadata"]["episode_provenance"]["0"]["scenario"] = "T_RIGHT"
+        with self.assertRaises(ValueError):
+            audit.audit_t_teacher_dataset(swapped_side)
+
+        swapped_goal = _t_dataset()
+        swapped_goal["metadata"]["episode_provenance"]["0"]["goal"] = [2.5, -2.5]
+        with self.assertRaises(ValueError):
+            audit.audit_t_teacher_dataset(swapped_goal)
 
     def test_left_and_right_share_walls_but_mirror_goals(self):
         left = build_t_junction_geometry("T_LEFT")

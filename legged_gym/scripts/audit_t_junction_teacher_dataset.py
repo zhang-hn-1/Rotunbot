@@ -35,57 +35,137 @@ _METADATA_FIELDS = (
     "seed",
     "geometry",
     "command_ranges",
+    "episodes_per_scene",
+    "episode_provenance",
 )
+_VECTOR_FIELDS = (
+    "goal_xy_robot",
+    "previous_command",
+    "previous_actual_velocity",
+    "teacher_command",
+    "actual_velocity",
+    "governor_command",
+    "projection_command",
+)
+_BOOLEAN_FIELDS = ("done", "success", "collision")
 
 
-def _to_list(value):
+def _to_list(value, path):
     """Convert tensor-like vectors to Python values without requiring torch."""
     tolist = getattr(value, "tolist", None)
-    return tolist() if callable(tolist) else list(value)
-
-
-def _finite(value, path="dataset"):
-    """Reject every non-finite scalar nested inside lists, mappings, or tensors."""
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _finite(item, "%s.%s" % (path, key))
-        return
-    if isinstance(value, numbers.Number):
-        if not math.isfinite(float(value)):
-            raise ValueError("%s contains a non-finite numeric value" % path)
-        return
-    if isinstance(value, (str, bytes, bool)) or value is None:
-        return
-    if isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            _finite(item, "%s[%d]" % (path, index))
-        return
+    if callable(tolist):
+        value = tolist()
+    if isinstance(value, (str, bytes, Mapping)) or value is None:
+        raise ValueError("%s must be an array" % path)
     try:
-        import torch
+        return list(value)
+    except TypeError as error:
+        raise ValueError("%s must be an array" % path) from error
 
-        if torch.is_tensor(value):
-            if value.dtype.is_floating_point and not bool(torch.isfinite(value).all().item()):
-                raise ValueError("%s contains a non-finite tensor value" % path)
-            return
-    except ImportError:
-        pass
-    isfinite = getattr(value, "isfinite", None)
-    if callable(isfinite):
-        result = isfinite()
-        all_values = getattr(result, "all", None)
-        result = all_values() if callable(all_values) else result
-        item = getattr(result, "item", None)
-        result = item() if callable(item) else result
-        if not bool(result):
-            raise ValueError("%s contains a non-finite tensor value" % path)
+
+def _finite_number(value, path):
+    if isinstance(value, bool) or not isinstance(value, numbers.Number):
+        raise ValueError("%s must contain only finite numeric values" % path)
+    if not math.isfinite(float(value)):
+        raise ValueError("%s contains a non-finite numeric value" % path)
+
+
+def _nested_shape_and_finite(value, path):
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        value = tolist()
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return (0,)
+        child_shapes = [
+            _nested_shape_and_finite(item, "%s[%d]" % (path, index))
+            for index, item in enumerate(value)
+        ]
+        if any(shape != child_shapes[0] for shape in child_shapes[1:]):
+            raise ValueError("%s must not be ragged" % path)
+        return (len(value),) + child_shapes[0]
+    _finite_number(value, path)
+    return ()
+
+
+def _require_integral(value, path):
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError("%s must be an integer" % path)
+    return int(value)
+
+
+def _require_shape(value, expected, path):
+    shape = _nested_shape_and_finite(value, path)
+    if len(shape) != len(expected) or any(
+        actual != wanted for actual, wanted in zip(shape, expected) if wanted is not None
+    ):
+        raise ValueError("%s must have shape %s; got %s" % (path, expected, shape))
+
+
+def _numeric_vector(value, width, path):
+    values = _to_list(value, path)
+    if len(values) != width:
+        raise ValueError("%s must contain %d values" % (path, width))
+    for index, item in enumerate(values):
+        _finite_number(item, "%s[%d]" % (path, index))
+    return tuple(float(item) for item in values)
 
 
 def _terminal_done(value):
-    values = _to_list(value)
+    values = _to_list(value, "episode done field")
     if not values:
         raise ValueError("episode done field must not be empty")
-    if not bool(values[-1]) or any(bool(item) for item in values[:-1]):
+    if any(not isinstance(item, bool) for item in values):
+        raise ValueError("episode done field must contain booleans")
+    if not values[-1] or any(values[:-1]):
         raise ValueError("episode done field must be true only on its terminal row")
+
+
+def _validate_provenance(metadata, episodes, episode_scenarios):
+    episodes_per_scene = _require_integral(
+        metadata["episodes_per_scene"], "metadata.episodes_per_scene"
+    )
+    if episodes_per_scene <= 0 or len(episodes) != 2 * episodes_per_scene:
+        raise ValueError("episodes must contain the declared number of both T sides")
+    expected_scenarios = ["T_LEFT"] * episodes_per_scene + ["T_RIGHT"] * episodes_per_scene
+    if episode_scenarios != expected_scenarios:
+        raise ValueError("episode_scenarios must preserve T_LEFT then T_RIGHT collection order")
+    geometry = metadata["geometry"]
+    if not isinstance(geometry, Mapping) or set(geometry) != set(_SCENARIOS):
+        raise ValueError("metadata geometry must contain exactly both T scenarios")
+    goals = {}
+    for scenario in _SCENARIOS:
+        scene_geometry = geometry[scenario]
+        if not isinstance(scene_geometry, Mapping) or "goal_xy" not in scene_geometry:
+            raise ValueError("metadata geometry for %s must contain goal_xy" % scenario)
+        goals[scenario] = _numeric_vector(
+            scene_geometry["goal_xy"], 2, "metadata.geometry.%s.goal_xy" % scenario
+        )
+    provenance = metadata["episode_provenance"]
+    if not isinstance(provenance, Mapping):
+        raise ValueError("episode_provenance must map episode ids to evidence")
+    episode_ids = [int(episode["episode_id"]) for episode in episodes]
+    expected_keys = {str(episode_id) for episode_id in episode_ids}
+    if {str(key) for key in provenance} != expected_keys:
+        raise ValueError("episode_provenance must cover each dataset episode exactly once")
+    for index, episode in enumerate(episodes):
+        episode_id = int(episode["episode_id"])
+        entry = provenance.get(str(episode_id), provenance.get(episode_id))
+        if not isinstance(entry, Mapping):
+            raise ValueError("episode_provenance[%d] must be a mapping" % episode_id)
+        required = {"scenario", "goal", "initial_pose", "initial_yaw", "horizon"}
+        missing = required.difference(entry)
+        if missing:
+            raise ValueError("episode_provenance[%d] is missing %s" % (episode_id, ", ".join(sorted(missing))))
+        scenario = entry["scenario"]
+        if scenario not in _SCENARIOS or scenario != episode_scenarios[index]:
+            raise ValueError("episode_provenance[%d] scenario mismatch" % episode_id)
+        if _numeric_vector(entry["goal"], 2, "episode_provenance[%d].goal" % episode_id) != goals[scenario]:
+            raise ValueError("episode_provenance[%d] goal does not match its scenario" % episode_id)
+        _numeric_vector(entry["initial_pose"], 3, "episode_provenance[%d].initial_pose" % episode_id)
+        _finite_number(entry["initial_yaw"], "episode_provenance[%d].initial_yaw" % episode_id)
+        if _require_integral(entry["horizon"], "episode_provenance[%d].horizon" % episode_id) <= 0:
+            raise ValueError("episode_provenance[%d].horizon must be positive" % episode_id)
 
 
 def audit_t_teacher_dataset(dataset):
@@ -96,6 +176,8 @@ def audit_t_teacher_dataset(dataset):
         raise ValueError("unsupported teacher dataset schema")
     if tuple(dataset.get("step_fields", ())) != _V1_STEP_FIELDS:
         raise ValueError("teacher dataset step schema mismatch")
+    if _require_integral(dataset.get("sequence_length"), "dataset.sequence_length") != 16:
+        raise ValueError("T teacher dataset sequence_length must be exactly 16")
     metadata = dataset.get("metadata")
     if not isinstance(metadata, Mapping):
         raise ValueError("teacher dataset metadata is required")
@@ -112,7 +194,7 @@ def audit_t_teacher_dataset(dataset):
     episodes = list(dataset.get("episodes", ()))
     if not episodes:
         raise ValueError("teacher dataset contains no episodes")
-    episode_scenarios = list(metadata["episode_scenarios"])
+    episode_scenarios = _to_list(metadata["episode_scenarios"], "metadata.episode_scenarios")
     if len(episode_scenarios) != len(episodes):
         raise ValueError("episode_scenarios must align with dataset episodes")
     if any(side not in _SCENARIOS for side in episode_scenarios):
@@ -124,26 +206,48 @@ def audit_t_teacher_dataset(dataset):
             raise ValueError("dataset episode %d must be a mapping" % index)
         if "episode_id" not in episode:
             raise ValueError("dataset episode %d is missing episode_id" % index)
+        episode_id = _require_integral(episode["episode_id"], "episodes[%d].episode_id" % index)
         missing_fields = [field for field in _V1_STEP_FIELDS if field not in ("episode_id",) and field not in episode]
         if missing_fields:
             raise ValueError(
                 "dataset episode %d missing fields: %s" % (index, ", ".join(missing_fields))
             )
-        step_ids = _to_list(episode["step_id"])
-        if step_ids != list(range(len(step_ids))):
+        step_ids = _to_list(episode["step_id"], "episodes[%d].step_id" % index)
+        if any(_require_integral(value, "episodes[%d].step_id[%d]" % (index, step)) != step for step, value in enumerate(step_ids)):
             raise ValueError("dataset episode %d step ids are not chronological" % index)
+        if not step_ids:
+            raise ValueError("dataset episode %d must contain at least one step" % index)
         _terminal_done(episode["done"])
-        if int(episode.get("sequence_length", len(step_ids))) != len(step_ids):
+        if _require_integral(
+            episode.get("sequence_length", len(step_ids)), "episodes[%d].sequence_length" % index
+        ) != len(step_ids):
             raise ValueError("dataset episode %d sequence length mismatch" % index)
+        expected_length = len(step_ids)
+        if "episode_ids" not in episode:
+            raise ValueError("dataset episode %d is missing writer episode_ids" % index)
+        episode_ids = _to_list(episode["episode_ids"], "episodes[%d].episode_ids" % index)
+        if len(episode_ids) != expected_length or any(
+            _require_integral(value, "episodes[%d].episode_ids[%d]" % (index, step)) != episode_id
+            for step, value in enumerate(episode_ids)
+        ):
+            raise ValueError("dataset episode %d episode_ids mismatch" % index)
+        _require_shape(episode["depth"], (expected_length, 8, 32), "episodes[%d].depth" % index)
+        _require_shape(episode["proprioception"], (expected_length, None), "episodes[%d].proprioception" % index)
+        if _nested_shape_and_finite(episode["proprioception"], "episodes[%d].proprioception" % index)[1] <= 0:
+            raise ValueError("episodes[%d].proprioception must have a positive width" % index)
+        for field in _VECTOR_FIELDS:
+            _require_shape(episode[field], (expected_length, 2), "episodes[%d].%s" % (index, field))
+        _require_shape(episode["goal_distance"], (expected_length,), "episodes[%d].goal_distance" % index)
+        for field in _BOOLEAN_FIELDS:
+            values = _to_list(episode[field], "episodes[%d].%s" % (index, field))
+            if len(values) != expected_length or any(not isinstance(value, bool) for value in values):
+                raise ValueError("episodes[%d].%s must be boolean [N]" % (index, field))
         macro_steps += len(step_ids)
-        for field in _V1_STEP_FIELDS:
-            if field != "episode_id":
-                _finite(episode[field], "episodes[%d].%s" % (index, field))
 
-    _finite(metadata, "metadata")
     scenario_counts = {side: episode_scenarios.count(side) for side in _SCENARIOS}
     if not all(scenario_counts.values()):
         raise ValueError("dataset must contain T_LEFT and T_RIGHT episodes")
+    _validate_provenance(metadata, episodes, episode_scenarios)
     return {
         "schema_version": 1,
         "depth_backend_requested": metadata["depth_backend_requested"],

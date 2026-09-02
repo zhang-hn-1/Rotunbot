@@ -36,21 +36,36 @@ def has_wrong_turn_command(yaw_rate, scenario, deadband_rps=1.0e-4):
     return expected_branch_yaw_sign(scenario) * yaw_rate < 0.0
 
 
-def classify_t_episode_progress(scenario, local_xy, waypoint_index, exit_reached):
+def classify_t_episode_progress(
+    scenario,
+    local_xy=None,
+    waypoint_index=0,
+    exit_reached=False,
+    observed_branches=(),
+    terminal_local_xy=None,
+):
     """Classify selected branch, wrong branch, turn completion, and final exit."""
     from legged_gym.navigation.v1_t_junction import classify_t_branch
 
     scenario = _scenario(scenario)
-    branch_prediction = classify_t_branch(local_xy)
-    expected_branch = _EXPECTED_BRANCH[scenario]
-    wrong_turn = (
-        branch_prediction in ("LEFT", "RIGHT") and branch_prediction != expected_branch
+    if terminal_local_xy is not None:
+        local_xy = terminal_local_xy
+    if local_xy is None:
+        raise ValueError("local_xy or terminal_local_xy is required")
+    terminal_branch = classify_t_branch(local_xy)
+    branches = [str(branch) for branch in observed_branches if branch in ("LEFT", "RIGHT")]
+    if terminal_branch in ("LEFT", "RIGHT"):
+        branches.append(terminal_branch)
+    branch_prediction = terminal_branch if terminal_branch in ("LEFT", "RIGHT") else (
+        branches[-1] if branches else "UNDECIDED"
     )
+    expected_branch = _EXPECTED_BRANCH[scenario]
+    wrong_turn = any(branch != expected_branch for branch in branches)
     return {
         "expected_branch": expected_branch,
         "branch_prediction": branch_prediction,
         "wrong_turn": bool(wrong_turn),
-        "turn_completed": bool(int(waypoint_index) >= 2),
+        "turn_completed": bool(int(waypoint_index) >= 2 and expected_branch in branches),
         "exit_reached": bool(exit_reached),
     }
 
@@ -173,6 +188,22 @@ def _local_pose(env):
     return position, yaw
 
 
+def terminal_local_xy(env):
+    """Return the terminal local position captured by reset_idx before auto-reset."""
+    position = env.terminal_position[0, :2] - env.env_origins[0, :2]
+    values = position.detach().cpu().tolist() if hasattr(position, "detach") else position.tolist()
+    if len(values) != 2 or not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("terminal_position must contain two finite XY values")
+    return tuple(float(value) for value in values)
+
+
+def install_observation_goal(env, local_waypoint_world):
+    """Install the active waypoint into the actor observation before capture."""
+    env.set_observation_goal_world(local_waypoint_world.reshape(1, 2))
+    env.compute_observations()
+    return env._goal_xy_robot()
+
+
 def _new_state(scene, episode_id, env):
     position, yaw = _local_pose(env)
     return {
@@ -186,7 +217,7 @@ def _new_state(scene, episode_id, env):
             float(env.root_states[0, 2].item()),
         ),
         "initial_yaw": float(yaw.item()),
-        "wrong_turn_command": False,
+        "observed_branches": [],
         "failure_events": [],
     }
 
@@ -248,17 +279,21 @@ def evaluate_scene(
                 pose = (float(position[0].item()), float(position[1].item()), float(yaw.item()))
                 manager.update(pose)
                 waypoint_robot = manager.get_current_waypoint_robot(pose)
-                goal_xy = torch.as_tensor(waypoint_robot, dtype=torch.float32, device=env.device).reshape(1, 2)
+                waypoint_world = env.env_origins[0, :2] + torch.as_tensor(
+                    manager.get_current_waypoint(), dtype=env.root_states.dtype, device=env.device
+                ).reshape(1, 2)
+                goal_xy = install_observation_goal(env, waypoint_world).detach().clone()
                 actual = torch.stack((env.tracking_lin_vel[:, 0], env.tracking_ang_vel[:, 2]), dim=1)
                 teacher = teacher_velocity_diagnostics(goal_xy, actual, env.obstacle_clearance, teacher_cfg)
                 actions[:, 0] = teacher["applied_command"][:, 0] / teacher_cfg.max_forward_speed
                 actions[:, 1] = teacher["applied_command"][:, 1] / teacher_cfg.max_yaw_rate
                 actions.clamp_(-1.0, 1.0)
                 state["macro_steps"] += 1
-                if manager.current_index >= 2:
-                    state["wrong_turn_command"] |= has_wrong_turn_command(
-                        float(teacher["applied_command"][0, 1].item()), scene
-                    )
+                observed = classify_t_episode_progress(
+                    scene, (pose[0], pose[1]), observed_branches=state["observed_branches"]
+                )["branch_prediction"]
+                if observed in ("LEFT", "RIGHT"):
+                    state["observed_branches"].append(observed)
                 state["failure_events"].append(
                     {
                         "macro_step": state["macro_steps"],
@@ -287,14 +322,18 @@ def evaluate_scene(
             success = bool(env.terminal_success[0].item()) if done else False
             collision = bool(env.terminal_collision[0].item()) if done else False
             timeout = forced_timeout or (bool(env.terminal_timeout[0].item()) if done else False)
-            position, _ = _local_pose(env)
+            if done:
+                local_xy = terminal_local_xy(env)
+            else:
+                position, _ = _local_pose(env)
+                local_xy = (float(position[0].item()), float(position[1].item()))
             progress = classify_t_episode_progress(
                 scene,
-                (float(position[0].item()), float(position[1].item())),
-                manager.current_index,
+                terminal_local_xy=local_xy,
+                waypoint_index=manager.current_index,
                 exit_reached=success,
+                observed_branches=state["observed_branches"],
             )
-            progress["wrong_turn"] |= state["wrong_turn_command"]
             if pending is not None and dataset_writer is not None:
                 pending.update(
                     {
@@ -455,6 +494,16 @@ def main(argv=None):
                 "sequence_length": 16,
                 "seed": int(stage_args.seed),
                 "geometry": geometry_by_scene,
+                "episode_provenance": {
+                    str(record["episode_id"]): {
+                        "scenario": record["scenario"],
+                        "goal": list(record["goal"]),
+                        "initial_pose": list(record["initial_pose"]),
+                        "initial_yaw": record["initial_yaw"],
+                        "horizon": record["horizon"],
+                    }
+                    for record in records
+                },
                 "command_ranges": {
                     "v_cmd": [-teacher_cfg.max_forward_speed, teacher_cfg.max_forward_speed],
                     "w_cmd": [-teacher_cfg.max_yaw_rate, teacher_cfg.max_yaw_rate],
