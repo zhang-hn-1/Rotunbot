@@ -37,15 +37,36 @@ def _normalize_branch(branch):
     raise ValueError("branch must be LEFT, RIGHT, T_LEFT, or T_RIGHT")
 
 
-def _obstacle_aabbs(segments):
+def _wall_layout(segments, width_m):
+    """Match the corridor consumer's two actors per centreline segment."""
+    half_width = _finite_positive("width_m", width_m) / 2.0
     half_thickness = V1_WALL_THICKNESS_M / 2.0
-    return tuple(
-        (
-            tuple(np.minimum(start, end) - half_thickness),
-            tuple(np.maximum(start, end) + half_thickness),
-        )
-        for start, end in segments
-    )
+    layout = []
+    for start, end in segments:
+        start = np.asarray(start, dtype=np.float64)
+        end = np.asarray(end, dtype=np.float64)
+        delta = end - start
+        length = float(np.linalg.norm(delta))
+        if start.shape != (2,) or end.shape != (2,) or not np.isfinite((start, end)).all():
+            raise ValueError("wall segments must contain finite XY endpoints")
+        if length <= 1.0e-8:
+            raise ValueError("wall segments must have positive length")
+        normal = np.asarray((-delta[1], delta[0]), dtype=np.float64) / length
+        midpoint = 0.5 * (start + end)
+        half_extent = np.maximum(np.abs(delta) / 2.0, half_thickness)
+        for side in (-1.0, 1.0):
+            layout.append(
+                (
+                    tuple(midpoint + side * half_width * normal),
+                    tuple(half_extent),
+                )
+            )
+    return tuple(layout)
+
+
+def wall_actor_centers(wall_segments, width_m=3.0):
+    """Return the actor centres produced by the production wall consumer."""
+    return tuple(center for center, _ in _wall_layout(wall_segments, width_m))
 
 
 def build_t_junction_geometry(
@@ -61,17 +82,13 @@ def build_t_junction_geometry(
     branch_length = _finite_positive("branch_length_m", branch_length_m)
     reach = _finite_positive("reach_radius_m", reach_radius_m)
     direction = _normalize_branch(branch)
-    half_width = width / 2.0
     junction = np.asarray((stem, 0.0), dtype=np.float64)
     goal = np.asarray((stem, direction * branch_length), dtype=np.float64)
     waypoints = np.asarray(((0.0, 0.0), junction, goal), dtype=np.float64)
     segments = (
-        (np.asarray((0.0, half_width)), junction + (0.0, half_width)),
-        (np.asarray((0.0, -half_width)), junction + (0.0, -half_width)),
-        (junction + (-half_width, 0.0), junction + (-half_width, branch_length)),
-        (junction + (half_width, 0.0), junction + (half_width, branch_length)),
-        (junction + (-half_width, 0.0), junction + (-half_width, -branch_length)),
-        (junction + (half_width, 0.0), junction + (half_width, -branch_length)),
+        (np.asarray((0.0, 0.0)), junction),
+        (junction, junction + (0.0, branch_length)),
+        (junction, junction + (0.0, -branch_length)),
     )
     scenario = CorridorScenario(
         family="t_junction",
@@ -86,7 +103,7 @@ def build_t_junction_geometry(
         scenario=scenario,
         waypoints=waypoints,
         wall_segments=segments,
-        obstacle_aabbs=_obstacle_aabbs(segments),
+        obstacle_aabbs=_wall_layout(segments, width),
         branch_direction=direction,
         reach_radius_m=reach,
     )
