@@ -138,3 +138,78 @@ RuntimeError: Ninja is required to load C++ extensions
 This is the pre-existing Isaac Gym `gymtorch` build dependency during package
 initialization, not an isolated focused-test failure.  No `logs/`, SRU,
 encoder, V62, or L files were changed.
+
+## Fix round 2 (2026-09-02)
+
+### Status and scope
+
+Resolved the remaining Task 1 topology and paired-evidence findings.  The
+only runtime consumer change is the backward-compatible explicit-wall option
+in `legged_gym/navigation/v62_corridor_task.py`; legacy
+`corridor_wall_segments` keeps its existing two-sided-offset behavior.
+Untracked `logs/` directories and all SRU, encoder, V62-controller, and L
+work were left untouched.
+
+### TDD evidence
+
+RED, after replacing the topology expectation and adding pair-reuse/coverage
+regressions, ran through the isolated package loader:
+
+```text
+Ran 14 tests in 0.020s
+FAILED (failures=3)
+```
+
+The three expected failures were the old double-offset actor layout, repeated
+episode IDs accepted across pairs, and a student evidence set accepted with an
+unpaired record.
+
+GREEN, after the minimal implementation:
+
+```text
+Ran 14 tests in 0.020s
+OK
+```
+
+### Changes
+
+- Added optional `corridor_explicit_wall_segments` handling to
+  `RotunbotVelCorridor._create_envs`.  Each non-empty `(start, end)` item now
+  creates exactly one fixed actor at its supplied midpoint.  Legacy entries
+  still create the previous two normal-offset actors.
+- Rebuilt `TJunctionGeometry.wall_segments` as five direct physical walls:
+  stem boundaries at `y=+/-1.5` from `x=0..2.5`; branch inner boundaries at
+  `x=1.0` from `y=+/-1.5..+/-2.5`; and the continuous front boundary at
+  `x=4.0` from `y=-2.5..+2.5`.  It emits one `(center, half_extent)` fallback
+  AABB per explicit wall, using the fixed actor's 0.05 m thickness.
+- Replaced the prior expected blocking layout with an actor/AABB occupancy
+  regression: all sampled stem-centre points through the junction are open,
+  while `(4.0, 0.0)` is occupied by the front wall.
+- Hardened `_pair_consistency` so an episode ID cannot appear in different
+  pairs; student pair IDs must exactly cover every release-gate record once.
+  Existing same-side, duplicate-record, metadata, missing-field, and expected
+  branch checks remain in force.
+
+### Verification
+
+```text
+/home/jason/legged_gym/.venv/bin/python -m py_compile \
+  legged_gym/navigation/v1_t_junction.py \
+  legged_gym/navigation/v1_t_junction_metrics.py \
+  legged_gym/navigation/v62_corridor_task.py \
+  legged_gym/tests/test_t_junction_navigation.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+The normal focused unittest invocation remains blocked before collection by
+the pre-existing Isaac Gym `gymtorch` extension build:
+
+```text
+RuntimeError: Ninja is required to load C++ extensions
+```
+
+This is an environment dependency blocker, not an isolated Task 1 test
+failure.

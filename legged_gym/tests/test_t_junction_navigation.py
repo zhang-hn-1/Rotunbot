@@ -69,6 +69,14 @@ def _paired_student_records(successes_per_side=20):
     return records, pairs
 
 
+def _aabb_occupies(aabbs, point):
+    point = np.asarray(point, dtype=np.float64)
+    return any(
+        np.all(np.abs(point - np.asarray(center)) <= np.asarray(half_extent))
+        for center, half_extent in aabbs
+    )
+
+
 class TJunctionNavigationTests(unittest.TestCase):
     def test_left_and_right_share_walls_but_mirror_goals(self):
         left = build_t_junction_geometry("T_LEFT")
@@ -82,33 +90,33 @@ class TJunctionNavigationTests(unittest.TestCase):
         self.assertEqual(left.branch_direction, 1)
         self.assertEqual(right.branch_direction, -1)
 
-    def test_geometry_uses_center_half_extent_aabbs_and_open_t_topology(self):
+    def test_geometry_uses_explicit_actor_aabbs_with_an_open_stem_and_front_wall(self):
         geometry = build_t_junction_geometry("T_LEFT")
 
         expected_centers = {
-            (1.25, -1.5),
             (1.25, 1.5),
-            (1.0, -1.25),
-            (1.0, 1.25),
-            (4.0, -1.25),
-            (4.0, 1.25),
+            (1.25, -1.5),
+            (1.0, 2.0),
+            (1.0, -2.0),
+            (4.0, 0.0),
         }
         self.assertEqual(set(wall_actor_centers(geometry.wall_segments, 3.0)), expected_centers)
-        self.assertNotIn((1.25, 0.0), expected_centers)
-        self.assertEqual(
-            geometry.obstacle_aabbs,
-            (
-                ((1.25, -1.5), (1.25, 0.05)),
-                ((1.25, 1.5), (1.25, 0.05)),
-                ((4.0, 1.25), (0.05, 1.25)),
-                ((1.0, 1.25), (0.05, 1.25)),
-                ((1.0, -1.25), (0.05, 1.25)),
-                ((4.0, -1.25), (0.05, 1.25)),
-            ),
-        )
-        for center, half_extent in geometry.obstacle_aabbs:
+        self.assertEqual(len(geometry.wall_segments), len(geometry.obstacle_aabbs))
+        for (start, end), (center, half_extent) in zip(
+            geometry.wall_segments, geometry.obstacle_aabbs
+        ):
+            np.testing.assert_allclose(center, 0.5 * (np.asarray(start) + np.asarray(end)))
             self.assertEqual(len(center), 2)
             self.assertTrue(all(value > 0.0 for value in half_extent))
+
+        # This uses the same fixed-actor centre/AABB occupancy convention as
+        # corridor_explicit_wall_segments: the positive-x stem is traversable
+        # through its junction, but its forward continuation is closed at x=4.
+        for x in np.linspace(0.0, 2.5, 11):
+            with self.subTest(stem_x=x):
+                self.assertFalse(_aabb_occupies(geometry.obstacle_aabbs, (x, 0.0)))
+        self.assertFalse(_aabb_occupies(geometry.obstacle_aabbs, (2.5, 0.0)))
+        self.assertTrue(_aabb_occupies(geometry.obstacle_aabbs, (4.0, 0.0)))
 
     def test_geometry_has_fixed_dimensions_and_finite_values(self):
         geometry = build_t_junction_geometry("left")
@@ -212,6 +220,18 @@ class TJunctionNavigationTests(unittest.TestCase):
             with self.subTest(pair=pair):
                 with self.assertRaises(ValueError):
                     aggregate_t_gate(case_records, pairs=[pair], ablations={})
+
+    def test_pair_rejects_reused_episode_ids_across_pairs(self):
+        records, pairs = _paired_student_records()
+
+        with self.assertRaises(ValueError):
+            aggregate_t_gate(records, pairs=pairs + [pairs[0]], ablations={})
+
+    def test_student_pairing_must_cover_every_record_exactly_once(self):
+        records, pairs = _paired_student_records()
+
+        with self.assertRaises(ValueError):
+            aggregate_t_gate(records, pairs=pairs[:-1], ablations={})
 
     def test_pair_accuracy_requires_opposite_expected_predictions(self):
         records, pairs = _paired_student_records()

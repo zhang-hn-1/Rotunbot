@@ -57,9 +57,12 @@ class RotunbotVelCorridor(RotunbotVel):
     def _create_envs(self):
         super()._create_envs()
         segments = tuple(getattr(self.cfg, "corridor_wall_segments", ()))
-        self._corridor_wall_count = 2 * len(segments)
+        explicit_segments = tuple(
+            getattr(self.cfg, "corridor_explicit_wall_segments", ())
+        )
+        self._corridor_wall_count = 2 * len(segments) + len(explicit_segments)
         self._corridor_actors_per_env = 1 + self._corridor_wall_count
-        if not segments:
+        if not segments and not explicit_segments:
             return
 
         options = gymapi.AssetOptions()
@@ -78,13 +81,29 @@ class RotunbotVelCorridor(RotunbotVel):
                     start,
                     end,
                     length,
+                    False,
+                )
+            )
+        for start, end in explicit_segments:
+            dx = float(end[0]) - float(start[0])
+            dy = float(end[1]) - float(start[1])
+            length = math.hypot(dx, dy)
+            if length <= 1.0e-6:
+                raise ValueError("corridor explicit wall segment must have positive length")
+            wall_assets.append(
+                (
+                    self.gym.create_box(self.sim, length, 0.05, 0.40, options),
+                    start,
+                    end,
+                    length,
+                    True,
                 )
             )
 
         half_width = float(self.cfg.corridor_wall_width_m) / 2.0
         for env_index, env_handle in enumerate(self.envs):
             actor_index = 1
-            for segment_index, (asset, start, end, length) in enumerate(wall_assets):
+            for segment_index, (asset, start, end, length, is_explicit) in enumerate(wall_assets):
                 dx = float(end[0]) - float(start[0])
                 dy = float(end[1]) - float(start[1])
                 yaw = math.atan2(dy, dx)
@@ -93,7 +112,7 @@ class RotunbotVelCorridor(RotunbotVel):
                     0.5 * (float(start[0]) + float(end[0])),
                     0.5 * (float(start[1]) + float(end[1])),
                 )
-                for side in (-1.0, 1.0):
+                for side in (0.0,) if is_explicit else (-1.0, 1.0):
                     origin = self.env_origins[env_index]
                     pose = gymapi.Transform()
                     pose.p = gymapi.Vec3(
@@ -108,7 +127,11 @@ class RotunbotVelCorridor(RotunbotVel):
                         env_handle,
                         asset,
                         pose,
-                        "corridor_wall_%d_%d" % (segment_index, int(side > 0)),
+                        (
+                            "corridor_explicit_wall_%d" % segment_index
+                            if is_explicit
+                            else "corridor_wall_%d_%d" % (segment_index, int(side > 0))
+                        ),
                         actor_index,
                         0,
                         0,

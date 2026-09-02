@@ -8,7 +8,7 @@ import numpy as np
 from .corridor_scenarios import CorridorScenario
 
 
-V1_WALL_THICKNESS_M = 0.10
+V1_WALL_THICKNESS_M = 0.05
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,8 @@ def _normalize_branch(branch):
     raise ValueError("branch must be LEFT, RIGHT, T_LEFT, or T_RIGHT")
 
 
-def _wall_layout(segments, width_m):
-    """Match the corridor consumer's two actors per centreline segment."""
-    half_width = _finite_positive("width_m", width_m) / 2.0
+def _wall_layout(segments):
+    """Match one fixed actor per corridor_explicit_wall_segments entry."""
     half_thickness = V1_WALL_THICKNESS_M / 2.0
     layout = []
     for start, end in segments:
@@ -51,22 +50,20 @@ def _wall_layout(segments, width_m):
             raise ValueError("wall segments must contain finite XY endpoints")
         if length <= 1.0e-8:
             raise ValueError("wall segments must have positive length")
-        normal = np.asarray((-delta[1], delta[0]), dtype=np.float64) / length
         midpoint = 0.5 * (start + end)
         half_extent = np.maximum(np.abs(delta) / 2.0, half_thickness)
-        for side in (-1.0, 1.0):
-            layout.append(
-                (
-                    tuple(midpoint + side * half_width * normal),
-                    tuple(half_extent),
-                )
-            )
+        layout.append((tuple(midpoint), tuple(half_extent)))
     return tuple(layout)
 
 
 def wall_actor_centers(wall_segments, width_m=3.0):
-    """Return the actor centres produced by the production wall consumer."""
-    return tuple(center for center, _ in _wall_layout(wall_segments, width_m))
+    """Return centres produced by the explicit fixed-wall consumer.
+
+    ``width_m`` remains accepted for compatibility with the original pure test
+    helper; fixed explicit walls are placed directly on their supplied segment.
+    """
+    _finite_positive("width_m", width_m)
+    return tuple(center for center, _ in _wall_layout(wall_segments))
 
 
 def build_t_junction_geometry(
@@ -81,14 +78,24 @@ def build_t_junction_geometry(
     stem = _finite_positive("stem_length_m", stem_length_m)
     branch_length = _finite_positive("branch_length_m", branch_length_m)
     reach = _finite_positive("reach_radius_m", reach_radius_m)
+    half_width = width / 2.0
+    if branch_length <= half_width:
+        raise ValueError("branch_length_m must exceed width_m / 2 for an open branch")
     direction = _normalize_branch(branch)
     junction = np.asarray((stem, 0.0), dtype=np.float64)
     goal = np.asarray((stem, direction * branch_length), dtype=np.float64)
     waypoints = np.asarray(((0.0, 0.0), junction, goal), dtype=np.float64)
+    # These are physical boundaries, not corridor centrelines.  Consumers must
+    # assign them to corridor_explicit_wall_segments so one actor is built per
+    # segment rather than applying the legacy two-sided offset convention.
+    inner_x = stem - half_width
+    outer_x = stem + half_width
     segments = (
-        (np.asarray((0.0, 0.0)), junction),
-        (junction, junction + (0.0, branch_length)),
-        (junction, junction + (0.0, -branch_length)),
+        (np.asarray((0.0, half_width)), np.asarray((stem, half_width))),
+        (np.asarray((0.0, -half_width)), np.asarray((stem, -half_width))),
+        (np.asarray((inner_x, half_width)), np.asarray((inner_x, branch_length))),
+        (np.asarray((inner_x, -half_width)), np.asarray((inner_x, -branch_length))),
+        (np.asarray((outer_x, -branch_length)), np.asarray((outer_x, branch_length))),
     )
     scenario = CorridorScenario(
         family="t_junction",
@@ -103,7 +110,7 @@ def build_t_junction_geometry(
         scenario=scenario,
         waypoints=waypoints,
         wall_segments=segments,
-        obstacle_aabbs=_wall_layout(segments, width),
+        obstacle_aabbs=_wall_layout(segments),
         branch_direction=direction,
         reach_radius_m=reach,
     )

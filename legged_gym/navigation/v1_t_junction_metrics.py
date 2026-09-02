@@ -97,7 +97,7 @@ def _pair_ids(pair):
     return ids
 
 
-def _pair_consistency(records, pairs):
+def _pair_consistency(records, pairs, require_coverage=False):
     by_id = {}
     for row in records:
         episode_id = row.get("episode_id")
@@ -108,10 +108,14 @@ def _pair_consistency(records, pairs):
         by_id[episode_id] = row
 
     checks = []
+    paired_ids = set()
     for pair in pairs:
         first_id, second_id = _pair_ids(pair)
         if first_id not in by_id or second_id not in by_id:
             raise ValueError("each pair must identify existing records")
+        if first_id in paired_ids or second_id in paired_ids:
+            raise ValueError("episode_id values may appear in only one pair")
+        paired_ids.update((first_id, second_id))
         first, second = by_id[first_id], by_id[second_id]
         if _scenario(first) == _scenario(second):
             raise ValueError("each pair must contain one T_LEFT and one T_RIGHT episode")
@@ -135,6 +139,8 @@ def _pair_consistency(records, pairs):
             and second_prediction == _EXPECTED_BRANCH[_scenario(second)]
             and first_prediction != second_prediction
         )
+    if require_coverage and paired_ids != set(by_id):
+        raise ValueError("student pairs must cover every record exactly once")
     return sum(checks) / len(checks) if checks else 0.0, len(checks)
 
 
@@ -200,7 +206,9 @@ def aggregate_t_gate(records, pairs, ablations):
         raise ValueError("a release gate requires both T_LEFT and T_RIGHT records")
 
     role = roles.pop()
-    goal_consistency_rate, pair_count = _pair_consistency(records, pairs)
+    goal_consistency_rate, pair_count = _pair_consistency(
+        records, pairs, require_coverage=(role == "student")
+    )
     if role == "student" and not pair_count:
         raise ValueError("student release gate requires left/right counterfactual pairs")
 
