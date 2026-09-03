@@ -51,10 +51,10 @@ def _gate(name, aggregate, required_success=10):
     }
 
 
-def report(output_root, direct_root, current_root, sweep_roots):
+def report(output_root, constant_root, direct_root, current_root, sweep_roots):
     output_root = Path(output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    a = json.loads((Path(output_root).parent / "d0_a_20260903_fixed" / "v62_constant_command_audit.json").read_text())
+    a = json.loads((Path(constant_root).resolve() / "v62_constant_command_audit.json").read_text())
     a_summaries = [case.get("summary", {}) for case in a.get("cases", []) if case.get("summary")]
     a_pass = a.get("D0_A") == "PASS" and len(a_summaries) == 18
     gates = {
@@ -104,12 +104,13 @@ def report(output_root, direct_root, current_root, sweep_roots):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--constant-root", required=True)
     parser.add_argument("--direct-root", required=True)
     parser.add_argument("--current-root", required=True)
     parser.add_argument("--sweep", action="append", default=[], metavar="LABEL=ROOT")
     args = parser.parse_args(argv)
     sweep = dict(item.split("=", 1) for item in args.sweep)
-    print(json.dumps(report(args.output_root, args.direct_root, args.current_root, sweep), indent=2, sort_keys=True))
+    print(json.dumps(report(args.output_root, args.constant_root, args.direct_root, args.current_root, sweep), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
