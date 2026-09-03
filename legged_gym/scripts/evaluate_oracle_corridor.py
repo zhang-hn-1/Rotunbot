@@ -15,6 +15,7 @@ import json
 import math
 import os
 import random
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,13 @@ from legged_gym.navigation.random_obstacle_navigation import (
     sample_random_obstacle_scenario,
     scenario_to_metadata,
     validate_random_scenario,
+)
+from legged_gym.navigation.phase_d_contracts import (
+    classify_phase_d_failure,
+    require_isaacgym_depth,
+    resolve_phase_d_timing,
+    terminal_convergence_evidence,
+    transition_manager_stall_evidence,
 )
 
 
@@ -118,10 +126,34 @@ def _set_robot_pose(env, scenario, torch):
     )
     env.gym.refresh_actor_root_state_tensor(env.sim)
     env.base_quat[0] = env.root_states[0, 3:7]
-    env.base_lin_vel[0] = 0.0
-    env.base_ang_vel[0] = 0.0
-    env.tracking_lin_vel[0] = 0.0
-    env.tracking_ang_vel[0] = 0.0
+    env.base_lin_vel[0] = env.root_states[0, 7:10]
+    env.base_ang_vel[0] = env.root_states[0, 10:13]
+    physical_yaw = float(_yaw_from_env(env))
+    if hasattr(env, "tracking_heading"):
+        env.tracking_heading[0] = physical_yaw
+        heading_error = math.atan2(
+            math.sin(float(env.tracking_heading[0].item()) - physical_yaw),
+            math.cos(float(env.tracking_heading[0].item()) - physical_yaw),
+        )
+        if abs(heading_error) >= 1.0e-6:
+            raise RuntimeError("tracking_heading is inconsistent with reset pose")
+    if hasattr(env, "_update_tracking_motion"):
+        env._update_tracking_motion(integrate_heading=False)
+    else:
+        env.tracking_lin_vel[0] = 0.0
+        env.tracking_ang_vel[0] = 0.0
+    for name in ("previous_velocity_command", "previous_actual_velocity", "last_velocity_command"):
+        if hasattr(env, name):
+            getattr(env, name)[0] = 0.0
+    for name in ("command_targets", "commands", "applied_feasible_command"):
+        if hasattr(env, name):
+            getattr(env, name)[0, :2] = 0.0
+    if getattr(env, "feasible_transition_manager", None) is not None:
+        env.feasible_transition_manager.reset(torch.zeros(1, dtype=torch.long, device=env.device))
+    if hasattr(env, "observation_goal_active"):
+        env.observation_goal_active[0] = False
+    if hasattr(env, "previous_goal_distance"):
+        env.previous_goal_distance[0] = 0.0
 
 
 def _set_final_goal(env, scenario, torch):
@@ -190,26 +222,34 @@ def schedule_terminal_speed(raw_speed, remaining_path_m, config):
     return {"phase": "Terminal", "scale": 0.0, "active": True}
 
 
-def _classify_failure(summary):
-    if summary["success"]:
+def _classify_failure(summary, trajectory=()):
+    """Classify only from explicit terminal facts and sustained telemetry."""
+    if summary.get("success"):
         return "SUCCESS"
-    if summary["collision"]:
+    if summary.get("process_failure"):
+        return "PROCESS_FAILURE"
+    if summary.get("collision"):
         return "COLLISION"
-    if summary["terminal_overshoot_m"] > 0.5:
-        return "TERMINAL_OVERSHOOT"
-    if summary["timeout"] and summary["terminal_slowdown_steps"] > 0:
-        return "GOVERNOR_STALL"
-    if summary["timeout"]:
-        return "TIMEOUT"
-    if summary["final_goal_distance_m"] > 2.0:
-        return "GOAL_PROGRESS_FAILURE"
-    return "UNKNOWN"
+    stall = transition_manager_stall_evidence(trajectory)
+    terminal_convergence = terminal_convergence_evidence(trajectory)
+    return classify_phase_d_failure(
+        success=bool(summary.get("success")),
+        collision=bool(summary.get("collision")),
+        process_failure=bool(summary.get("process_failure")),
+        transition_manager_stall=bool(stall),
+        terminal_convergence_failure=bool(terminal_convergence),
+        goal_progress_failure=(
+            float(summary.get("final_goal_distance_m", float("inf"))) > 2.0
+        ),
+        timeout=bool(summary.get("timeout")),
+    )
 
 
 def require_real_depth(env):
-    actual = getattr(env, "depth_backend_actual", None)
-    if actual != "isaacgym":
-        raise RuntimeError("D1 V2 requires real IsaacGym IMAGE_DEPTH after reset; got %s" % actual)
+    require_isaacgym_depth(
+        getattr(env, "depth_backend_requested", None),
+        getattr(env, "depth_backend_actual", None),
+    )
 
 
 def _collision_sources(position, scenario, radius):
@@ -219,16 +259,17 @@ def _collision_sources(position, scenario, radius):
     return boundary <= radius, obstacle <= radius, boundary, obstacle
 
 
-def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
+def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_output_dir=None):
     """Run one scripted Oracle/Teacher episode through Frozen V62."""
     from legged_gym.envs.rotunbot.vel_tracking.rotunbot_vel import RotunbotVel
     from legged_gym.navigation.v1_velocity_teacher import V1VelocityTeacherConfig, teacher_velocity_diagnostics
 
     env.reset()
-    require_real_depth(env)
     _set_robot_pose(env, scenario, torch)
     _set_final_goal(env, scenario, torch)
     env.compute_observations()
+    # Backend becomes authoritative only after the first real IMAGE_DEPTH capture.
+    require_real_depth(env)
     teacher_cfg = V1VelocityTeacherConfig(
         max_forward_speed=float(env.cfg.commands.max_forward_speed),
         max_yaw_rate=float(env.cfg.commands.max_yaw_rate),
@@ -237,7 +278,12 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
         goal_radius=float(env.cfg.commands.goal_radius),
     )
     policy_interval = int(env.upper_level_command_interval_steps)
-    policy_dt = float(env.dt)
+    timing = resolve_phase_d_timing(
+        env.sim_params.dt,
+        env.cfg.control.decimation,
+        env.cfg.commands.upper_level_command_frequency_hz,
+    )
+    policy_dt = float(timing.policy_dt_s)
     position = _position_from_env(env)
     yaw = _yaw_from_env(env)
     previous_position = position.copy()
@@ -247,6 +293,9 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
     rows = []
     command = torch.zeros(1, 2, dtype=env.root_states.dtype, device=env.device)
     desired_v_raw = 0.0
+    desired_w_raw = 0.0
+    desired_v_projected = 0.0
+    desired_w_projected = 0.0
     desired_v_scheduled = 0.0
     desired_w_scheduled = 0.0
     remaining = float("inf")
@@ -271,6 +320,14 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
                     + torch.as_tensor(waypoint, dtype=env.root_states.dtype, device=env.device).reshape(1, 2)
                 )
                 env.compute_observations()
+                if depth_output_dir is not None:
+                    depth_dir = Path(depth_output_dir)
+                    depth_dir.mkdir(parents=True, exist_ok=True)
+                    frame_id = len(list(depth_dir.glob("*.npy")))
+                    raw_depth = getattr(env, "_last_depth_raw", None)
+                    if raw_depth is not None:
+                        np.save(depth_dir / ("step_%06d_raw.npy" % steps), raw_depth[0].detach().cpu().numpy())
+                    np.save(depth_dir / ("step_%06d_normalized.npy" % steps), env.depth_observation[0].detach().cpu().numpy())
                 goal_robot = torch.as_tensor(
                     _goal_xy_robot(position, yaw, waypoint).reshape(1, 2),
                     dtype=env.root_states.dtype,
@@ -278,15 +335,22 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
                 )
                 actual = torch.stack((env.tracking_lin_vel[:, 0], env.tracking_ang_vel[:, 2]), dim=1)
                 teacher = teacher_velocity_diagnostics(goal_robot, actual, env.obstacle_clearance, teacher_cfg)
-                raw = teacher["applied_command"].clone()
-                schedule = schedule_terminal_speed(float(raw[0, 0].item()), remaining, config)
+                raw = teacher["raw_command"].clone()
+                projected = teacher["applied_command"].clone()
+                # D0 has one terminal controller only: V1VelocityTeacher plus
+                # the frozen V62 projection/transition path.  Keep the legacy
+                # scheduler as diagnostics, never as a second command scale.
+                schedule = schedule_terminal_speed(float(projected[0, 0].item()), remaining, config)
                 current_slowdown = bool(schedule["active"])
                 terminal_slowdown_steps += int(current_slowdown)
-                command.copy_(raw * float(schedule["scale"]))
+                command.copy_(projected)
                 env.set_command_targets(command)
                 desired_v_raw = float(raw[0, 0].item())
-                desired_v_scheduled = float(command[0, 0].item())
-                desired_w_scheduled = float(command[0, 1].item())
+                desired_w_raw = float(raw[0, 1].item())
+                desired_v_projected = float(projected[0, 0].item())
+                desired_w_projected = float(projected[0, 1].item())
+                desired_v_scheduled = desired_v_projected
+                desired_w_scheduled = desired_w_projected
 
             # RotunbotVel.step keeps the command target above intact and runs
             # the frozen deterministic V62 command-to-actuator controller.
@@ -326,10 +390,22 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
                 "step": steps,
                 "time_s": steps * policy_dt,
                 "x_m": float(position_now[0]), "y_m": float(position_now[1]), "yaw_rad": yaw_now,
+                "global_goal_x_m": float(scenario.goal_xy[0]),
+                "global_goal_y_m": float(scenario.goal_xy[1]),
+                "waypoint_x_m": float(waypoint[0]),
+                "waypoint_y_m": float(waypoint[1]),
+                "waypoint_distance_m": float(np.linalg.norm(np.asarray(waypoint) - position_now)),
                 "remaining_path_m": remaining,
+                "global_goal_distance_m": float(env.goal_dist[0].item()),
+                "goal_success_radius_m": float(config.goal_success_radius_m),
                 "desired_v_raw_mps": desired_v_raw,
+                "desired_w_raw_rps": desired_w_raw,
+                "desired_v_projected_mps": desired_v_projected,
+                "desired_w_projected_rps": desired_w_projected,
                 "desired_v_scheduled_mps": desired_v_scheduled,
                 "desired_w_scheduled_rps": desired_w_scheduled,
+                "command_target_v_mps": float(env.command_targets[0, 0].item()),
+                "command_target_w_rps": float(env.command_targets[0, 1].item()),
                 "applied_v_mps": applied_v, "applied_w_rps": applied_w,
                 "actual_v_mps": actual_v, "actual_w_rps": actual_w,
                 "raw_physics_clearance_m": raw_clearance,
@@ -340,7 +416,22 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
                 "terminal_slowdown_active": int(current_slowdown),
                 "transition_active": int(transition_active),
                 "transition_state": int(env.transition_state[0].item()),
+                "transition_progress": float(env.transition_progress[0].item()),
+                "transition_settle_counter": int(env.transition_settle_counter[0].item()),
                 "collision": int(collision_now),
+                "depth_finite_ratio": float(torch.isfinite(env.depth_observation[0]).float().mean().item()),
+                "depth_min": float(env.depth_observation[0].min().item()),
+                "depth_mean": float(env.depth_observation[0].mean().item()),
+                "depth_max": float(env.depth_observation[0].max().item()),
+                "depth_std": float(env.depth_observation[0].std(unbiased=False).item()),
+                "nominal_action_1": float(env.nominal_policy_actions[0, 0].item()),
+                "nominal_action_2": float(env.nominal_policy_actions[0, 1].item()),
+                "feedback_action_1": float(env.feedback_policy_actions[0, 0].item()),
+                "feedback_action_2": float(env.feedback_policy_actions[0, 1].item()),
+                "combined_action_1": float(env.combined_policy_actions[0, 0].item()),
+                "combined_action_2": float(env.combined_policy_actions[0, 1].item()),
+                "output_action_1": float(env.output_actions[0, 0].item()),
+                "output_action_2": float(env.output_actions[0, 1].item()),
             })
             position, yaw = position_now, yaw_now
             if steps >= int(max_steps) and not done:
@@ -354,9 +445,13 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
         final_distance = float(env.terminal_goal_distance[0].item())
     else:
         final_distance = float(env.goal_dist[0].item())
-    goal_vector = np.asarray(scenario.goal_xy, dtype=np.float64) - np.asarray(scenario.spawn_xy, dtype=np.float64)
-    goal_direction = goal_vector / max(float(np.linalg.norm(goal_vector)), 1.0e-9)
-    terminal_overshoot = max(0.0, float(np.dot(position - np.asarray(scenario.goal_xy), goal_direction)))
+    path_points = np.asarray(scenario.oracle_path, dtype=np.float64)
+    if len(path_points) >= 2:
+        terminal_delta = path_points[-1] - path_points[-2]
+    else:
+        terminal_delta = np.asarray(scenario.goal_xy, dtype=np.float64) - np.asarray(scenario.spawn_xy, dtype=np.float64)
+    terminal_direction = terminal_delta / max(float(np.linalg.norm(terminal_delta)), 1.0e-9)
+    terminal_overshoot = max(0.0, float(np.dot(position - np.asarray(scenario.goal_xy), terminal_direction)))
     summary = {
         "evaluation_version": EVALUATION_VERSION,
         "map_seed": int(scenario.map_seed), "attempt_index": int(scenario.attempt_index),
@@ -377,18 +472,29 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config):
         "p05_planning_clearance_m": float(np.percentile(planning_clearances, 5.0)) if planning_clearances else None,
         "median_planning_clearance_m": float(np.median(planning_clearances)) if planning_clearances else None,
         "terminal_overshoot_m": terminal_overshoot,
+        "terminal_tangent_rad": math.atan2(float(terminal_direction[1]), float(terminal_direction[0])),
         "terminal_slowdown_steps": int(terminal_slowdown_steps),
         "projection_intervention_count": int(projection_interventions),
         "transition_active_steps": int(transition_active_steps),
-        "policy_dt_s": policy_dt, "hold_policy_steps": policy_interval,
-        "hold_physics_steps": policy_interval * int(env.cfg.control.decimation),
-        "upper_command_hz": 1.0 / max(policy_dt * policy_interval, 1.0e-9),
+        "physics_dt_s": float(timing.physics_dt_s),
+        "control_decimation": int(timing.control_decimation),
+        "policy_dt_s": float(timing.policy_dt_s),
+        "hold_policy_steps": int(timing.hold_policy_steps),
+        "hold_physics_steps": int(timing.hold_physics_steps),
+        "upper_command_hz": float(timing.upper_command_hz),
+        "depth_backend_requested": str(getattr(env, "depth_backend_requested", "unknown")),
         "depth_backend_actual": str(getattr(env, "depth_backend_actual", "unknown")),
+        "depth_capture_metadata": getattr(env, "depth_capture_metadata", lambda: {})(),
+        "oracle_pass_side": getattr(scenario, "oracle_pass_side", "none"),
         "failure_flags": [],
     }
-    summary["failure_reason"] = _classify_failure(summary)
+    summary["failure_reason"] = _classify_failure(summary, rows)
     if not success:
         summary["failure_flags"].append(summary["failure_reason"])
+    if summary["terminal_overshoot_m"] > 0.5:
+        summary["failure_flags"].append("TERMINAL_OVERSHOOT")
+    if summary["terminal_slowdown_steps"] > 0 and not success:
+        summary["failure_flags"].append("TERMINAL_REGION_ENTERED")
     if boundary_collision:
         summary["failure_flags"].append("COLLISION_WITH_BOUNDARY")
     if obstacle_collision:
@@ -474,13 +580,19 @@ def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining):
     env = None
     try:
         env, _ = task_registry.make_env(args.task, args=args, env_cfg=env_cfg)
-        summary, trajectory = run_episode(env, scenario, torch, max_steps, lookahead_m, scenario.config)
+        map_dir = Path(output_dir).resolve() / ("map_%d" % int(scenario.map_seed))
+        summary, trajectory = run_episode(
+            env, scenario, torch, max_steps, lookahead_m, scenario.config,
+            depth_output_dir=map_dir / "depth_samples",
+        )
     except Exception as error:
         summary = {
             "evaluation_version": EVALUATION_VERSION, "map_seed": int(scenario.map_seed),
             "obstacle_count": int(scenario.obstacle_count), "success": False,
-            "collision": False, "timeout": False, "failure_reason": "PROCESS_FAILURE",
+            "collision": False, "timeout": False, "process_failure": True,
+            "failure_reason": "PROCESS_FAILURE",
             "failure_flags": ["PROCESS_FAILURE"], "error": repr(error),
+            "traceback": traceback.format_exc(),
         }
         trajectory = []
     finally:
@@ -490,6 +602,22 @@ def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining):
     map_dir.mkdir(parents=True, exist_ok=True)
     (map_dir / "scenario.json").write_text(json.dumps(scenario_to_metadata(scenario), indent=2, sort_keys=True), encoding="utf-8")
     (map_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
+    if summary.get("failure_reason") != "SUCCESS":
+        diagnosis = {
+            "map_seed": int(scenario.map_seed),
+            "failure_reason": summary.get("failure_reason"),
+            "final_goal_distance_m": summary.get("final_goal_distance_m"),
+            "timeout": bool(summary.get("timeout", False)),
+            "collision": bool(summary.get("collision", False)),
+            "depth_backend_requested": summary.get("depth_backend_requested"),
+            "depth_backend_actual": summary.get("depth_backend_actual"),
+            "trajectory_rows": len(trajectory),
+            "mean_actual_v_mps": (float(np.mean([row["actual_v_mps"] for row in trajectory])) if trajectory else None),
+            "mean_applied_v_mps": (float(np.mean([row["applied_v_mps"] for row in trajectory])) if trajectory else None),
+            "transition_active_steps": summary.get("transition_active_steps", 0),
+            "error": summary.get("error"),
+        }
+        (map_dir / "failure_diagnosis.json").write_text(json.dumps(diagnosis, indent=2, sort_keys=True), encoding="utf-8")
     if trajectory:
         with (map_dir / "trajectory.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(trajectory[0]))

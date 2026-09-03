@@ -71,6 +71,15 @@ class V1TeacherDatasetTests(unittest.TestCase):
         self.assertEqual(loaded["metadata"]["depth_backend"], "isaacgym")
         self.assertEqual(loaded["episodes"][0]["teacher_command"].shape, (1, 2))
 
+    def test_load_rejects_corrupt_episode_payload(self):
+        writer = TeacherSequenceWriter(sequence_length=2)
+        writer.append(self._step(4, 0, done=True))
+        dataset = writer.finalize()
+        dataset["episodes"][0]["step_id"][0] = 1
+        with self.assertRaises(ValueError):
+            from legged_gym.navigation.v1_teacher_dataset import validate_teacher_dataset
+            validate_teacher_dataset(dataset)
+
     def test_merge_rekeys_episodes_and_preserves_source_ranges(self):
         first = TeacherSequenceWriter(sequence_length=2)
         first.append(self._step(10, 0, done=True))

@@ -72,6 +72,22 @@ class V1VelocityTeacherTests(unittest.TestCase):
         self.assertTrue(torch.all(applied[:, 1].abs() <= self.cfg.max_yaw_rate + 1e-6))
         self.assertTrue(torch.all(diagnostics["projection_correction_norm"] >= 0.0))
 
+    def test_nan_obstacle_distance_is_rejected_but_positive_inf_is_open_space(self):
+        with self.assertRaises(ValueError):
+            teacher_velocity_diagnostics(
+                torch.tensor([[1.0, 0.0]]),
+                torch.zeros(1, 2),
+                torch.tensor([float("nan")]),
+                self.cfg,
+            )
+        result = teacher_velocity_diagnostics(
+            torch.tensor([[1.0, 0.0]]),
+            torch.zeros(1, 2),
+            torch.tensor([float("inf")]),
+            self.cfg,
+        )
+        self.assertTrue(torch.isfinite(result["applied_command"]).all())
+
     def test_config_like_objects_are_supported(self):
         cfg = SimpleNamespace(
             max_forward_speed=0.25,

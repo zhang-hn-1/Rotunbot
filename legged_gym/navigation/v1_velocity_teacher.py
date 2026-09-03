@@ -158,6 +158,8 @@ def _validate_inputs(goal_xy_robot, actual_velocity, obstacle_distance):
         raise ValueError("obstacle_distance must have shape [N]")
     if not torch.isfinite(goal_xy_robot).all() or not torch.isfinite(actual_velocity).all():
         raise ValueError("teacher inputs must be finite")
+    if torch.isnan(obstacle_distance).any() or torch.isneginf(obstacle_distance).any():
+        raise ValueError("obstacle_distance must not contain NaN or -inf")
 
 
 def _parameter(config, name, default=None):

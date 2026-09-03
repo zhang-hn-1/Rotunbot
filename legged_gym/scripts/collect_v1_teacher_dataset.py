@@ -12,6 +12,7 @@ import torch
 
 from legged_gym.envs import *  # noqa: F401,F403
 from legged_gym.navigation.v1_teacher_dataset import TeacherSequenceWriter
+from legged_gym.navigation.phase_d_contracts import require_isaacgym_depth
 from legged_gym.navigation.v1_velocity_teacher import (
     V1VelocityTeacherConfig,
     teacher_velocity_diagnostics,
@@ -50,6 +51,11 @@ def _row(
         "episode_id": episode_id,
         "step_id": step_id,
         "depth": env.depth_observation[index].detach().clone(),
+        "depth_raw": (
+            env._last_depth_raw[index].detach().clone()
+            if getattr(env, "_last_depth_raw", None) is not None
+            else env.depth_observation[index].detach().clone()
+        ),
         "goal_xy_robot": env._goal_xy_robot()[index].detach().clone(),
         "proprioception": env._proprioception()[index].detach().clone(),
         "previous_command": env.previous_velocity_command[index].detach().clone(),
@@ -58,6 +64,17 @@ def _row(
         "actual_velocity": actual[index].detach().clone(),
         "governor_command": env.applied_feasible_command[index].detach().clone(),
         "projection_command": teacher["applied_command"][index].detach().clone(),
+        "timestamp_s": torch.tensor(float(env.common_step_counter) * float(env.dt)),
+        "robot_pose": env.root_states[index, :7].detach().clone(),
+        "global_goal_distance": torch.tensor(float(env.goal_dist[index].item() if goal_distance is None else goal_distance)),
+        "waypoint": env._goal_xy_robot()[index].detach().clone(),
+        "remaining_path": torch.tensor(0.0),
+        "teacher_raw_command": teacher["raw_command"][index].detach().clone(),
+        "teacher_projected_command": teacher["applied_command"][index].detach().clone(),
+        "applied_feasible_command": env.applied_feasible_command[index].detach().clone(),
+        "transition_state": env.transition_state[index].detach().clone(),
+        "transition_active": bool(env.transition_active[index].item()),
+        "failure_reason": "SUCCESS" if success else ("COLLISION" if collision else ("TIMEOUT" if done else "UNKNOWN")),
         "done": bool(done),
         "success": bool(success),
         "collision": bool(collision),
@@ -82,12 +99,13 @@ def collect_distance(
     # update as an inference-tensor write from normal mode.
     with torch.inference_mode():
         env.reset()
-    if env.depth_backend_actual != "isaacgym":
-        raise RuntimeError(
-            "teacher dataset requires real IMAGE_DEPTH; got %s"
-            % env.depth_backend_actual
-        )
     _assign_fixed_goal(env, 0, distance)
+    with torch.inference_mode():
+        env.compute_observations()
+    require_isaacgym_depth(
+        getattr(env, "depth_backend_requested", None),
+        getattr(env, "depth_backend_actual", None),
+    )
     current_episode = int(episode_counter)
     step_id = 0
     primitive_steps = 0
@@ -131,11 +149,14 @@ def collect_distance(
             if pending is None:
                 raise RuntimeError("episode terminated before a macro sample was captured")
             if is_done:
+                terminal_success = bool(env.terminal_success[0].item())
+                terminal_collision = bool(env.terminal_collision[0].item())
                 pending.update(
                     {
                         "done": True,
-                        "success": bool(env.terminal_success[0].item()),
-                        "collision": bool(env.terminal_collision[0].item()),
+                        "success": terminal_success,
+                        "collision": terminal_collision,
+                        "failure_reason": "SUCCESS" if terminal_success else ("COLLISION" if terminal_collision else "TIMEOUT"),
                         "goal_distance": torch.tensor(
                             float(env.terminal_goal_distance[0].item())
                         ),
@@ -147,6 +168,7 @@ def collect_distance(
                         "done": True,
                         "success": False,
                         "collision": False,
+                        "failure_reason": "TIMEOUT",
                         "goal_distance": torch.tensor(float(env.goal_dist[0].item())),
                     }
                 )

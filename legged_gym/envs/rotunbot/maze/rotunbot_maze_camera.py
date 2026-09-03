@@ -66,6 +66,15 @@ class DepthCameraMixin:
         self._camera_depth_tensors = []
         self._camera_ready = False
         self._camera_error_reported = False
+        self._depth_frame_id = 0
+        self._depth_capture_metadata = {
+            "frame_id": 0,
+            "backend_requested": requested,
+            "backend_actual": "unavailable",
+            "sim_time_s": None,
+            "policy_step": None,
+            "observation_age_s": None,
+        }
 
     def _get_depth_fallback_aabbs(self):
         """Return local XY obstacle centers and XY half-extents.
@@ -128,10 +137,16 @@ class DepthCameraMixin:
                     self.sim, env_handle, camera_handle, gymapi.IMAGE_DEPTH
                 )
                 wrapped = gymtorch.wrap_tensor(raw)
-                self._camera_depth_tensors.append(
-                    wrapped.view(int(self.cfg.camera.height), int(self.cfg.camera.width))
-                )
+                expected = (int(self.cfg.camera.height), int(self.cfg.camera.width))
+                if wrapped.numel() != expected[0] * expected[1]:
+                    raise RuntimeError(
+                        "IMAGE_DEPTH tensor has unexpected size: %s != %s"
+                        % (tuple(wrapped.shape), expected)
+                    )
+                self._camera_depth_tensors.append(wrapped.view(*expected))
             self._camera_ready = len(self._camera_depth_tensors) == self.num_envs
+            if not self._camera_ready:
+                raise RuntimeError("IMAGE_DEPTH tensor count does not match num_envs")
         except Exception as exc:  # pragma: no cover - simulator dependent
             self._camera_depth_tensors = []
             self._camera_ready = False
@@ -156,12 +171,23 @@ class DepthCameraMixin:
             return depth
         return F.interpolate(depth.unsqueeze(1), size=target, mode="bilinear", align_corners=False).squeeze(1)
 
+    def depth_capture_metadata(self):
+        """Return metadata for the most recently captured depth frame."""
+        return dict(getattr(self, "_depth_capture_metadata", {
+            "frame_id": 0,
+            "backend_requested": getattr(self, "depth_backend_requested", "unknown"),
+            "backend_actual": getattr(self, "depth_backend_actual", "unknown"),
+            "sim_time_s": None,
+            "policy_step": None,
+            "observation_age_s": None,
+        }))
+
     def depth_debug_stats(self, depth=None):
         """Return non-mutating statistics for the tensor sent to the encoder."""
         if depth is None:
             depth = self.depth_observation
         flat = depth.detach().float().reshape(-1)
-        return {
+        result = {
             "shape": list(depth.shape),
             "dtype": str(depth.dtype),
             "min": float(flat.min().item()) if flat.numel() else None,
@@ -174,6 +200,8 @@ class DepthCameraMixin:
             "near_plane": float(self.cfg.camera.near_plane),
             "far_plane": float(self.cfg.camera.far_plane),
         }
+        result.update(self.depth_capture_metadata())
+        return result
 
     def _fallback_depth(self):
         """Cast horizontal rays against environment-provided XY AABBs."""
@@ -221,7 +249,19 @@ class DepthCameraMixin:
         if self.depth_backend_requested == "fallback":
             depth = self._fallback_depth()
             self.depth_backend_actual = "fallback"
-            return self._apply_depth_noise(self._resize_depth_to_observation(depth))
+            normalized = self._apply_depth_noise(self._resize_depth_to_observation(depth))
+            self._depth_frame_id += 1
+            self._last_depth_raw = None
+            self._last_depth_normalized = normalized.detach().clone()
+            self._depth_capture_metadata = {
+                "frame_id": int(self._depth_frame_id),
+                "backend_requested": "fallback",
+                "backend_actual": "fallback",
+                "sim_time_s": None,
+                "policy_step": int(getattr(self, "common_step_counter", 0)),
+                "observation_age_s": 0.0,
+            }
+            return normalized
         if not self._camera_ready:
             raise RuntimeError("IMAGE_DEPTH backend requested but camera tensors are unavailable")
         try:  # pragma: no cover - simulator dependent
@@ -234,6 +274,24 @@ class DepthCameraMixin:
                 self.cfg.camera.far_plane,
             )
             self.depth_backend_actual = "isaacgym"
-            return self._apply_depth_noise(self._resize_depth_to_observation(depth))
+            if tuple(raw.shape) != (self.num_envs, int(self.cfg.camera.height), int(self.cfg.camera.width)):
+                raise RuntimeError("IMAGE_DEPTH capture shape is inconsistent with camera properties")
+            if not torch.isfinite(depth).all():
+                raise RuntimeError("normalized IMAGE_DEPTH contains non-finite values")
+            normalized = self._apply_depth_noise(self._resize_depth_to_observation(depth))
+            if not torch.isfinite(normalized).all():
+                raise RuntimeError("processed IMAGE_DEPTH contains non-finite values")
+            self._depth_frame_id += 1
+            self._last_depth_raw = raw.detach().clone()
+            self._last_depth_normalized = normalized.detach().clone()
+            self._depth_capture_metadata = {
+                "frame_id": int(self._depth_frame_id),
+                "backend_requested": "isaacgym",
+                "backend_actual": "isaacgym",
+                "sim_time_s": float(getattr(self, "common_step_counter", 0)) * float(getattr(self, "dt", 0.0)),
+                "policy_step": int(getattr(self, "common_step_counter", 0)),
+                "observation_age_s": 0.0,
+            }
+            return normalized
         except Exception as exc:  # pragma: no cover - simulator dependent
             raise RuntimeError("Isaac Gym IMAGE_DEPTH capture failed") from exc

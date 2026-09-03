@@ -316,6 +316,46 @@ class VelocityCommandProjectionTests(unittest.TestCase):
             places=6,
         )
 
+    def test_v62_zero_crossing_starts_cooldown_before_opposite_error(self):
+        cfg = RotunbotVelSRU50SafeYawResidualV62Cfg.control
+        sign = torch.zeros(1)
+        persistent = torch.zeros(1)
+        cooldown = torch.zeros(1)
+        active = torch.zeros(1, dtype=torch.bool)
+        gate = torch.zeros(1)
+        for _ in range(10):
+            sign, persistent, cooldown, active, gate = update_persistent_yaw_error_gate(
+                torch.tensor([0.020]), sign, persistent, cooldown, active, 0.02,
+                cfg.residual_yaw_gate_activation_error,
+                cfg.residual_yaw_gate_release_error,
+                cfg.residual_yaw_gate_full_scale_error,
+                cfg.residual_yaw_gate_activation_time,
+                cfg.residual_yaw_gate_sign_flip_cooldown,
+            )
+        self.assertTrue(bool(active.item()))
+        sign, persistent, cooldown, active, gate = update_persistent_yaw_error_gate(
+            torch.tensor([0.0]), sign, persistent, cooldown, active, 0.02,
+            cfg.residual_yaw_gate_activation_error,
+            cfg.residual_yaw_gate_release_error,
+            cfg.residual_yaw_gate_full_scale_error,
+            cfg.residual_yaw_gate_activation_time,
+            cfg.residual_yaw_gate_sign_flip_cooldown,
+        )
+        self.assertFalse(bool(active.item()))
+        self.assertAlmostEqual(float(cooldown.item()), cfg.residual_yaw_gate_sign_flip_cooldown, places=6)
+        sign_before = sign.clone()
+        sign, persistent, cooldown, active, gate = update_persistent_yaw_error_gate(
+            torch.tensor([-0.020]), sign, persistent, cooldown, active, 0.02,
+            cfg.residual_yaw_gate_activation_error,
+            cfg.residual_yaw_gate_release_error,
+            cfg.residual_yaw_gate_full_scale_error,
+            cfg.residual_yaw_gate_activation_time,
+            cfg.residual_yaw_gate_sign_flip_cooldown,
+        )
+        self.assertEqual(float(gate.item()), 0.0)
+        self.assertNotEqual(float(sign.item()), 0.0)
+        self.assertGreater(float(cooldown.item()), 0.0)
+
     def test_v62_gate_forces_error_reducing_steering_sign(self):
         cfg = RotunbotVelSRU50SafeYawResidualV62Cfg.control
         filtered = persistent_error_gated_angular_residual_actions(

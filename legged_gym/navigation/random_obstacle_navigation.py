@@ -205,6 +205,20 @@ class RandomObstacleScenario:
         return min(_point_aabb_distance(point_xy, center, half)
                    for center, half in self.raw_physics_aabbs()) - self.robot_radius_m
 
+    @property
+    def oracle_pass_side(self):
+        """Return the static side used to pass the first obstacle."""
+        if not self.obstacles or len(self.oracle_path) < 2:
+            return "none"
+        obstacle = self.obstacles[0]
+        center = np.asarray(obstacle.center_xy, dtype=np.float64)
+        points = np.asarray(self.oracle_path, dtype=np.float64)
+        closest = points[np.argmin(np.linalg.norm(points - center, axis=1))]
+        offset = float(closest[1] - center[1])
+        if abs(offset) <= 1.0e-6:
+            return "unknown"
+        return "left" if offset > 0.0 else "right"
+
     def point_planning_clearance(self, point_xy):
         return min(_point_aabb_distance(point_xy, center, half)
                    for center, half in self.planning_aabbs())
@@ -339,6 +353,54 @@ def _cell_for(point, bounds, cell):
     return int(math.floor((point[1] - low_y) / cell)), int(math.floor((point[0] - low_x) / cell))
 
 
+def reachable_4connected(grid, start_cell, goal_cell):
+    """Return whether free cells connect under the strict 4-neighbor rule."""
+    grid = np.asarray(grid)
+    if grid.ndim != 2:
+        raise ValueError("grid must be two-dimensional")
+    start = tuple(int(value) for value in start_cell)
+    goal = tuple(int(value) for value in goal_cell)
+    height, width = grid.shape
+    if not all(0 <= cell[0] < height and 0 <= cell[1] < width for cell in (start, goal)):
+        return False
+    if grid[start] or grid[goal]:
+        return False
+    queue = [start]
+    visited = {start}
+    while queue:
+        y, x = queue.pop(0)
+        if (y, x) == goal:
+            return True
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            neighbor = (y + dy, x + dx)
+            if 0 <= neighbor[0] < height and 0 <= neighbor[1] < width and not grid[neighbor] and neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return False
+
+
+def segment_swept_clearance(start, end, aabbs, samples=32):
+    """Conservatively check every sampled point along a path segment."""
+    start = np.asarray(start, dtype=np.float64)
+    end = np.asarray(end, dtype=np.float64)
+    values = []
+    for fraction in np.linspace(0.0, 1.0, max(2, int(samples))):
+        point = start + float(fraction) * (end - start)
+        values.append(min(_point_aabb_distance(point, center, half) for center, half in aabbs))
+    return float(min(values))
+
+
+def terminal_approach_clearance(scenario):
+    """Minimum planning clearance in the terminal motion envelope."""
+    cfg = scenario.config
+    envelope = float(cfg.robot_radius_m + cfg.safety_margin_m + cfg.terminal_motion_margin_m)
+    goal = np.asarray(scenario.goal_xy, dtype=np.float64)
+    return min(
+        _point_aabb_distance(goal, center, half) - envelope
+        for center, half in scenario.raw_physics_aabbs()
+    )
+
+
 def sample_random_obstacle_scenario(map_seed, obstacle_count, config=None, split="test", split_name=None, robot_radius_m=None):
     """Sample an accepted map using only deterministic pre-rollout rules."""
     if split_name is not None:
@@ -398,14 +460,23 @@ def sample_random_obstacle_scenario(map_seed, obstacle_count, config=None, split
         path, path_length = dijkstra_8connected(grid, _cell_for(spawn, config.arena_bounds, cell), _cell_for(goal, config.arena_bounds, cell), cell, config.arena_bounds)
         if path is None:
             continue
+        start_cell = _cell_for(spawn, config.arena_bounds, cell)
+        goal_cell = _cell_for(goal, config.arena_bounds, cell)
+        if not reachable_4connected(grid, start_cell, goal_cell):
+            continue
         raw_path = np.asarray((spawn,) + tuple(path) + (goal,), dtype=np.float64)
         smooth = chaikin_smooth(raw_path, config.smooth_iterations)
         if path_max_turn_degrees(smooth) > config.max_path_turn_degrees:
             continue
+        planning_aabbs = provisional.planning_aabbs()
         if min(provisional.point_planning_clearance(point) for point in smooth) <= 0.0:
+            continue
+        if any(segment_swept_clearance(start, end, planning_aabbs) <= 0.0 for start, end in zip(smooth[:-1], smooth[1:])):
             continue
         initial_yaw = goal_heading + float(rng.uniform(*config.initial_heading_error_range_rad))
         scenario = RandomObstacleScenario(int(map_seed), attempt, str(split), config, tuple(obstacles), spawn, goal, goal_heading, initial_yaw, tuple(tuple(float(value) for value in point) for point in smooth), smooth_path_length_m(smooth))
+        if terminal_approach_clearance(scenario) < 0.0:
+            continue
         validate_random_scenario(scenario)
         return scenario
     raise RuntimeError("no valid random-obstacle scenario after deterministic attempts")
@@ -447,6 +518,13 @@ def validate_random_scenario(scenario):
         raise ValueError("inflated free-space is not connected")
     if not scenario.oracle_path:
         raise ValueError("oracle path is missing")
+    if not math.isfinite(float(scenario.oracle_path_length_m)) or scenario.oracle_path_length_m <= 0.0:
+        raise ValueError("oracle path length must be positive and finite")
+    planning_aabbs = scenario.planning_aabbs()
+    if any(segment_swept_clearance(start, end, planning_aabbs) <= 0.0 for start, end in zip(scenario.oracle_path[:-1], scenario.oracle_path[1:])):
+        raise ValueError("oracle path segment violates planning clearance")
+    if terminal_approach_clearance(scenario) < 0.0:
+        raise ValueError("terminal approach envelope lacks clearance")
     heading_error = (scenario.initial_yaw_rad - scenario.goal_heading_rad + math.pi) % (2.0 * math.pi) - math.pi
     if abs(heading_error) > max(abs(value) for value in cfg.initial_heading_error_range_rad) + 1.0e-6:
         raise ValueError("initial heading error outside configured range")
@@ -468,6 +546,7 @@ def scenario_to_metadata(scenario):
         "goal_heading_rad": scenario.goal_heading_rad,
         "initial_yaw_rad": scenario.initial_yaw_rad,
         "initial_heading_error_rad": (scenario.initial_yaw_rad - scenario.goal_heading_rad + math.pi) % (2.0 * math.pi) - math.pi,
+        "oracle_pass_side": scenario.oracle_pass_side,
         "oracle_path": [list(point) for point in scenario.oracle_path],
         "oracle_path_length_m": scenario.oracle_path_length_m,
     }

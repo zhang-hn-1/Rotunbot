@@ -308,10 +308,19 @@ def update_persistent_yaw_error_gate(
         & (previous_error_sign != 0.0)
         & (current_sign != previous_error_sign)
     )
+    # An active correction can cross through the release band before the
+    # sampled error obtains the opposite sign.  Treat that zero crossing as a
+    # sign change so the next correction still observes the cooldown.
+    zero_crossing = (
+        active
+        & (previous_error_sign != 0.0)
+        & (error_magnitude <= release_error)
+    )
+    cooldown_event = sign_flip | zero_crossing
 
     next_cooldown = torch.clamp(cooldown_time - dt, min=0.0)
     next_cooldown = torch.where(
-        sign_flip,
+        cooldown_event,
         torch.full_like(next_cooldown, sign_flip_cooldown),
         next_cooldown,
     )
@@ -1998,7 +2007,20 @@ class RotunbotVel(LeggedRobot):
         self.residual_yaw_error_gate[env_ids] = 0.0
         self.command_brake_pending[env_ids] = False
         self.command_yaw_brake_pending[env_ids] = False
+        self.command_targets[env_ids] = 0.0
+        self.command_profile_is_smooth[env_ids] = False
         self.command_profile_is_random_walk[env_ids] = False
+        self.command_reference_is_smooth[env_ids] = False
+        self.command_profile_is_independent[env_ids] = False
+        self.command_profile_phase[env_ids] = 0.0
+        self.command_profile_period[env_ids] = 1.0
+        self.command_profile_speed_amplitude[env_ids] = 0.0
+        self.command_profile_signed_curvature[env_ids] = 0.0
+        self.command_profile_velocity_offset[env_ids] = 0.0
+        self.command_profile_velocity_amplitude[env_ids] = 0.0
+        self.command_profile_yaw_amplitude[env_ids] = 0.0
+        self.command_profile_yaw_phase_offset[env_ids] = 0.0
+        self.command_profile_yaw_frequency_ratio[env_ids] = 1.0
         if self.feasible_transition_manager is not None:
             self.feasible_transition_manager.reset(env_ids)
 
