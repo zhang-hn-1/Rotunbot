@@ -44,6 +44,21 @@ class PhaseDDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(result["r_projection"])
         self.assertEqual(result["sample_count"], 0)
 
+    def test_command_loss_separates_second_projection_from_transition(self):
+        result = command_loss_breakdown([
+            {
+                "desired_v_raw_mps": 0.24,
+                "desired_v_projected_mps": 0.24,
+                "command_target_v_mps": 0.12,
+                "applied_v_mps": 0.12,
+                "actual_v_mps": 0.12,
+                "transition_state": 0,
+            }
+        ])
+        self.assertAlmostEqual(result["r_target_projection"], 0.5)
+        self.assertAlmostEqual(result["r_transition"], 1.0)
+        self.assertAlmostEqual(result["r_tracking"], 1.0)
+
     def test_constant_gate_requires_tracking_evidence(self):
         self.assertEqual(
             classify_constant_command_gate(

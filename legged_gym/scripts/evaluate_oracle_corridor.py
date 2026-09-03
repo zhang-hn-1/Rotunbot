@@ -260,7 +260,7 @@ def _collision_sources(position, scenario, radius):
     return boundary <= radius, obstacle <= radius, boundary, obstacle
 
 
-def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_output_dir=None, direct_global_goal=False):
+def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_output_dir=None, direct_global_goal=False, final_goal_switch_distance=None):
     """Run one scripted Teacher episode through Frozen V62."""
     from legged_gym.envs.rotunbot.vel_tracking.rotunbot_vel import RotunbotVel
     from legged_gym.navigation.v1_velocity_teacher import V1VelocityTeacherConfig, teacher_velocity_diagnostics
@@ -315,7 +315,12 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
     with torch.inference_mode():
         while not done and steps < int(max_steps):
             if steps == 0 or env.common_step_counter % policy_interval == 0:
-                if direct_global_goal:
+                global_distance_now = float(np.linalg.norm(np.asarray(scenario.goal_xy) - position))
+                use_final_goal = bool(
+                    direct_global_goal
+                    or (final_goal_switch_distance is not None and global_distance_now <= float(final_goal_switch_distance))
+                )
+                if use_final_goal:
                     waypoint = np.asarray(scenario.goal_xy, dtype=np.float64)
                     _, total_path = _path_progress(scenario.oracle_path, position)
                     remaining = max(0.0, total_path)
@@ -494,6 +499,7 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
         "oracle_pass_side": getattr(scenario, "oracle_pass_side", "none"),
         "failure_flags": [],
         "direct_global_goal": bool(direct_global_goal),
+        "final_goal_switch_distance_m": None if final_goal_switch_distance is None else float(final_goal_switch_distance),
         "command_loss_breakdown": command_loss_breakdown(rows),
     }
     summary["failure_reason"] = _classify_failure(summary, rows)
@@ -573,7 +579,7 @@ def _write_plot(summary, trajectory, scenario, output_path):
     plt.close(figure)
 
 
-def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining, direct_global_goal=False):
+def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining, direct_global_goal=False, final_goal_switch_distance=None):
     import isaacgym  # noqa: F401
     import torch
     import legged_gym.envs  # noqa: F401
@@ -593,6 +599,7 @@ def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining, direct_
             env, scenario, torch, max_steps, lookahead_m, scenario.config,
             depth_output_dir=map_dir / "depth_samples",
             direct_global_goal=bool(direct_global_goal),
+            final_goal_switch_distance=final_goal_switch_distance,
         )
     except Exception as error:
         summary = {
@@ -662,7 +669,8 @@ def _stage_defaults(stage):
 def main(argv=None):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--stage", choices=("d0", "d1.1-smoke", "d1.1", "d1.2-smoke", "d1.2"), default="d0")
-    parser.add_argument("--mode", choices=("d0-c", "d0-b"), default="d0-c")
+    parser.add_argument("--mode", choices=("d0-c", "d0-b", "final-goal-switch"), default="d0-c")
+    parser.add_argument("--final-goal-switch-distance-m", type=float, default=None)
     parser.add_argument("--maps", type=int, default=None)
     parser.add_argument("--obstacle-counts", default=None)
     parser.add_argument("--split", default="test")
@@ -708,9 +716,15 @@ def main(argv=None):
     if maps != 1:
         raise ValueError("--single-map invocation must contain exactly one map")
     direct_global_goal = stage.mode == "d0-b"
+    final_goal_switch_distance = (
+        stage.final_goal_switch_distance_m
+        if stage.mode == "final-goal-switch"
+        else None
+    )
     summary = run_one_map(
         scenarios[0], output, stage.max_steps, stage.lookahead_m, remaining,
         direct_global_goal=direct_global_goal,
+        final_goal_switch_distance=final_goal_switch_distance,
     )
     (output / "D1_summary.json").write_text(json.dumps({"evaluation_version": EVALUATION_VERSION, "stage": stage.stage, "mode": stage.mode, "episodes": [summary]}, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
