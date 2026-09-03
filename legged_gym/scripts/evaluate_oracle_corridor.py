@@ -39,6 +39,7 @@ from legged_gym.navigation.phase_d_contracts import (
     terminal_convergence_evidence,
     transition_manager_stall_evidence,
 )
+from legged_gym.navigation.phase_d_diagnostics import command_loss_breakdown
 
 
 DEFAULT_MAX_STEPS = 2250
@@ -259,8 +260,8 @@ def _collision_sources(position, scenario, radius):
     return boundary <= radius, obstacle <= radius, boundary, obstacle
 
 
-def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_output_dir=None):
-    """Run one scripted Oracle/Teacher episode through Frozen V62."""
+def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_output_dir=None, direct_global_goal=False):
+    """Run one scripted Teacher episode through Frozen V62."""
     from legged_gym.envs.rotunbot.vel_tracking.rotunbot_vel import RotunbotVel
     from legged_gym.navigation.v1_velocity_teacher import V1VelocityTeacherConfig, teacher_velocity_diagnostics
 
@@ -314,7 +315,12 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
     with torch.inference_mode():
         while not done and steps < int(max_steps):
             if steps == 0 or env.common_step_counter % policy_interval == 0:
-                waypoint, remaining = _lookahead_waypoint(scenario, position, lookahead_m)
+                if direct_global_goal:
+                    waypoint = np.asarray(scenario.goal_xy, dtype=np.float64)
+                    _, total_path = _path_progress(scenario.oracle_path, position)
+                    remaining = max(0.0, total_path)
+                else:
+                    waypoint, remaining = _lookahead_waypoint(scenario, position, lookahead_m)
                 env.set_observation_goal_world(
                     env.env_origins[0, :2]
                     + torch.as_tensor(waypoint, dtype=env.root_states.dtype, device=env.device).reshape(1, 2)
@@ -487,6 +493,8 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
         "depth_capture_metadata": getattr(env, "depth_capture_metadata", lambda: {})(),
         "oracle_pass_side": getattr(scenario, "oracle_pass_side", "none"),
         "failure_flags": [],
+        "direct_global_goal": bool(direct_global_goal),
+        "command_loss_breakdown": command_loss_breakdown(rows),
     }
     summary["failure_reason"] = _classify_failure(summary, rows)
     if not success:
@@ -565,7 +573,7 @@ def _write_plot(summary, trajectory, scenario, output_path):
     plt.close(figure)
 
 
-def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining):
+def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining, direct_global_goal=False):
     import isaacgym  # noqa: F401
     import torch
     import legged_gym.envs  # noqa: F401
@@ -584,6 +592,7 @@ def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining):
         summary, trajectory = run_episode(
             env, scenario, torch, max_steps, lookahead_m, scenario.config,
             depth_output_dir=map_dir / "depth_samples",
+            direct_global_goal=bool(direct_global_goal),
         )
     except Exception as error:
         summary = {
@@ -602,6 +611,7 @@ def run_one_map(scenario, output_dir, max_steps, lookahead_m, remaining):
     map_dir.mkdir(parents=True, exist_ok=True)
     (map_dir / "scenario.json").write_text(json.dumps(scenario_to_metadata(scenario), indent=2, sort_keys=True), encoding="utf-8")
     (map_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
+    (map_dir / "command_loss_breakdown.json").write_text(json.dumps(summary.get("command_loss_breakdown", {}), indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
     if summary.get("failure_reason") != "SUCCESS":
         diagnosis = {
             "map_seed": int(scenario.map_seed),
@@ -652,6 +662,7 @@ def _stage_defaults(stage):
 def main(argv=None):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--stage", choices=("d0", "d1.1-smoke", "d1.1", "d1.2-smoke", "d1.2"), default="d0")
+    parser.add_argument("--mode", choices=("d0-c", "d0-b"), default="d0-c")
     parser.add_argument("--maps", type=int, default=None)
     parser.add_argument("--obstacle-counts", default=None)
     parser.add_argument("--split", default="test")
@@ -696,8 +707,12 @@ def main(argv=None):
         raise ValueError("run one map per IsaacGym process; pass --single-map for one-map invocations")
     if maps != 1:
         raise ValueError("--single-map invocation must contain exactly one map")
-    summary = run_one_map(scenarios[0], output, stage.max_steps, stage.lookahead_m, remaining)
-    (output / "D1_summary.json").write_text(json.dumps({"evaluation_version": EVALUATION_VERSION, "stage": stage.stage, "episodes": [summary]}, indent=2, sort_keys=True), encoding="utf-8")
+    direct_global_goal = stage.mode == "d0-b"
+    summary = run_one_map(
+        scenarios[0], output, stage.max_steps, stage.lookahead_m, remaining,
+        direct_global_goal=direct_global_goal,
+    )
+    (output / "D1_summary.json").write_text(json.dumps({"evaluation_version": EVALUATION_VERSION, "stage": stage.stage, "mode": stage.mode, "episodes": [summary]}, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     return summary
 
