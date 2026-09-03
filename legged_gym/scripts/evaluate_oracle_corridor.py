@@ -260,6 +260,11 @@ def _collision_sources(position, scenario, radius):
     return boundary <= radius, obstacle <= radius, boundary, obstacle
 
 
+def _select_terminal_value(done, live_value, terminal_value):
+    """Select pre-reset terminal telemetry when the step ended an episode."""
+    return terminal_value if bool(done) else live_value
+
+
 def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_output_dir=None, direct_global_goal=False, final_goal_switch_distance=None):
     """Run one scripted Teacher episode through Frozen V62."""
     from legged_gym.envs.rotunbot.vel_tracking.rotunbot_vel import RotunbotVel
@@ -311,6 +316,10 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
     projection_interventions = 0
     transition_active_steps = 0
     min_goal_distance = float("inf")
+    last_depth_stats = None
+    last_action_snapshot = None
+    last_command_target = (0.0, 0.0)
+    last_raw_clearance = float(config.robot_radius_m)
 
     with torch.inference_mode():
         while not done and steps < int(max_steps):
@@ -363,6 +372,30 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
                 desired_v_scheduled = desired_v_projected
                 desired_w_scheduled = desired_w_projected
 
+            last_command_target = (
+                float(env.command_targets[0, 0].item()),
+                float(env.command_targets[0, 1].item()),
+            )
+            last_raw_clearance = float(env.obstacle_clearance[0].item())
+            last_applied_command = env.applied_feasible_command[0].detach().clone()
+            last_depth_stats = {
+                "finite_ratio": float(torch.isfinite(env.depth_observation[0]).float().mean().item()),
+                "min": float(env.depth_observation[0].min().item()),
+                "mean": float(env.depth_observation[0].mean().item()),
+                "max": float(env.depth_observation[0].max().item()),
+                "std": float(env.depth_observation[0].std(unbiased=False).item()),
+            }
+            last_action_snapshot = {
+                "nominal_action_1": float(env.nominal_policy_actions[0, 0].item()),
+                "nominal_action_2": float(env.nominal_policy_actions[0, 1].item()),
+                "feedback_action_1": float(env.feedback_policy_actions[0, 0].item()),
+                "feedback_action_2": float(env.feedback_policy_actions[0, 1].item()),
+                "combined_action_1": float(env.combined_policy_actions[0, 0].item()),
+                "combined_action_2": float(env.combined_policy_actions[0, 1].item()),
+                "output_action_1": float(env.output_actions[0, 0].item()),
+                "output_action_2": float(env.output_actions[0, 1].item()),
+            }
+
             # RotunbotVel.step keeps the command target above intact and runs
             # the frozen deterministic V62 command-to-actuator controller.
             _, _, _, dones, _ = RotunbotVel.step(env, torch.zeros_like(command))
@@ -372,12 +405,33 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
                 env.terminal_position[0, :2].detach().cpu().numpy().copy()
                 if done else _position_from_env(env)
             )
-            yaw_now = _yaw_from_env(env)
-            actual_v = float((env.terminal_tracking_velocity[0, 0] if done else env.tracking_lin_vel[0, 0]).item())
-            actual_w = float((env.terminal_tracking_velocity[0, 1] if done else env.tracking_ang_vel[0, 2]).item())
-            applied = env.terminal_applied_feasible_command[0] if done else env.applied_feasible_command[0]
+            yaw_now = float(_select_terminal_value(done, _yaw_from_env(env), env.terminal_yaw[0].item() if hasattr(env, "terminal_yaw") else _yaw_from_env(env)))
+            actual_v = float(_select_terminal_value(done, env.tracking_lin_vel[0, 0], env.terminal_tracking_velocity[0, 0]).item())
+            actual_w = float(_select_terminal_value(done, env.tracking_ang_vel[0, 2], env.terminal_tracking_velocity[0, 1]).item())
+            applied = _select_terminal_value(done, env.applied_feasible_command[0], env.terminal_applied_feasible_command[0])
+            goal_distance_row = float(_select_terminal_value(done, env.goal_dist[0], env.terminal_goal_distance[0]).item())
+            transition_state_row = int(_select_terminal_value(done, env.transition_state[0], env.terminal_transition_state[0]).item())
+            transition_active_row = bool(_select_terminal_value(done, env.transition_active[0], env.terminal_transition_active[0]).item())
+            transition_progress_row = float(env.transition_progress[0].item())
+            transition_settle_counter_row = int(env.transition_settle_counter[0].item())
+            if done:
+                transition_progress_row = 0.0
+                transition_settle_counter_row = 0
+
+            if done:
+                applied = last_applied_command
             applied_v, applied_w = float(applied[0].item()), float(applied[1].item())
-            raw_clearance = float(env.obstacle_clearance[0].item())
+            raw_clearance = last_raw_clearance if done else float(env.obstacle_clearance[0].item())
+            if done and last_depth_stats is not None:
+                depth_stats_row = last_depth_stats
+            else:
+                depth_stats_row = {
+                    "finite_ratio": float(torch.isfinite(env.depth_observation[0]).float().mean().item()),
+                    "min": float(env.depth_observation[0].min().item()),
+                    "mean": float(env.depth_observation[0].mean().item()),
+                    "max": float(env.depth_observation[0].max().item()),
+                    "std": float(env.depth_observation[0].std(unbiased=False).item()),
+                }
             boundary_now, obstacle_now, boundary_distance, obstacle_distance = _collision_sources(
                 position_now, scenario, float(config.robot_radius_m)
             )
@@ -391,7 +445,7 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
             path_length += float(np.linalg.norm(position_now - previous_position))
             previous_position = position_now
             min_goal_distance = min(min_goal_distance, float(np.linalg.norm(position_now - np.asarray(scenario.goal_xy))))
-            transition_active = bool(env.transition_active[0].item())
+            transition_active = transition_active_row
             transition_active_steps += int(transition_active)
             projection_interventions += int(
                 abs(applied_v - desired_v_scheduled) > 3.0e-5
@@ -407,7 +461,7 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
                 "waypoint_y_m": float(waypoint[1]),
                 "waypoint_distance_m": float(np.linalg.norm(np.asarray(waypoint) - position_now)),
                 "remaining_path_m": remaining,
-                "global_goal_distance_m": float(env.goal_dist[0].item()),
+                "global_goal_distance_m": goal_distance_row,
                 "goal_success_radius_m": float(config.goal_success_radius_m),
                 "desired_v_raw_mps": desired_v_raw,
                 "desired_w_raw_rps": desired_w_raw,
@@ -415,8 +469,8 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
                 "desired_w_projected_rps": desired_w_projected,
                 "desired_v_scheduled_mps": desired_v_scheduled,
                 "desired_w_scheduled_rps": desired_w_scheduled,
-                "command_target_v_mps": float(env.command_targets[0, 0].item()),
-                "command_target_w_rps": float(env.command_targets[0, 1].item()),
+                "command_target_v_mps": last_command_target[0],
+                "command_target_w_rps": last_command_target[1],
                 "applied_v_mps": applied_v, "applied_w_rps": applied_w,
                 "actual_v_mps": actual_v, "actual_w_rps": actual_w,
                 "raw_physics_clearance_m": raw_clearance,
@@ -425,24 +479,17 @@ def run_episode(env, scenario, torch, max_steps, lookahead_m, config, depth_outp
                 "boundary_clearance_m": boundary_distance - float(config.robot_radius_m),
                 "obstacle_clearance_m": obstacle_distance - float(config.robot_radius_m),
                 "terminal_slowdown_active": int(current_slowdown),
-                "transition_active": int(transition_active),
-                "transition_state": int(env.transition_state[0].item()),
-                "transition_progress": float(env.transition_progress[0].item()),
-                "transition_settle_counter": int(env.transition_settle_counter[0].item()),
+                "transition_active": int(transition_active_row),
+                "transition_state": transition_state_row,
+                "transition_progress": transition_progress_row,
+                "transition_settle_counter": transition_settle_counter_row,
                 "collision": int(collision_now),
-                "depth_finite_ratio": float(torch.isfinite(env.depth_observation[0]).float().mean().item()),
-                "depth_min": float(env.depth_observation[0].min().item()),
-                "depth_mean": float(env.depth_observation[0].mean().item()),
-                "depth_max": float(env.depth_observation[0].max().item()),
-                "depth_std": float(env.depth_observation[0].std(unbiased=False).item()),
-                "nominal_action_1": float(env.nominal_policy_actions[0, 0].item()),
-                "nominal_action_2": float(env.nominal_policy_actions[0, 1].item()),
-                "feedback_action_1": float(env.feedback_policy_actions[0, 0].item()),
-                "feedback_action_2": float(env.feedback_policy_actions[0, 1].item()),
-                "combined_action_1": float(env.combined_policy_actions[0, 0].item()),
-                "combined_action_2": float(env.combined_policy_actions[0, 1].item()),
-                "output_action_1": float(env.output_actions[0, 0].item()),
-                "output_action_2": float(env.output_actions[0, 1].item()),
+                "depth_finite_ratio": depth_stats_row["finite_ratio"],
+                "depth_min": depth_stats_row["min"],
+                "depth_mean": depth_stats_row["mean"],
+                "depth_max": depth_stats_row["max"],
+                "depth_std": depth_stats_row["std"],
+                **last_action_snapshot,
             })
             position, yaw = position_now, yaw_now
             if steps >= int(max_steps) and not done:

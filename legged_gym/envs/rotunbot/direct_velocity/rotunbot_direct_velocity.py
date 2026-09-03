@@ -85,6 +85,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
         self.terminal_position = torch.zeros(
             self.num_envs, 2, device=self.device
         )
+        self.terminal_yaw = torch.zeros(self.num_envs, device=self.device)
         self.terminal_command_target = torch.zeros_like(self.command_targets)
         self.terminal_goal_xy_robot = torch.zeros(
             self.num_envs, 2, device=self.device
@@ -391,6 +392,7 @@ class RotunbotDirectVelocity(RotunbotVelCorridor, DepthCameraMixin):
                 env_ids, 2
             ]
             self.terminal_position[env_ids] = self.root_states[env_ids, :2]
+            self.terminal_yaw[env_ids] = self._yaw_from_quaternion()[env_ids]
             self.terminal_command_target[env_ids] = self.command_targets[env_ids]
             self.terminal_goal_xy_robot[env_ids] = self._global_goal_xy_robot()[env_ids]
             self.terminal_transition_active[env_ids] = self.transition_active[env_ids]

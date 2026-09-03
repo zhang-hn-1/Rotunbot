@@ -220,6 +220,11 @@ class DirectVelocityEvaluationTests(unittest.TestCase):
         self.assertEqual((rate_row["rate_violation"], rate_row["hidden_projection_jump"]), (1, 0))
         self.assertEqual((jump_row["rate_violation"], jump_row["hidden_projection_jump"]), (0, 1))
 
+    def test_phase_d_terminal_value_prefers_snapshot_before_reset(self):
+        from legged_gym.scripts.evaluate_oracle_corridor import _select_terminal_value
+        self.assertEqual(_select_terminal_value(True, 99.0, 1.5), 1.5)
+        self.assertEqual(_select_terminal_value(False, 99.0, 1.5), 99.0)
+
     def test_terminal_step_selector_keeps_exposed_post_step_telemetry(self):
         post_reset = {
             "applied_command": (0.0, 0.0),
